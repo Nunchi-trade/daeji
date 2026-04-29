@@ -6,6 +6,7 @@
 //! rationale (canonical-plan §13).
 
 pub mod card;
+pub mod chain;
 pub mod messages;
 pub mod registry;
 pub mod room;

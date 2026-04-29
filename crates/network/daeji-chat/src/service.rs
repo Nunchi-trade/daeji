@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::{
+    chain::ChainConfig,
     messages::RoomMessage,
     registry::Registry,
     room,
@@ -81,6 +82,16 @@ pub struct ChatConfig {
     /// Seconds after startup at which the drive sequence fires (only with `drive`).
     #[serde(default = "default_drive_after")]
     pub drive_after_secs: u64,
+
+    /// Optional chain-event watcher config. When set, `run_chat` spawns a
+    /// background task that subscribes to `AgentRegistry.AgentRegistered` and
+    /// `MultiAgentMarket.JobAwarded` events on the configured WS RPC. The
+    /// AgentRegistered handler verifies the off-chain card via keccak +
+    /// updates the registry file (which the agent's existing 200ms poller
+    /// then picks up to refresh `oracle.track`). JobAwarded auto-join is
+    /// deferred (see Q-Open-6).
+    #[serde(default)]
+    pub chain: Option<ChainConfig>,
 }
 
 const fn default_drive_after() -> u64 {
@@ -198,6 +209,22 @@ where
             }
         }
     });
+
+    // Optional chain-event watcher — runs as a tokio task on a separate
+    // runtime so the alloy/reqwest deps don't infect the commonware context.
+    // Updates the same registry file the watcher above polls, so chain
+    // registrations show up in `oracle.track` within ~200ms of being indexed.
+    if let Some(chain_cfg) = config.chain.clone() {
+        let chain_registry_path = config.registry_path.clone();
+        info!(rpc_ws = %chain_cfg.rpc_ws, "chat: spawning chain-event watcher");
+        // Spawn on tokio's standard runtime — ChainWatcher uses alloy + reqwest
+        // which are tokio-native, not commonware-runtime-native.
+        tokio::spawn(async move {
+            if let Err(err) = crate::chain::run_chain_watcher(chain_cfg, chain_registry_path).await {
+                tracing::error!(?err, "chat: chain watcher exited with error");
+            }
+        });
+    }
 
     // Optional drive sequence — fires once after a fixed delay so peers have time to discover.
     if config.drive {
@@ -403,11 +430,33 @@ mod tests {
             room_key_hex: "00".repeat(32),
             drive: false,
             drive_after_secs: 3,
+            chain: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: ChatConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.me_seed, 1);
         assert_eq!(parsed.bind_port, 4101);
+        assert!(parsed.chain.is_none());
+    }
+
+    #[test]
+    fn config_with_chain_serde_round_trip() {
+        let json = r#"{
+            "enabled": true,
+            "me_seed": 1,
+            "bind_port": 4101,
+            "registry_path": "/tmp/r.json",
+            "job_id": "demo",
+            "room_key_hex": "0000000000000000000000000000000000000000000000000000000000000007",
+            "chain": {
+                "rpc_ws": "ws://127.0.0.1:8545",
+                "agent_registry": "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+            }
+        }"#;
+        let parsed: ChatConfig = serde_json::from_str(json).unwrap();
+        let chain = parsed.chain.expect("chain present");
+        assert_eq!(chain.rpc_ws, "ws://127.0.0.1:8545");
+        assert!(chain.market.is_none());
     }
 
     #[test]
