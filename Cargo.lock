@@ -1920,6 +1920,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "daeji-chat"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "chacha20poly1305",
+ "commonware-codec",
+ "commonware-cryptography",
+ "commonware-utils",
+ "hex",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "sha3",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "darling"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

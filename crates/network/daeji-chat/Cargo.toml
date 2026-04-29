@@ -5,46 +5,25 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Symphony-class agent-coordination message bus on Daeji — commonware-chat with on-chain identity binding."
+description = "Symphony-class agent-coordination protocol primitives — AEAD room derivation, typed messages, on-chain identity binding. Bolted into the kora chain binary, not run as a separate process."
 
 [lints]
 workspace = true
 
 [dependencies]
-# commonware (workspace deps)
+# commonware (workspace deps) — protocol primitives need ed25519 keys + codec + ordered set
 commonware-codec.workspace = true
 commonware-cryptography.workspace = true
-commonware-macros.workspace = true
-commonware-p2p.workspace = true
-commonware-runtime.workspace = true
 commonware-utils.workspace = true
 
-# core async + serde + tracing (workspace deps)
-clap.workspace = true
-futures.workspace = true
+# serde + crypto + utils (workspace deps)
 hex.workspace = true
 rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha3.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
 
-# crypto + chain (local deps — not in workspace)
+# crypto (local deps — not in workspace)
 chacha20poly1305 = "0.10.1"
 base64 = "0.22"
-alloy = { version = "2.0.4", features = ["full", "providers", "rpc-types-eth", "sol-types", "contract", "network"] }
-
-[[bin]]
-name = "daeji-chat"
-path = "src/bin/daeji-chat.rs"
-
-[[bin]]
-name = "daeji-indexer"
-path = "src/bin/daeji-indexer.rs"
-
-[[bin]]
-name = "daeji-watch-jobs"
-path = "src/bin/daeji-watch-jobs.rs"
