@@ -396,6 +396,12 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
 }
 
 /// Net API implementation.
+///
+/// `peer_count` is currently a stub: nothing in production calls `set_peer_count`
+/// so `net_peerCount` always reports 0. The intended wiring is for the runner to
+/// poll `commonware_p2p::Manager` (or its tracked-peer set) and push updates here
+/// on a tick. Until that lands, treat this value as "unwired" rather than
+/// "single-node by design."
 pub struct NetApiImpl {
     chain_id: u64,
     peer_count: Arc<std::sync::atomic::AtomicU64>,

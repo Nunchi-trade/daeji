@@ -3487,6 +3487,8 @@ dependencies = [
 name = "kora-reporters"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus 1.8.3",
+ "alloy-eips 1.8.3",
  "alloy-primitives",
  "commonware-codec",
  "commonware-consensus",
@@ -3496,10 +3498,12 @@ dependencies = [
  "kora-consensus",
  "kora-domain",
  "kora-executor",
+ "kora-indexer",
  "kora-ledger",
  "kora-overlay",
  "kora-qmdb-ledger",
  "kora-rpc",
+ "kora-txpool",
  "tracing",
 ]
 
@@ -3507,7 +3511,7 @@ dependencies = [
 name = "kora-rpc"
 version = "0.1.0"
 dependencies = [
- "alloy-consensus",
+ "alloy-consensus 1.8.3",
  "alloy-primitives",
  "async-trait",
  "axum",

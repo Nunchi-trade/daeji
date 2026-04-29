@@ -220,12 +220,22 @@ impl NodeRunner for ProductionRunner {
         .await
         .context("init qmdb")?;
 
+        // Index lives for the lifetime of the node; share the same instance between the
+        // RPC `IndexedStateProvider` (reads) and the `FinalizedReporter` (writes). Only
+        // created when RPC is enabled, since there's no consumer otherwise.
+        let block_index = self
+            .rpc_config
+            .as_ref()
+            .map(|_| Arc::new(kora_indexer::BlockIndex::new()));
+
         if let Some((node_state, addr)) = &self.rpc_config {
             let qmdb_state = state.qmdb_state().await;
-            let block_index = Arc::new(kora_indexer::BlockIndex::new());
             let rpc_executor = Arc::new(RevmExecutor::new(self.chain_id));
-            let indexed_provider =
-                kora_rpc::IndexedStateProvider::new(block_index, qmdb_state, rpc_executor);
+            let indexed_provider = kora_rpc::IndexedStateProvider::new(
+                block_index.clone().expect("block_index is Some when rpc_config is Some"),
+                qmdb_state,
+                rpc_executor,
+            );
             let rpc = kora_rpc::RpcServer::with_state_provider(
                 node_state.clone(),
                 *addr,
@@ -246,8 +256,11 @@ impl NodeRunner for ProductionRunner {
 
         let executor = RevmExecutor::new(self.chain_id);
         let context_provider = RevmContextProvider { gas_limit: self.gas_limit };
-        let finalized_reporter =
+        let mut finalized_reporter =
             FinalizedReporter::new(ledger.clone(), context.clone(), executor, context_provider);
+        if let Some(index) = block_index {
+            finalized_reporter = finalized_reporter.with_block_index(index);
+        }
 
         let scheme_provider = ConstantSchemeProvider::from(self.scheme.clone());
 
