@@ -1,9 +1,12 @@
-//! Phase-1/2 POC for the Daeji × commonware-chat agent-coordination spec.
+//! Symphony-class agent-coordination protocol primitives + service entry point.
 //!
-//! Library crate so the agent binary (`daeji-chat`) and indexer binary
-//! (`daeji-indexer`) can share the registry / room / messages modules.
+//! Library-only crate. Bolted into the `kora` chain binary via
+//! [`service::run_chat`] when `--enable-chat` is set; not run as a separate
+//! process. See `crates/network/daeji-chat/README.md` for the architecture
+//! rationale (canonical-plan §13).
 
 pub mod card;
 pub mod messages;
 pub mod registry;
 pub mod room;
+pub mod service;

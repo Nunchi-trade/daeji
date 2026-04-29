@@ -25,6 +25,12 @@ pub(crate) struct Cli {
 
     #[arg(long, global = true)]
     pub data_dir: Option<PathBuf>,
+
+    /// Optional path to a `daeji_chat::service::ChatConfig` TOML/JSON file.
+    /// When set with `enabled = true` in the config, the kora binary spawns
+    /// the chat service as a tokio task alongside consensus. Off by default.
+    #[arg(long, global = true)]
+    pub chat_config: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -229,7 +235,18 @@ impl Cli {
         tracing::info!(chain_id = config.chain_id, "Starting node (legacy mode)");
         tracing::debug!(?config, "Full configuration");
 
-        LegacyNodeService::new(config).run()
+        let mut svc = LegacyNodeService::new(config);
+        if let Some(ref chat_path) = self.chat_config {
+            let chat_cfg = load_chat_config(chat_path)?;
+            tracing::info!(
+                path = %chat_path.display(),
+                enabled = chat_cfg.enabled,
+                "loaded chat config"
+            );
+            svc = svc.with_chat(chat_cfg);
+        }
+
+        svc.run()
     }
 }
 
@@ -303,4 +320,22 @@ fn parse_public_keys(
     }
 
     Ok(public_keys)
+}
+
+/// Load a chat config from TOML or JSON. Format is auto-detected from extension.
+fn load_chat_config(path: &std::path::Path) -> eyre::Result<daeji_chat::service::ChatConfig> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| eyre::eyre!("read chat config {}: {}", path.display(), e))?;
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("toml")
+        .to_ascii_lowercase();
+    let cfg: daeji_chat::service::ChatConfig = match ext.as_str() {
+        "json" => serde_json::from_str(&content)
+            .map_err(|e| eyre::eyre!("parse chat config (json): {}", e))?,
+        _ => toml::from_str(&content)
+            .map_err(|e| eyre::eyre!("parse chat config (toml): {}", e))?,
+    };
+    Ok(cfg)
 }
