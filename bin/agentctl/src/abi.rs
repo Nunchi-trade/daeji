@@ -64,7 +64,7 @@ sol! {
             uint8 minTier,
             uint256 minBounty,
             uint64 maxDeadlineOffset,
-            bytes calldata metadata
+            string calldata metadataURI
         ) external;
     }
 }

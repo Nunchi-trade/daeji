@@ -39,6 +39,10 @@ enum Cmd {
         /// Max deadline offset in seconds.
         #[arg(long, default_value = "3600")]
         max_deadline_offset: u64,
+        /// Optional off-chain metadata URI (e.g. `ipfs://...` or `https://...`).
+        /// Defaults to empty string.
+        #[arg(long, default_value = "")]
+        metadata_uri: String,
     },
     /// Post an ISFR-consensus job via MultiAgentMarket. 4 agents (one per
     /// class: lending / structured / funding / staking) bid, are awarded,
@@ -68,21 +72,11 @@ enum Cmd {
 
 pub async fn run(cfg: &Config, args: Args) -> Result<()> {
     match args.cmd {
-        Cmd::RegisterJobType { min_tier, min_bounty, max_deadline_offset } => {
+        Cmd::RegisterJobType { min_tier, min_bounty, max_deadline_offset, metadata_uri } => {
             let reg = cfg
                 .addrs
                 .job_type_registry
                 .ok_or_else(|| eyre::eyre!("job_type_registry address not set"))?;
-            let mam = cfg
-                .addrs
-                .multi_agent_market
-                .ok_or_else(|| eyre::eyre!("multi_agent_market address not set"))?;
-            // ISFROracle is optional at registration time. Deployments that
-            // don't yet ship the R5 oracle stack (e.g. the symphony-demo
-            // branch) can still register the canonical jobType; the metadata
-            // encodes `address(0)` for the oracle and an off-chain keeper
-            // bridges the consensus rate later.
-            let oracle = cfg.addrs.isfr_oracle.unwrap_or(alloy::primitives::Address::ZERO);
 
             let wallet = EthereumWallet::from(cfg.signer.clone());
             let provider = ProviderBuilder::new()
@@ -91,9 +85,6 @@ pub async fn run(cfg: &Config, args: Args) -> Result<()> {
             let registry = IJobTypeRegistry::new(reg, &provider);
 
             let job_type: FixedBytes<32> = keccak256(b"isfr-consensus");
-            // metadata = abi.encode(MULTI_AGENT_MARKET, ISFR_ORACLE) — both
-            // 20-byte addresses, padded. ISFR_ORACLE may be address(0).
-            let metadata = encode_two_addrs(mam, oracle);
             let pending = registry
                 .register(
                     job_type,
@@ -101,7 +92,7 @@ pub async fn run(cfg: &Config, args: Args) -> Result<()> {
                     min_tier,
                     min_bounty,
                     max_deadline_offset,
-                    metadata.into(),
+                    metadata_uri.clone(),
                 )
                 .send()
                 .await
@@ -117,11 +108,9 @@ pub async fn run(cfg: &Config, args: Args) -> Result<()> {
             println!("  min_tier          : {min_tier}");
             println!("  min_bounty        : {min_bounty}");
             println!("  max_deadline_off  : {max_deadline_offset}s");
-            println!("  metadata (mam,oracle) : {mam:#x}, {oracle:#x}");
-            if oracle == alloy::primitives::Address::ZERO {
-                println!("  note              : oracle is address(0); deploy ISFROracle and re-register to wire the bridge");
-            }
+            println!("  metadata_uri      : {:?}", metadata_uri);
             println!("  tx_hash           : {tx_hash:#x}");
+            println!("  note              : MultiAgentMarket + ISFROracle addresses are deploy-time wiring; symphony-agent reads them from its config, not from JobTypeRegistry metadata");
         }
         Cmd::PostSymphony { markets, bounty: bounty_amt, num_agents, auto_fund } => {
             let mam = cfg
@@ -189,12 +178,4 @@ pub async fn run(cfg: &Config, args: Args) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// abi.encode(address, address) — 64 bytes, each padded to 32.
-fn encode_two_addrs(a: alloy::primitives::Address, b: alloy::primitives::Address) -> Vec<u8> {
-    let mut out = vec![0u8; 64];
-    out[12..32].copy_from_slice(a.as_slice());
-    out[44..64].copy_from_slice(b.as_slice());
-    out
 }
