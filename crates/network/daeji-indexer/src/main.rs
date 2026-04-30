@@ -59,6 +59,27 @@ sol! {
 
     #[derive(Debug)]
     event JobAwarded(uint256 indexed id, address[] winners, bytes32 roomId);
+
+    /// ISFR v3.0 single-keeper fast-path submission. Mirrors `IISFROracle.sol`
+    /// (PR #102 / R1 in contracts-core).
+    #[derive(Debug)]
+    event RateSubmitted(
+        uint32 indexed epochId,
+        address indexed keeper,
+        int256 compositeBps,
+        uint16 confidenceBps,
+        uint64 timestamp
+    );
+
+    /// ISFR v3.0 block-range close (Appendix A multi-voter). Mirrors `IISFROracle.sol`.
+    #[derive(Debug)]
+    event RangeClosed(
+        bytes32 indexed rangeId,
+        uint64 rangeStart,
+        uint64 rangeEnd,
+        int256 compositeBps,
+        uint16 voterCount
+    );
 }
 
 #[derive(Debug, Parser)]
@@ -81,6 +102,12 @@ struct Cli {
     /// to JobAwarded.
     #[arg(long, env = "DAEJI_INDEXER_MARKET")]
     market: Option<String>,
+
+    /// ISFROracle contract addresses (0x-hex, comma-separated for multiple markets).
+    /// Each gets a separate `RateSubmitted` + `RangeClosed` subscription. The
+    /// per-market deployments are surfaced via `GET /isfr/markets`.
+    #[arg(long, env = "DAEJI_INDEXER_ISFR_ORACLES", value_delimiter = ',')]
+    isfr_oracles: Vec<String>,
 
     /// Block to start scanning from. Defaults to the chain head at startup.
     #[arg(long, env = "DAEJI_INDEXER_FROM_BLOCK")]
@@ -126,10 +153,44 @@ struct RoomBinding {
     winners: Vec<String>,
 }
 
+/// Latest `RateSubmitted` per ISFR oracle deployment. The keeper, the rate, and
+/// the epoch are recorded; consumers query `GET /isfr/rates?market=<addr>` for
+/// the most recent. Range-close summaries land in `IsfrRangeClose`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IsfrRate {
+    market: String,
+    epoch_id: u32,
+    keeper: String,
+    composite_bps: String, // int256 — kept as a decimal string to preserve sign + range
+    confidence_bps: u16,
+    timestamp: u64,
+    block: u64,
+    seen_at_unix: u64,
+}
+
+/// Latest `RangeClosed` per ISFR oracle deployment + rangeId. Consumers query
+/// `GET /isfr/ranges?market=<addr>` to see closed ranges.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IsfrRangeClose {
+    market: String,
+    range_id: String,
+    range_start: u64,
+    range_end: u64,
+    composite_bps: String, // int256 decimal string
+    voter_count: u16,
+    block: u64,
+    seen_at_unix: u64,
+}
+
 #[derive(Default)]
 struct Store {
     agents: HashMap<String, Agent>, // 0x-lower address → Agent
     jobs: HashMap<u64, Job>,        // chain id → Job
+    /// (market_addr_lower, latest_rate). We only retain the most recent per market.
+    isfr_rates: HashMap<String, IsfrRate>,
+    /// (market_addr_lower, range_id_lower) → latest close summary. Multiple ranges
+    /// can be open per market; we keep them all.
+    isfr_ranges: HashMap<(String, String), IsfrRangeClose>,
 }
 
 type SharedStore = Arc<RwLock<Store>>;
@@ -148,6 +209,7 @@ async fn main() -> Result<()> {
         rpc_ws = %cli.rpc_ws,
         agent_registry = ?cli.agent_registry,
         market = ?cli.market,
+        isfr_oracle_count = cli.isfr_oracles.len(),
         bind = %cli.bind,
         "daeji-indexer: starting"
     );
@@ -156,16 +218,32 @@ async fn main() -> Result<()> {
 
     let agent_addr = parse_optional_address("agent_registry", cli.agent_registry.as_deref())?;
     let market_addr = parse_optional_address("market", cli.market.as_deref())?;
-    if agent_addr.is_none() && market_addr.is_none() {
-        warn!("daeji-indexer: neither --agent-registry nor --market set; HTTP server will only return empty results");
+    let isfr_addrs = cli
+        .isfr_oracles
+        .iter()
+        .map(|s| {
+            Address::from_str(s.trim())
+                .with_context(|| format!("invalid ISFR oracle address: {}", s))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if agent_addr.is_none() && market_addr.is_none() && isfr_addrs.is_empty() {
+        warn!("daeji-indexer: no event sources configured (--agent-registry / --market / --isfr-oracles); HTTP server will only return empty results");
     }
 
     let watch_store = store.clone();
     let watch_rpc = cli.rpc_ws.clone();
     let watch_from = cli.from_block;
+    let watch_isfr = isfr_addrs.clone();
     tokio::spawn(async move {
-        if let Err(err) =
-            run_chain_watcher(watch_rpc, agent_addr, market_addr, watch_from, watch_store).await
+        if let Err(err) = run_chain_watcher(
+            watch_rpc,
+            agent_addr,
+            market_addr,
+            watch_isfr,
+            watch_from,
+            watch_store,
+        )
+        .await
         {
             error!(?err, "chain watcher exited");
         }
@@ -178,6 +256,10 @@ async fn main() -> Result<()> {
         .route("/jobs", get(list_jobs))
         .route("/jobs/{id}", get(get_job))
         .route("/room/{job_id}", get(get_room))
+        .route("/isfr/markets", get(list_isfr_markets))
+        .route("/isfr/rates", get(list_isfr_rates))
+        .route("/isfr/rates/{market}", get(get_isfr_rate))
+        .route("/isfr/ranges", get(list_isfr_ranges))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(store.clone());
@@ -210,6 +292,7 @@ async fn run_chain_watcher(
     rpc_ws: String,
     agent_addr: Option<Address>,
     market_addr: Option<Address>,
+    isfr_addrs: Vec<Address>,
     from_block_override: Option<u64>,
     store: SharedStore,
 ) -> Result<()> {
@@ -222,6 +305,26 @@ async fn run_chain_watcher(
     let head = provider.get_block_number().await?;
     info!(chain_id, head, "daeji-indexer: chain connected");
     let from_block = from_block_override.unwrap_or(head);
+
+    // Pre-register the ISFR oracle addresses in the store so /isfr/markets
+    // surfaces them even before the first event arrives.
+    if !isfr_addrs.is_empty() {
+        let mut s = store.write().await;
+        for addr in &isfr_addrs {
+            s.isfr_rates.entry(format!("{:#x}", addr).to_ascii_lowercase()).or_insert(
+                IsfrRate {
+                    market: format!("{:#x}", addr),
+                    epoch_id: 0,
+                    keeper: String::new(),
+                    composite_bps: "0".into(),
+                    confidence_bps: 0,
+                    timestamp: 0,
+                    block: 0,
+                    seen_at_unix: now_unix(),
+                },
+            );
+        }
+    }
 
     let mut market_stream = if let Some(addr) = market_addr {
         let f = Filter::new()
@@ -237,6 +340,26 @@ async fn run_chain_watcher(
         let f = Filter::new()
             .address(addr)
             .event_signature(AgentRegistered::SIGNATURE_HASH)
+            .from_block(from_block);
+        Some(provider.subscribe_logs(&f).await?.into_stream())
+    } else {
+        None
+    };
+
+    let mut isfr_rate_stream = if !isfr_addrs.is_empty() {
+        let f = Filter::new()
+            .address(isfr_addrs.clone())
+            .event_signature(RateSubmitted::SIGNATURE_HASH)
+            .from_block(from_block);
+        Some(provider.subscribe_logs(&f).await?.into_stream())
+    } else {
+        None
+    };
+
+    let mut isfr_range_stream = if !isfr_addrs.is_empty() {
+        let f = Filter::new()
+            .address(isfr_addrs.clone())
+            .event_signature(RangeClosed::SIGNATURE_HASH)
             .from_block(from_block);
         Some(provider.subscribe_logs(&f).await?.into_stream())
     } else {
@@ -262,6 +385,22 @@ async fn run_chain_watcher(
                 }
             } => {
                 handle_agent_registered(log, &store).await;
+            }
+            Some(log) = async {
+                match isfr_rate_stream.as_mut() {
+                    Some(s) => s.next().await,
+                    None => futures::future::pending().await,
+                }
+            } => {
+                handle_isfr_rate_submitted(log, &store).await;
+            }
+            Some(log) = async {
+                match isfr_range_stream.as_mut() {
+                    Some(s) => s.next().await,
+                    None => futures::future::pending().await,
+                }
+            } => {
+                handle_isfr_range_closed(log, &store).await;
             }
             else => break,
         }
@@ -331,12 +470,85 @@ async fn handle_job_awarded(log: AlloyRpcLog, store: &SharedStore) {
     }
 }
 
+async fn handle_isfr_rate_submitted(log: AlloyRpcLog, store: &SharedStore) {
+    let raw = AlloyLog::new(log.address(), log.topics().to_vec(), log.data().data.clone())
+        .unwrap_or_else(|| AlloyLog::new_unchecked(log.address(), Vec::new(), Default::default()));
+    match RateSubmitted::decode_log(&raw) {
+        Ok(decoded) => {
+            let market = format!("{:#x}", log.address());
+            let entry = IsfrRate {
+                market: market.clone(),
+                epoch_id: decoded.epochId,
+                keeper: format!("{:#x}", decoded.keeper),
+                composite_bps: decoded.compositeBps.to_string(),
+                confidence_bps: decoded.confidenceBps,
+                timestamp: decoded.timestamp,
+                block: log.block_number.unwrap_or_default(),
+                seen_at_unix: now_unix(),
+            };
+            let mut s = store.write().await;
+            // Latest-wins: we only retain the most recent rate per market.
+            s.isfr_rates.insert(market.to_ascii_lowercase(), entry);
+            info!(
+                market = %format!("{:#x}", log.address()),
+                epoch = decoded.epochId,
+                composite_bps = %decoded.compositeBps,
+                confidence_bps = decoded.confidenceBps,
+                block = log.block_number.unwrap_or_default(),
+                "ISFR RateSubmitted indexed"
+            );
+        }
+        Err(err) => {
+            error!(?err, "failed to decode RateSubmitted log");
+        }
+    }
+}
+
+async fn handle_isfr_range_closed(log: AlloyRpcLog, store: &SharedStore) {
+    let raw = AlloyLog::new(log.address(), log.topics().to_vec(), log.data().data.clone())
+        .unwrap_or_else(|| AlloyLog::new_unchecked(log.address(), Vec::new(), Default::default()));
+    match RangeClosed::decode_log(&raw) {
+        Ok(decoded) => {
+            let market = format!("{:#x}", log.address());
+            let range_id = format!("0x{}", hex::encode(decoded.rangeId.0));
+            let entry = IsfrRangeClose {
+                market: market.clone(),
+                range_id: range_id.clone(),
+                range_start: decoded.rangeStart,
+                range_end: decoded.rangeEnd,
+                composite_bps: decoded.compositeBps.to_string(),
+                voter_count: decoded.voterCount,
+                block: log.block_number.unwrap_or_default(),
+                seen_at_unix: now_unix(),
+            };
+            let mut s = store.write().await;
+            s.isfr_ranges.insert(
+                (market.to_ascii_lowercase(), range_id.to_ascii_lowercase()),
+                entry,
+            );
+            info!(
+                market = %format!("{:#x}", log.address()),
+                range_id = %range_id,
+                range_start = decoded.rangeStart,
+                range_end = decoded.rangeEnd,
+                voter_count = decoded.voterCount,
+                "ISFR RangeClosed indexed"
+            );
+        }
+        Err(err) => {
+            error!(?err, "failed to decode RangeClosed log");
+        }
+    }
+}
+
 async fn health(State(store): State<SharedStore>) -> impl IntoResponse {
     let s = store.read().await;
     Json(serde_json::json!({
         "status": "ok",
         "agents": s.agents.len(),
         "jobs": s.jobs.len(),
+        "isfr_markets": s.isfr_rates.len(),
+        "isfr_ranges": s.isfr_ranges.len(),
     }))
 }
 
@@ -389,6 +601,37 @@ async fn get_room(
         channel_id,
         winners: job.winners,
     }))
+}
+
+async fn list_isfr_markets(State(store): State<SharedStore>) -> impl IntoResponse {
+    let s = store.read().await;
+    let mut out: Vec<String> = s.isfr_rates.values().map(|r| r.market.clone()).collect();
+    out.sort();
+    out.dedup();
+    Json(out)
+}
+
+async fn list_isfr_rates(State(store): State<SharedStore>) -> impl IntoResponse {
+    let s = store.read().await;
+    let mut out: Vec<IsfrRate> = s.isfr_rates.values().cloned().collect();
+    out.sort_by(|a, b| b.block.cmp(&a.block));
+    Json(out)
+}
+
+async fn get_isfr_rate(
+    State(store): State<SharedStore>,
+    Path(market): Path<String>,
+) -> Result<Json<IsfrRate>, StatusCode> {
+    let key = normalize_address(&market);
+    let s = store.read().await;
+    s.isfr_rates.get(&key).cloned().map(Json).ok_or(StatusCode::NOT_FOUND)
+}
+
+async fn list_isfr_ranges(State(store): State<SharedStore>) -> impl IntoResponse {
+    let s = store.read().await;
+    let mut out: Vec<IsfrRangeClose> = s.isfr_ranges.values().cloned().collect();
+    out.sort_by(|a, b| b.block.cmp(&a.block));
+    Json(out)
 }
 
 /// Local re-derivation of the slot index + channel id. Mirrors the constants in
