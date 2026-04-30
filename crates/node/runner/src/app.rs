@@ -105,15 +105,14 @@ where
         //
         // The executor is the source of truth for double-inclusion (it skips
         // any tx whose nonce is already past the sender's state nonce), so
-        // dropping the `excluded` filter is a correctness-preserving optimist
+        // dropping the `excluded` filter is a correctness-preserving optimistic
         // path: at worst we waste an `execute()` call on already-mined txs
         // (they revert with NonceTooLow and don't change state). At best we
         // unblock the drain entirely.
         //
-        // Only fire when we're certain the producer is stuck (empty drain
-        // *and* a non-empty mempool that is ALSO not fully covered by the
-        // excluded set — the latter check is the "trust excluded" guardrail).
-        // Healthy idle blocks (mempool=0) never hit this path.
+        // Only fire when the producer would otherwise emit an empty block
+        // despite having queued transactions. Healthy idle blocks (mempool=0)
+        // never hit this path.
         if txs.is_empty() && mempool_len > 0 {
             warn!(
                 mempool_len,
@@ -123,10 +122,7 @@ where
             );
             txs = mempool.build(self.max_txs, &BTreeSet::new());
             if !txs.is_empty() {
-                info!(
-                    drained = txs.len(),
-                    "build_block: self-heal retry recovered drain"
-                );
+                info!(drained = txs.len(), "build_block: self-heal retry recovered drain");
             }
         } else {
             trace!(
