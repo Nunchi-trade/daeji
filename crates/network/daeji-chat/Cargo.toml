@@ -1,0 +1,40 @@
+[package]
+name = "daeji-chat"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Symphony-class agent-coordination protocol primitives + service entry point — bolted into the kora chain binary, not run as a separate process."
+
+[lints]
+workspace = true
+
+[dependencies]
+# commonware (workspace deps)
+commonware-codec.workspace = true
+commonware-cryptography.workspace = true
+commonware-macros.workspace = true
+commonware-p2p.workspace = true
+commonware-runtime.workspace = true
+commonware-utils.workspace = true
+
+# core async + serde + tracing (workspace deps)
+futures.workspace = true
+hex.workspace = true
+rand.workspace = true
+rand_core.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha3.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+# crypto (local deps — not in workspace)
+chacha20poly1305 = "0.10.1"
+base64 = "0.22"
+
+# chain integration (alloy WS + reqwest for status.json card fetch)
+alloy = { version = "2.0.4", features = ["full", "providers", "rpc-types-eth", "sol-types", "contract", "network"] }
+reqwest.workspace = true

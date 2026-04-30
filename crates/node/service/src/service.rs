@@ -5,7 +5,7 @@ use std::sync::Arc;
 use commonware_cryptography::Signer;
 use commonware_p2p::Manager;
 use commonware_runtime::{
-    Runner,
+    Metrics, Runner, Spawner,
     tokio::{self, Context},
 };
 use futures::future::try_join_all;
@@ -81,15 +81,30 @@ where
 ///
 /// This maintains backward compatibility with the existing production binary.
 /// For new implementations, prefer [`KoraNodeService`] with custom runner/provider.
+///
+/// Optionally bolts the chat layer ([`daeji_chat::service::run_chat`]) into the
+/// same kora process when [`Self::with_chat`] is set. The chat service runs as
+/// a spawned tokio task on its own commonware-p2p network instance — separate
+/// from kora's consensus mesh in v1, so a chat-side bug cannot impact consensus.
+/// Sharing the consensus mesh is a future PR (requires modifying kora-transport).
 #[derive(Debug)]
 pub struct LegacyNodeService {
     config: NodeConfig,
+    chat: Option<daeji_chat::service::ChatConfig>,
 }
 
 impl LegacyNodeService {
     /// Create a new legacy node service.
     pub const fn new(config: NodeConfig) -> Self {
-        Self { config }
+        Self { config, chat: None }
+    }
+
+    /// Attach a chat configuration. When set and `enabled = true`, the chat
+    /// service is spawned alongside the consensus runtime in `run_with_context`.
+    #[must_use]
+    pub fn with_chat(mut self, chat: daeji_chat::service::ChatConfig) -> Self {
+        self.chat = Some(chat);
+        self
     }
 
     /// Run the legacy node service.
@@ -121,6 +136,38 @@ impl LegacyNodeService {
         }
 
         tracing::info!(chain_id = self.config.chain_id, "kora node initialized");
+
+        // Optionally spawn the chat service supervised. Runs as a spawned task on
+        // the same kora process; uses its own commonware network instance
+        // (separate port from consensus). Bug-isolation: a chat panic / network
+        // error doesn't touch consensus.
+        //
+        // Supervisor (per canonical-plan §19 B2.4): `run_chat_supervised` retries
+        // on error with exponential backoff up to 60s, gives up after 3 failures
+        // within 60s. `Disabled` errors (config or `DAEJI_CHAT_DISABLED` env)
+        // exit cleanly without retry.
+        if let Some(chat_cfg) = self.chat.clone() {
+            if chat_cfg.enabled {
+                let chat_ctx = context.clone();
+                tracing::info!(
+                    bind_port = chat_cfg.bind_port,
+                    seeded_jobs = chat_cfg.seed_jobs.len(),
+                    "starting chat service (supervised)"
+                );
+                context.with_label("chat").spawn(move |_| async move {
+                    match daeji_chat::supervisor::run_chat_supervised(chat_ctx, chat_cfg).await {
+                        Ok(()) => {
+                            tracing::info!("chat supervisor exited cleanly");
+                        }
+                        Err(err) => {
+                            tracing::error!(?err, "chat supervisor gave up after threshold");
+                        }
+                    }
+                });
+            } else {
+                tracing::info!("chat config present but disabled; skipping");
+            }
+        }
 
         if let Err(e) = try_join_all(vec![transport.handle]).await {
             tracing::error!(?e, "service task failed");
