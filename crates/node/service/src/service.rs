@@ -137,21 +137,31 @@ impl LegacyNodeService {
 
         tracing::info!(chain_id = self.config.chain_id, "kora node initialized");
 
-        // Optionally spawn the chat service. Runs as a tokio task on the same
-        // kora process; uses its own commonware network instance (separate port
-        // from consensus). Bug-isolation: a chat panic / network error doesn't
-        // touch consensus.
+        // Optionally spawn the chat service supervised. Runs as a spawned task on
+        // the same kora process; uses its own commonware network instance
+        // (separate port from consensus). Bug-isolation: a chat panic / network
+        // error doesn't touch consensus.
+        //
+        // Supervisor (per canonical-plan §19 B2.4): `run_chat_supervised` retries
+        // on error with exponential backoff up to 60s, gives up after 3 failures
+        // within 60s. `Disabled` errors (config or `DAEJI_CHAT_DISABLED` env)
+        // exit cleanly without retry.
         if let Some(chat_cfg) = self.chat.clone() {
             if chat_cfg.enabled {
                 let chat_ctx = context.clone();
                 tracing::info!(
                     bind_port = chat_cfg.bind_port,
                     seeded_jobs = chat_cfg.seed_jobs.len(),
-                    "starting chat service"
+                    "starting chat service (supervised)"
                 );
                 context.with_label("chat").spawn(move |_| async move {
-                    if let Err(err) = daeji_chat::service::run_chat(chat_ctx, chat_cfg).await {
-                        tracing::error!(?err, "chat service exited with error");
+                    match daeji_chat::supervisor::run_chat_supervised(chat_ctx, chat_cfg).await {
+                        Ok(()) => {
+                            tracing::info!("chat supervisor exited cleanly");
+                        }
+                        Err(err) => {
+                            tracing::error!(?err, "chat supervisor gave up after threshold");
+                        }
                     }
                 });
             } else {

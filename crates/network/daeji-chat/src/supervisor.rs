@@ -9,15 +9,22 @@
 //! - [`next_backoff`] — exponential backoff for the supervised-restart loop.
 //!   Per §19 B2.4: chat panic loops trigger backoff with a 60s cap; after
 //!   3 failures within 60s the supervisor logs an alert + stops respawning.
-//! - [`PanicTracker`] — sliding window over recent failures used by a future
-//!   in-process supervisor to decide when to give up.
-//!
-//! The full supervisor wrapper around [`run_chat`](crate::service::run_chat)
-//! lands in PR-Daeji-G once the kora-side integration that consumed
-//! `run_chat` is re-established (it was displaced during a recent main
-//! rebase and needs a fresh PR).
+//! - [`PanicTracker`] — sliding window over recent failures used by the
+//!   supervisor wrapper to decide when to give up.
+//! - [`run_chat_supervised`] — the supervisor wrapper itself. Retries
+//!   `run_chat` on error with exponential backoff up to [`MAX_BACKOFF`];
+//!   stops respawning after [`PANIC_THRESHOLD`] failures within
+//!   [`PANIC_WINDOW`]. v1 catches `Result::Err` exits, not raw panics —
+//!   panic-catching is best-handled at the runtime layer (kora-service
+//!   using a tokio JoinHandle on top, or operator-side via systemd
+//!   `Restart=on-failure` / cgroup OOM bound). Both are documented in
+//!   the §19 operator runbook.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use tracing::{error, info, warn};
+
+use crate::service::{run_chat, ChatConfig, ChatServiceError};
 
 /// Environment variable that disables the chat service at runtime.
 /// When set to a truthy value (`1`, `true`, `yes`, case-insensitive),
@@ -112,6 +119,89 @@ impl PanicTracker {
     pub fn count_in_window(&self, now: Duration) -> usize {
         let cutoff = now.saturating_sub(PANIC_WINDOW);
         self.failures.iter().filter(|&&t| t >= cutoff).count()
+    }
+}
+
+/// Supervised wrapper around [`run_chat`]. Retries on `Err` with exponential
+/// backoff up to [`MAX_BACKOFF`]; stops respawning after [`PANIC_THRESHOLD`]
+/// failures within [`PANIC_WINDOW`].
+///
+/// Returns `Ok(())` when the chat exits cleanly OR is disabled (config or
+/// env var). Returns `Err(last_error)` only when the panic threshold is
+/// exceeded (operator must intervene to restart).
+///
+/// **Panic policy.** v1 does not catch raw panics inside `run_chat` —
+/// commonware-runtime's spawn semantics handle panic propagation, and this
+/// wrapper sits at the future-await level. The operator-side runbook (§19)
+/// documents the cgroup + systemd patterns for full process-level isolation.
+///
+/// **Backoff sleeps** use `tokio::time::sleep` so the supervisor doesn't
+/// require the caller's runtime context. The chat service itself uses
+/// commonware-runtime sleep internally; this is just for the wait between
+/// supervised attempts.
+pub async fn run_chat_supervised<C>(
+    context: C,
+    config: ChatConfig,
+) -> Result<(), ChatServiceError>
+where
+    C: crate::service::SupervisedContext + Clone,
+{
+    let mut tracker = PanicTracker::new();
+    let mut backoff = Duration::ZERO;
+    let started = Instant::now();
+    let mut attempt: u32 = 0;
+
+    loop {
+        attempt += 1;
+        info!(attempt, "chat-supervisor: starting run_chat");
+
+        let outcome = run_chat(context.clone(), config.clone()).await;
+        let elapsed = started.elapsed();
+
+        match outcome {
+            Ok(()) => {
+                info!(attempt, "chat-supervisor: clean exit; stopping");
+                return Ok(());
+            }
+            Err(ChatServiceError::Disabled) => {
+                info!(
+                    attempt,
+                    "chat-supervisor: chat disabled by config/env; stopping"
+                );
+                return Ok(());
+            }
+            Err(err) => {
+                tracker.record(elapsed);
+                let count = tracker.count_in_window(elapsed);
+                warn!(
+                    attempt,
+                    failures_in_window = count,
+                    ?err,
+                    "chat-supervisor: run_chat exited with error"
+                );
+
+                if tracker.should_give_up(elapsed) {
+                    error!(
+                        attempt,
+                        failures_in_window = count,
+                        threshold = PANIC_THRESHOLD,
+                        window_secs = PANIC_WINDOW.as_secs(),
+                        "chat-supervisor: panic threshold exceeded; not respawning. \
+                         Operator intervention required (restart kora, set DAEJI_CHAT_DISABLED, \
+                         or fix the underlying issue)."
+                    );
+                    return Err(err);
+                }
+
+                backoff = next_backoff(backoff);
+                info!(
+                    attempt,
+                    backoff_secs = backoff.as_secs(),
+                    "chat-supervisor: sleeping before respawn"
+                );
+                tokio::time::sleep(backoff).await;
+            }
+        }
     }
 }
 

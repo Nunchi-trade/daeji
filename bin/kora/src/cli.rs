@@ -28,9 +28,17 @@ pub(crate) struct Cli {
 
     /// Optional path to a `daeji_chat::service::ChatConfig` TOML/JSON file.
     /// When set with `enabled = true` in the config, the kora binary spawns
-    /// the chat service as a tokio task alongside consensus. Off by default.
+    /// the chat service as a supervised task alongside consensus. Off by default.
     #[arg(long, global = true)]
     pub chat_config: Option<PathBuf>,
+
+    /// Disable the chat service at runtime regardless of `--chat-config`.
+    /// Per canonical-plan §19 B2.3 — operator kill switch for production.
+    /// Honored before any chat sockets open. The `DAEJI_CHAT_DISABLED` env var
+    /// (truthy values: 1 / true / yes) achieves the same effect at the chat
+    /// service layer; this flag is the equivalent at the CLI layer.
+    #[arg(long, global = true)]
+    pub disable_chat: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -237,13 +245,22 @@ impl Cli {
 
         let mut svc = LegacyNodeService::new(config);
         if let Some(ref chat_path) = self.chat_config {
-            let chat_cfg = load_chat_config(chat_path)?;
+            let mut chat_cfg = load_chat_config(chat_path)?;
+            if self.disable_chat && chat_cfg.enabled {
+                tracing::info!(
+                    path = %chat_path.display(),
+                    "chat config loaded but --disable-chat / DAEJI_CHAT_DISABLED set; forcing enabled=false"
+                );
+                chat_cfg.enabled = false;
+            }
             tracing::info!(
                 path = %chat_path.display(),
                 enabled = chat_cfg.enabled,
                 "loaded chat config"
             );
             svc = svc.with_chat(chat_cfg);
+        } else if self.disable_chat {
+            tracing::debug!("--disable-chat / DAEJI_CHAT_DISABLED set but no --chat-config provided; nothing to disable");
         }
 
         svc.run()

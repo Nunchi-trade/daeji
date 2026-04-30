@@ -152,22 +152,42 @@ struct ActiveJob {
 /// is needed. Cloned cheaply for hand-off into spawned tasks.
 type ActiveJobs = Arc<Mutex<HashMap<u64, ActiveJob>>>;
 
+/// Trait alias bundling all the runtime bounds [`run_chat`] needs. Lets external
+/// callers (e.g. the [`crate::supervisor::run_chat_supervised`] wrapper) write
+/// `C: SupervisedContext` instead of repeating the seven-trait bound.
+pub trait SupervisedContext:
+    Spawner
+    + Metrics
+    + Clock
+    + commonware_runtime::BufferPooler
+    + commonware_runtime::Network
+    + commonware_runtime::Resolver
+    + rand_core::CryptoRngCore
+{
+}
+
+impl<T> SupervisedContext for T where
+    T: Spawner
+        + Metrics
+        + Clock
+        + commonware_runtime::BufferPooler
+        + commonware_runtime::Network
+        + commonware_runtime::Resolver
+        + rand_core::CryptoRngCore
+{
+}
+
 /// Run the chat service. Builds a commonware-p2p network, tracks the registry-driven
 /// peer set, pre-registers the lobby channel + 64 slot channels, spawns a lobby
 /// listener (handles `LobbyMessage::JobAnnounce` → activate slot for the job) and
 /// 64 slot try-decrypt loops, then runs forever.
 ///
 /// kora calls this from `LegacyNodeService.run_with_context` (or equivalent) as
-/// a spawned tokio task when `--enable-chat` is set.
+/// a spawned tokio task when `--enable-chat` is set. Wrap in
+/// [`crate::supervisor::run_chat_supervised`] for retry-on-error semantics.
 pub async fn run_chat<C>(context: C, config: ChatConfig) -> Result<(), ChatServiceError>
 where
-    C: Spawner
-        + Metrics
-        + Clock
-        + commonware_runtime::BufferPooler
-        + commonware_runtime::Network
-        + commonware_runtime::Resolver
-        + rand_core::CryptoRngCore,
+    C: SupervisedContext,
 {
     if !config.enabled {
         return Err(ChatServiceError::Disabled);
