@@ -72,6 +72,62 @@ sol! {
     }
 }
 
+/// 4-class ISFR source split (mirrors `isfr-service/isfr/types.py::SourceClass`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, clap::ValueEnum)]
+enum IsfrClass {
+    Lending,
+    Structured,
+    Funding,
+    Staking,
+}
+
+impl IsfrClass {
+    /// Stable serialization in chat messages + log output.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Lending => "lending",
+            Self::Structured => "structured",
+            Self::Funding => "funding",
+            Self::Staking => "staking",
+        }
+    }
+    /// ISFR v3.0 governance weights (basis-point fractions of 10_000).
+    /// Lending dominates because L1 base rates are the highest-TVL anchor.
+    /// 6000 + 2500 + 1000 + 500 = 10_000.
+    const fn governance_weight_bps(self) -> u32 {
+        match self {
+            Self::Lending => 6000,
+            Self::Structured => 2500,
+            Self::Funding => 1000,
+            Self::Staking => 500,
+        }
+    }
+    /// All four classes in canonical order — used for deterministic
+    /// digest construction.
+    const fn all() -> [Self; 4] {
+        [Self::Lending, Self::Structured, Self::Funding, Self::Staking]
+    }
+}
+
+impl std::fmt::Display for IsfrClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for IsfrClass {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "lending" => Ok(Self::Lending),
+            "structured" => Ok(Self::Structured),
+            "funding" => Ok(Self::Funding),
+            "staking" => Ok(Self::Staking),
+            other => Err(format!("unknown ISFR class: {other}")),
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "symphony-agent",
@@ -125,16 +181,25 @@ struct Cli {
     #[arg(long, env = "AGENT_CHAT_GRACE_SECS", default_value = "4")]
     chat_grace_secs: u64,
 
-    /// This agent's "private view" of the current ISFR rate (in basis points).
-    /// Each agent has a different target so the chat conversation shows real
-    /// disagreement → consensus. Production keepers replace this with reads
-    /// from real yield sources (Aave / Compound / Ethena / etc.).
-    #[arg(long, env = "AGENT_ISFR_TARGET_BPS", default_value = "690")]
+    /// Which ISFR source class this agent specializes in. The 4-class split
+    /// matches ISFR v3.0 (`isfr-service/isfr/types.py::SourceClass`):
+    ///   lending     — Aave / Compound / Morpho / Spark / Euler base lending rates
+    ///   structured  — Ethena sUSDe, Pendle PT/YT, structured product yields
+    ///   funding     — Hyperliquid / dYdX perpetual funding rates
+    ///   staking     — ETH stETH / cbETH / liquid staking yields
+    /// Each agent broadcasts ONLY its class's rate; the consensus composite
+    /// is computed from the 4-class medians via the v3.0 governance weights.
+    #[arg(long, env = "AGENT_ISFR_CLASS")]
+    isfr_class: IsfrClass,
+
+    /// This agent's "private view" of its specialized class's rate (bps).
+    /// Each class has a different natural target — see canonical-plan §17.
+    #[arg(long, env = "AGENT_ISFR_TARGET_BPS")]
     isfr_target_bps: i32,
 
     /// Random walk volatility around `isfr_target_bps`. Each tick the proposal
-    /// can move +/- this many bps. Default 8 ⇒ proposals land in [target-8, target+8].
-    #[arg(long, env = "AGENT_ISFR_VOLATILITY_BPS", default_value = "8")]
+    /// can move +/- this many bps.
+    #[arg(long, env = "AGENT_ISFR_VOLATILITY_BPS", default_value = "5")]
     isfr_volatility_bps: i32,
 
     /// Stop the agent after one job is settled. Useful for the demo so the
@@ -144,29 +209,35 @@ struct Cli {
 }
 
 /// State machine entry: a job we were awarded and are coordinating on.
-/// The job represents collectively agreeing on the current ISFR rate. Each
-/// agent broadcasts its private proposal, listens to peers' proposals,
-/// and the consensus is the median.
+/// The job represents collectively agreeing on the current ISFR composite
+/// rate. Each agent broadcasts its private proposal for ONE class
+/// (lending / structured / funding / staking); peers see all 4 proposals
+/// and compute the same composite via deterministic governance weights.
 #[derive(Clone)]
 struct ActiveJob {
     job_id: u64,
     winners: Vec<Address>,
     room_id: [u8; 32],
-    /// Each agent's ISFR rate proposal in basis points. Keyed by ed25519
-    /// chat-pubkey-hex (so duplicates are deduped). Includes our own.
-    proposals_by_peer: HashMap<String, i32>,
-    /// Computed consensus rate (median) once we've collected enough proposals.
-    consensus_bps: Option<i32>,
+    /// Per-class proposals collected from chat. Each class collects
+    /// proposals (keyed by ed25519 pubkey-hex for dedup) — typically just
+    /// one per class since each agent specializes.
+    proposals: HashMap<IsfrClass, HashMap<String, i32>>,
+    /// Computed median per class, once consensus reaches all 4.
+    class_medians: Option<HashMap<IsfrClass, i32>>,
+    /// Composite ISFR (governance-weighted sum of class medians). This is
+    /// the value that goes on-chain.
+    composite_bps: Option<i32>,
     /// Sigs collected from the room (keyed by winner EVM address).
     collected_sigs: HashMap<Address, Vec<u8>>,
-    /// The deterministic result hash = keccak256(consensus_bps_be) — all
-    /// winners arrive at the same value because they see the same proposals.
+    /// Deterministic result hash binding the 4 class medians + composite —
+    /// all winners arrive at the same value because they see the same
+    /// proposal set.
     result_hash: Option<[u8; 32]>,
-    /// Whether we've sent our PartialResult (proposal) already.
+    /// Whether we've sent our PartialResult (own-class proposal).
     proposal_sent: bool,
     /// Whether we've sent our Final message already.
     final_sent: bool,
-    /// Whether we've called submitMulti already (don't submit twice).
+    /// Whether we've called submitMulti already.
     submitted: bool,
 }
 
@@ -301,7 +372,7 @@ where
             });
     }
 
-    // Compute this agent's private ISFR proposal (random walk around target).
+    // Compute this agent's private proposal for its specialized class.
     let my_proposal_bps: i32 = {
         use rand::Rng;
         let mut rng = rand::thread_rng();
@@ -310,9 +381,10 @@ where
     };
     info!(
         agent = %cli.name,
+        isfr_class = %cli.isfr_class,
         isfr_target = cli.isfr_target_bps,
         my_proposal_bps,
-        "computed private ISFR proposal (random walk from target)"
+        "computed private proposal (random walk from target)"
     );
 
     // ---- Spawn chat send + submitter coordinator ----
@@ -325,6 +397,7 @@ where
         let exit_after_settle = cli.exit_after_settle;
         let mut sender_owned = sender;
         let me_pubkey_hex_clone = me_pubkey_hex.clone();
+        let my_class = cli.isfr_class;
         context
             .with_label("symphony-coord")
             .spawn(move |_| async move {
@@ -341,6 +414,7 @@ where
                     cli_name,
                     chat_grace,
                     exit_after_settle,
+                    my_class,
                     my_proposal_bps,
                 )
                 .await;
@@ -396,14 +470,19 @@ async fn run_chain_watcher(
                 }
 
                 // ISFR consensus job: result_hash gets computed AFTER chat
-                // discussion (median of all winners' proposals). Coordinator
+                // discussion (4 class medians → composite). Coordinator
                 // will set it when consensus is reached.
+                let mut proposals = HashMap::new();
+                for c in IsfrClass::all() {
+                    proposals.insert(c, HashMap::new());
+                }
                 let entry = ActiveJob {
                     job_id,
                     winners,
                     room_id: room_id_b.0,
-                    proposals_by_peer: HashMap::new(),
-                    consensus_bps: None,
+                    proposals,
+                    class_medians: None,
+                    composite_bps: None,
                     collected_sigs: HashMap::new(),
                     result_hash: None,
                     proposal_sent: false,
@@ -426,12 +505,13 @@ async fn run_chain_watcher(
 
 /// Coordinator loop with explicit ISFR-discussion protocol:
 /// 1. Hello (introduce self)
-/// 2. Status — announce my proposed ISFR rate ("alice proposes rate=685 bps")
-/// 3. PartialResult — broadcast the same proposal in machine-parseable form
-/// 4. Wait for grace period to collect peers' proposals
-/// 5. Compute consensus (median of all proposals, including my own)
-/// 6. Status — announce the consensus ("consensus=692 bps; signing")
-/// 7. Sign keccak256(RESULT_DOMAIN || id || keccak256(consensus_bps_be))
+/// 2. Status — announce my class + proposal ("alice [lending] proposes 550 bps")
+/// 3. PartialResult — same proposal in machine-parseable form
+/// 4. Wait for grace period to collect peers' per-class proposals
+/// 5. Compute consensus per class (median); composite = governance-weighted sum
+/// 6. Status — announce the composite consensus
+/// 7. Sign keccak256(RESULT_DOMAIN || id || result_hash)
+///    where result_hash = keccak256(lending_be || structured_be || funding_be || staking_be || composite_be)
 /// 8. Final — broadcast result_hash + signature
 /// 9. When all winners' sigs collected, lowest-address winner calls submitMulti
 #[allow(clippy::too_many_arguments)]
@@ -448,6 +528,7 @@ async fn run_coordinator<S: commonware_p2p::Sender>(
     me_name: String,
     chat_grace: Duration,
     exit_after_settle: bool,
+    my_class: IsfrClass,
     my_proposal_bps: i32,
 ) {
     info!(agent = %me_name, "coordinator loop started");
@@ -461,7 +542,7 @@ async fn run_coordinator<S: commonware_p2p::Sender>(
             continue;
         };
 
-        // ---- Phase 1: Hello + announce my proposal ----
+        // ---- Phase 1: Hello + announce my CLASS proposal ----
         if !job.proposal_sent {
             send_room(
                 sender,
@@ -482,7 +563,10 @@ async fn run_coordinator<S: commonware_p2p::Sender>(
                 &demo_room_id,
                 &RoomMessage::Status {
                     from_pubkey_hex: me_pubkey_hex.clone(),
-                    phase: format!("{me_name} proposes ISFR rate = {my_proposal_bps} bps"),
+                    phase: format!(
+                        "{me_name} [{}] proposes {my_proposal_bps} bps",
+                        my_class.as_str()
+                    ),
                     eta_blocks: 0,
                 },
             )
@@ -490,7 +574,7 @@ async fn run_coordinator<S: commonware_p2p::Sender>(
             tokio::time::sleep(Duration::from_millis(200)).await;
 
             // Machine-parseable proposal in PartialResult. content_ref carries
-            // the proposal in a deterministic format: "isfr_proposal/rate_bps=NNN".
+            // class + rate: "isfr_proposal/class=lending/rate_bps=550".
             send_room(
                 sender,
                 &room_key,
@@ -498,17 +582,25 @@ async fn run_coordinator<S: commonware_p2p::Sender>(
                 &RoomMessage::PartialResult {
                     from_pubkey_hex: me_pubkey_hex.clone(),
                     partial_id: 1,
-                    content_hash_hex: format!("0x{}", hex::encode(keccak256(my_proposal_bps.to_be_bytes()).0)),
-                    content_ref: format!("isfr_proposal/rate_bps={my_proposal_bps}"),
+                    content_hash_hex: format!(
+                        "0x{}",
+                        hex::encode(keccak256(my_proposal_bps.to_be_bytes()).0)
+                    ),
+                    content_ref: format!(
+                        "isfr_proposal/class={}/rate_bps={my_proposal_bps}",
+                        my_class.as_str()
+                    ),
                 },
             )
             .await;
 
-            // Record our own proposal.
+            // Record our own proposal in our class bucket.
             {
                 let mut map = active.lock().expect("active poisoned");
                 if let Some(j) = map.get_mut(&job.job_id) {
-                    j.proposals_by_peer
+                    j.proposals
+                        .entry(my_class)
+                        .or_default()
                         .insert(me_pubkey_hex.clone(), my_proposal_bps);
                     j.proposal_sent = true;
                 }
@@ -516,50 +608,74 @@ async fn run_coordinator<S: commonware_p2p::Sender>(
             info!(
                 agent = %me_name,
                 job_id = job.job_id,
+                isfr_class = %my_class,
                 my_proposal_bps,
-                "broadcast my ISFR proposal"
+                "broadcast my class proposal"
             );
 
-            // ---- Phase 2: wait for grace, then compute consensus ----
             info!(
                 agent = %me_name,
                 job_id = job.job_id,
                 grace_secs = chat_grace.as_secs(),
-                "waiting grace period to collect peer proposals"
+                "waiting grace period to collect peer per-class proposals"
             );
             tokio::time::sleep(chat_grace).await;
         }
 
-        // ---- Phase 3: compute consensus (median) ----
-        let (consensus_bps, peer_count, all_proposals) = {
+        // ---- Phase 3: compute per-class median + composite ----
+        let class_medians: HashMap<IsfrClass, i32> = {
             let map = active.lock().expect("active poisoned");
             let j = map.get(&job.job_id).cloned();
+            let mut m = HashMap::new();
             if let Some(j) = j {
-                let mut vals: Vec<i32> = j.proposals_by_peer.values().copied().collect();
-                vals.sort();
-                let count = vals.len();
-                let median = if count == 0 {
-                    my_proposal_bps
-                } else {
-                    vals[count / 2]
-                };
-                (median, count, vals)
-            } else {
-                (my_proposal_bps, 0, vec![my_proposal_bps])
+                for class in IsfrClass::all() {
+                    let bucket = j.proposals.get(&class);
+                    let median = match bucket {
+                        Some(b) if !b.is_empty() => {
+                            let mut vals: Vec<i32> = b.values().copied().collect();
+                            vals.sort();
+                            vals[vals.len() / 2]
+                        }
+                        // Fallback: no proposals for this class. Use 0 — the
+                        // composite will then under-weight, which is the
+                        // honest signal "no data this round".
+                        _ => 0,
+                    };
+                    m.insert(class, median);
+                }
             }
+            m
+        };
+
+        // Composite = sum(class_median * class_weight_bps) / 10_000.
+        // Integer math; result fits in i32 since each component is <100_000 bps.
+        let composite_bps: i32 = {
+            let mut acc: i64 = 0;
+            for class in IsfrClass::all() {
+                let val = *class_medians.get(&class).unwrap_or(&0);
+                acc += i64::from(val) * i64::from(class.governance_weight_bps());
+            }
+            (acc / 10_000) as i32
         };
 
         if !job.final_sent {
+            // Pretty-print the per-class breakdown.
+            let breakdown: Vec<(IsfrClass, i32)> = IsfrClass::all()
+                .iter()
+                .map(|c| (*c, *class_medians.get(c).unwrap_or(&0)))
+                .collect();
             info!(
                 agent = %me_name,
                 job_id = job.job_id,
-                proposals_collected = peer_count,
-                proposals = ?all_proposals,
-                consensus_bps,
-                "consensus reached — median of proposals"
+                lending = class_medians.get(&IsfrClass::Lending).copied().unwrap_or(0),
+                structured = class_medians.get(&IsfrClass::Structured).copied().unwrap_or(0),
+                funding = class_medians.get(&IsfrClass::Funding).copied().unwrap_or(0),
+                staking = class_medians.get(&IsfrClass::Staking).copied().unwrap_or(0),
+                composite_bps,
+                "consensus — per-class medians + governance-weighted composite"
             );
+            let _ = breakdown; // silenced; logged via fields above.
 
-            // Phase 4: announce consensus + sign + send Final.
             send_room(
                 sender,
                 &room_key,
@@ -567,15 +683,28 @@ async fn run_coordinator<S: commonware_p2p::Sender>(
                 &RoomMessage::Status {
                     from_pubkey_hex: me_pubkey_hex.clone(),
                     phase: format!(
-                        "{me_name} consensus reached: ISFR rate = {consensus_bps} bps; signing"
+                        "{me_name} composite ISFR = {composite_bps} bps  (L={l} S={s} F={f} K={k}); signing",
+                        l = class_medians.get(&IsfrClass::Lending).copied().unwrap_or(0),
+                        s = class_medians.get(&IsfrClass::Structured).copied().unwrap_or(0),
+                        f = class_medians.get(&IsfrClass::Funding).copied().unwrap_or(0),
+                        k = class_medians.get(&IsfrClass::Staking).copied().unwrap_or(0),
                     ),
                     eta_blocks: 0,
                 },
             )
             .await;
 
-            // result_hash = keccak256(consensus_bps_be) — deterministic given consensus.
-            let result_hash = keccak256(consensus_bps.to_be_bytes()).0;
+            // result_hash binds all 4 class medians + composite —
+            // deterministic given the same proposal set, so all winners
+            // sign the same digest.
+            let mut packed = Vec::with_capacity(20);
+            for class in IsfrClass::all() {
+                packed.extend_from_slice(
+                    &class_medians.get(&class).copied().unwrap_or(0).to_be_bytes(),
+                );
+            }
+            packed.extend_from_slice(&composite_bps.to_be_bytes());
+            let result_hash = keccak256(&packed).0;
 
             // digest = keccak256(RESULT_DOMAIN || id || resultHash).
             let mut packed = Vec::new();
@@ -603,13 +732,14 @@ async fn run_coordinator<S: commonware_p2p::Sender>(
             {
                 let mut map = active.lock().expect("active poisoned");
                 if let Some(j) = map.get_mut(&job.job_id) {
-                    j.consensus_bps = Some(consensus_bps);
+                    j.class_medians = Some(class_medians.clone());
+                    j.composite_bps = Some(composite_bps);
                     j.result_hash = Some(result_hash);
                     j.final_sent = true;
                     j.collected_sigs.insert(me_eth_addr, sig_bytes.to_vec());
                 }
             }
-            info!(agent = %me_name, job_id = job.job_id, consensus_bps, "Final sent");
+            info!(agent = %me_name, job_id = job.job_id, composite_bps, "Final sent");
         }
 
         // Phase 3: poll for sig collection completion.
@@ -803,23 +933,45 @@ async fn run_recv_loop<R: commonware_p2p::Receiver>(
                         );
                     }
                     RoomMessage::PartialResult { from_pubkey_hex, content_ref, .. } => {
-                        // Parse `isfr_proposal/rate_bps=NNN`.
-                        if let Some(value_str) = content_ref.strip_prefix("isfr_proposal/rate_bps=") {
-                            if let Ok(rate_bps) = value_str.parse::<i32>() {
-                                let mut map = active.lock().expect("active poisoned");
-                                for j in map.values_mut() {
-                                    j.proposals_by_peer
-                                        .insert(from_pubkey_hex.clone(), rate_bps);
-                                    info!(
+                        // Parse `isfr_proposal/class=lending/rate_bps=550`.
+                        if let Some(rest) = content_ref.strip_prefix("isfr_proposal/") {
+                            // Split into key=value parts.
+                            let mut class: Option<IsfrClass> = None;
+                            let mut rate: Option<i32> = None;
+                            for part in rest.split('/') {
+                                if let Some(v) = part.strip_prefix("class=") {
+                                    class = v.parse::<IsfrClass>().ok();
+                                } else if let Some(v) = part.strip_prefix("rate_bps=") {
+                                    rate = v.parse::<i32>().ok();
+                                }
+                            }
+                            match (class, rate) {
+                                (Some(class), Some(rate_bps)) => {
+                                    let mut map = active.lock().expect("active poisoned");
+                                    for j in map.values_mut() {
+                                        j.proposals
+                                            .entry(class)
+                                            .or_default()
+                                            .insert(from_pubkey_hex.clone(), rate_bps);
+                                        let total: usize =
+                                            j.proposals.values().map(|m| m.len()).sum();
+                                        info!(
+                                            agent = %me_name,
+                                            from_peer = %short(&peer_hex),
+                                            isfr_class = %class,
+                                            rate_bps,
+                                            proposals_total = total,
+                                            "📊 received ISFR class proposal"
+                                        );
+                                    }
+                                }
+                                _ => {
+                                    warn!(
                                         agent = %me_name,
-                                        from_peer = %short(&peer_hex),
-                                        rate_bps,
-                                        proposals_now = j.proposals_by_peer.len(),
-                                        "📊 received ISFR proposal"
+                                        %content_ref,
+                                        "could not parse class+rate in PartialResult"
                                     );
                                 }
-                            } else {
-                                warn!(agent = %me_name, %content_ref, "bad rate in PartialResult");
                             }
                         }
                     }
