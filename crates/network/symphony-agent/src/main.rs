@@ -125,6 +125,18 @@ struct Cli {
     #[arg(long, env = "AGENT_CHAT_GRACE_SECS", default_value = "4")]
     chat_grace_secs: u64,
 
+    /// This agent's "private view" of the current ISFR rate (in basis points).
+    /// Each agent has a different target so the chat conversation shows real
+    /// disagreement → consensus. Production keepers replace this with reads
+    /// from real yield sources (Aave / Compound / Ethena / etc.).
+    #[arg(long, env = "AGENT_ISFR_TARGET_BPS", default_value = "690")]
+    isfr_target_bps: i32,
+
+    /// Random walk volatility around `isfr_target_bps`. Each tick the proposal
+    /// can move +/- this many bps. Default 8 ⇒ proposals land in [target-8, target+8].
+    #[arg(long, env = "AGENT_ISFR_VOLATILITY_BPS", default_value = "8")]
+    isfr_volatility_bps: i32,
+
     /// Stop the agent after one job is settled. Useful for the demo so the
     /// process exits cleanly. 0 = run forever.
     #[arg(long, env = "AGENT_EXIT_AFTER_SETTLE", default_value = "true")]
@@ -132,16 +144,27 @@ struct Cli {
 }
 
 /// State machine entry: a job we were awarded and are coordinating on.
+/// The job represents collectively agreeing on the current ISFR rate. Each
+/// agent broadcasts its private proposal, listens to peers' proposals,
+/// and the consensus is the median.
 #[derive(Clone)]
 struct ActiveJob {
     job_id: u64,
     winners: Vec<Address>,
     room_id: [u8; 32],
-    /// Sigs collected from the room (keyed by winner address).
+    /// Each agent's ISFR rate proposal in basis points. Keyed by ed25519
+    /// chat-pubkey-hex (so duplicates are deduped). Includes our own.
+    proposals_by_peer: HashMap<String, i32>,
+    /// Computed consensus rate (median) once we've collected enough proposals.
+    consensus_bps: Option<i32>,
+    /// Sigs collected from the room (keyed by winner EVM address).
     collected_sigs: HashMap<Address, Vec<u8>>,
-    /// The deterministic result hash all winners agree on.
-    result_hash: [u8; 32],
-    /// Whether we've sent our Final message already (don't send twice).
+    /// The deterministic result hash = keccak256(consensus_bps_be) — all
+    /// winners arrive at the same value because they see the same proposals.
+    result_hash: Option<[u8; 32]>,
+    /// Whether we've sent our PartialResult (proposal) already.
+    proposal_sent: bool,
+    /// Whether we've sent our Final message already.
     final_sent: bool,
     /// Whether we've called submitMulti already (don't submit twice).
     submitted: bool,
@@ -278,6 +301,20 @@ where
             });
     }
 
+    // Compute this agent's private ISFR proposal (random walk around target).
+    let my_proposal_bps: i32 = {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let delta: i32 = rng.gen_range(-cli.isfr_volatility_bps..=cli.isfr_volatility_bps);
+        cli.isfr_target_bps + delta
+    };
+    info!(
+        agent = %cli.name,
+        isfr_target = cli.isfr_target_bps,
+        my_proposal_bps,
+        "computed private ISFR proposal (random walk from target)"
+    );
+
     // ---- Spawn chat send + submitter coordinator ----
     {
         let active_clone = active.clone();
@@ -287,6 +324,7 @@ where
         let chat_grace = Duration::from_secs(cli.chat_grace_secs);
         let exit_after_settle = cli.exit_after_settle;
         let mut sender_owned = sender;
+        let me_pubkey_hex_clone = me_pubkey_hex.clone();
         context
             .with_label("symphony-coord")
             .spawn(move |_| async move {
@@ -295,7 +333,7 @@ where
                     room_key,
                     demo_room_id,
                     me_eth_addr,
-                    me_pubkey_hex.clone(),
+                    me_pubkey_hex_clone,
                     market_addr,
                     provider_rpc,
                     eth_signer_clone,
@@ -303,6 +341,7 @@ where
                     cli_name,
                     chat_grace,
                     exit_after_settle,
+                    my_proposal_bps,
                 )
                 .await;
             });
@@ -356,19 +395,18 @@ async fn run_chain_watcher(
                     continue;
                 }
 
-                // Compute deterministic result hash all winners agree on.
-                // For the demo: keccak256("symphony-demo-result-v1" || job_id_be).
-                let mut packed = Vec::with_capacity(40);
-                packed.extend_from_slice(b"symphony-demo-result-v1");
-                packed.extend_from_slice(&job_id.to_be_bytes());
-                let result_hash = keccak256(&packed).0;
-
+                // ISFR consensus job: result_hash gets computed AFTER chat
+                // discussion (median of all winners' proposals). Coordinator
+                // will set it when consensus is reached.
                 let entry = ActiveJob {
                     job_id,
                     winners,
                     room_id: room_id_b.0,
+                    proposals_by_peer: HashMap::new(),
+                    consensus_bps: None,
                     collected_sigs: HashMap::new(),
-                    result_hash,
+                    result_hash: None,
+                    proposal_sent: false,
                     final_sent: false,
                     submitted: false,
                 };
@@ -377,8 +415,7 @@ async fn run_chain_watcher(
                 info!(
                     agent = %me_name,
                     job_id,
-                    result_hash_hex = %hex::encode(result_hash),
-                    "ActiveJob seeded; coordinator will sign + send Final after grace period"
+                    "ActiveJob seeded; coordinator will broadcast ISFR proposal + compute consensus"
                 );
             }
             Err(err) => error!(?err, "decode JobAwarded failed"),
@@ -387,9 +424,16 @@ async fn run_chain_watcher(
     Ok(())
 }
 
-/// Coordinator loop: when an active job is seeded, send Hello/Status/PartialResult,
-/// then after the grace period sign + send Final. When all winners' sigs are
-/// collected, the lowest-address winner submits via submitMulti.
+/// Coordinator loop with explicit ISFR-discussion protocol:
+/// 1. Hello (introduce self)
+/// 2. Status — announce my proposed ISFR rate ("alice proposes rate=685 bps")
+/// 3. PartialResult — broadcast the same proposal in machine-parseable form
+/// 4. Wait for grace period to collect peers' proposals
+/// 5. Compute consensus (median of all proposals, including my own)
+/// 6. Status — announce the consensus ("consensus=692 bps; signing")
+/// 7. Sign keccak256(RESULT_DOMAIN || id || keccak256(consensus_bps_be))
+/// 8. Final — broadcast result_hash + signature
+/// 9. When all winners' sigs collected, lowest-address winner calls submitMulti
 #[allow(clippy::too_many_arguments)]
 async fn run_coordinator<S: commonware_p2p::Sender>(
     sender: &mut S,
@@ -404,10 +448,10 @@ async fn run_coordinator<S: commonware_p2p::Sender>(
     me_name: String,
     chat_grace: Duration,
     exit_after_settle: bool,
+    my_proposal_bps: i32,
 ) {
     info!(agent = %me_name, "coordinator loop started");
     loop {
-        // Wait until at least one active job exists.
         let job_opt = {
             let map = active.lock().expect("active poisoned");
             map.values().next().cloned()
@@ -417,8 +461,8 @@ async fn run_coordinator<S: commonware_p2p::Sender>(
             continue;
         };
 
-        // Phase 1: send Hello + Status (if not already done).
-        if !job.final_sent {
+        // ---- Phase 1: Hello + announce my proposal ----
+        if !job.proposal_sent {
             send_room(
                 sender,
                 &room_key,
@@ -429,42 +473,118 @@ async fn run_coordinator<S: commonware_p2p::Sender>(
                 },
             )
             .await;
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+
+            // Human-readable proposal in Status (visible in logs).
             send_room(
                 sender,
                 &room_key,
                 &demo_room_id,
                 &RoomMessage::Status {
                     from_pubkey_hex: me_pubkey_hex.clone(),
-                    phase: format!("{me_name} computing"),
-                    eta_blocks: 5,
+                    phase: format!("{me_name} proposes ISFR rate = {my_proposal_bps} bps"),
+                    eta_blocks: 0,
+                },
+            )
+            .await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+
+            // Machine-parseable proposal in PartialResult. content_ref carries
+            // the proposal in a deterministic format: "isfr_proposal/rate_bps=NNN".
+            send_room(
+                sender,
+                &room_key,
+                &demo_room_id,
+                &RoomMessage::PartialResult {
+                    from_pubkey_hex: me_pubkey_hex.clone(),
+                    partial_id: 1,
+                    content_hash_hex: format!("0x{}", hex::encode(keccak256(my_proposal_bps.to_be_bytes()).0)),
+                    content_ref: format!("isfr_proposal/rate_bps={my_proposal_bps}"),
                 },
             )
             .await;
 
-            // Phase 2: wait for grace period then sign + send Final.
+            // Record our own proposal.
+            {
+                let mut map = active.lock().expect("active poisoned");
+                if let Some(j) = map.get_mut(&job.job_id) {
+                    j.proposals_by_peer
+                        .insert(me_pubkey_hex.clone(), my_proposal_bps);
+                    j.proposal_sent = true;
+                }
+            }
+            info!(
+                agent = %me_name,
+                job_id = job.job_id,
+                my_proposal_bps,
+                "broadcast my ISFR proposal"
+            );
+
+            // ---- Phase 2: wait for grace, then compute consensus ----
             info!(
                 agent = %me_name,
                 job_id = job.job_id,
                 grace_secs = chat_grace.as_secs(),
-                "waiting grace period before Final"
+                "waiting grace period to collect peer proposals"
             );
             tokio::time::sleep(chat_grace).await;
+        }
 
-            // Compute result digest = keccak256(RESULT_DOMAIN || id || resultHash).
+        // ---- Phase 3: compute consensus (median) ----
+        let (consensus_bps, peer_count, all_proposals) = {
+            let map = active.lock().expect("active poisoned");
+            let j = map.get(&job.job_id).cloned();
+            if let Some(j) = j {
+                let mut vals: Vec<i32> = j.proposals_by_peer.values().copied().collect();
+                vals.sort();
+                let count = vals.len();
+                let median = if count == 0 {
+                    my_proposal_bps
+                } else {
+                    vals[count / 2]
+                };
+                (median, count, vals)
+            } else {
+                (my_proposal_bps, 0, vec![my_proposal_bps])
+            }
+        };
+
+        if !job.final_sent {
+            info!(
+                agent = %me_name,
+                job_id = job.job_id,
+                proposals_collected = peer_count,
+                proposals = ?all_proposals,
+                consensus_bps,
+                "consensus reached — median of proposals"
+            );
+
+            // Phase 4: announce consensus + sign + send Final.
+            send_room(
+                sender,
+                &room_key,
+                &demo_room_id,
+                &RoomMessage::Status {
+                    from_pubkey_hex: me_pubkey_hex.clone(),
+                    phase: format!(
+                        "{me_name} consensus reached: ISFR rate = {consensus_bps} bps; signing"
+                    ),
+                    eta_blocks: 0,
+                },
+            )
+            .await;
+
+            // result_hash = keccak256(consensus_bps_be) — deterministic given consensus.
+            let result_hash = keccak256(consensus_bps.to_be_bytes()).0;
+
+            // digest = keccak256(RESULT_DOMAIN || id || resultHash).
             let mut packed = Vec::new();
             packed.extend_from_slice(RESULT_DOMAIN);
             packed.extend_from_slice(&U256::from(job.job_id).to_be_bytes::<32>());
-            packed.extend_from_slice(&job.result_hash);
+            packed.extend_from_slice(&result_hash);
             let digest = keccak256(&packed);
 
-            // Sign with EVM private key. alloy returns a Signature; we need
-            // the (r, s, v) bytes packed for ecrecover. The `as_bytes` on the
-            // signature gives 65-byte (r||s||v) representation.
-            let sig = eth_signer
-                .sign_hash(&digest)
-                .await
-                .expect("sign digest");
+            let sig = eth_signer.sign_hash(&digest).await.expect("sign digest");
             let sig_bytes = sig.as_bytes();
             let sig_hex = format!("0x{}", hex::encode(sig_bytes));
 
@@ -474,21 +594,22 @@ async fn run_coordinator<S: commonware_p2p::Sender>(
                 &demo_room_id,
                 &RoomMessage::Final {
                     from_pubkey_hex: me_pubkey_hex.clone(),
-                    result_hash_hex: format!("0x{}", hex::encode(job.result_hash)),
+                    result_hash_hex: format!("0x{}", hex::encode(result_hash)),
                     signature_hex: sig_hex.clone(),
                 },
             )
             .await;
 
-            // Mark final_sent + record our own sig.
             {
                 let mut map = active.lock().expect("active poisoned");
                 if let Some(j) = map.get_mut(&job.job_id) {
+                    j.consensus_bps = Some(consensus_bps);
+                    j.result_hash = Some(result_hash);
                     j.final_sent = true;
                     j.collected_sigs.insert(me_eth_addr, sig_bytes.to_vec());
                 }
             }
-            info!(agent = %me_name, job_id = job.job_id, "Final sent + own sig recorded");
+            info!(agent = %me_name, job_id = job.job_id, consensus_bps, "Final sent");
         }
 
         // Phase 3: poll for sig collection completion.
@@ -592,6 +713,9 @@ async fn submit_multi(
         );
     }
 
+    let result_hash = job
+        .result_hash
+        .ok_or_else(|| eyre::eyre!("result_hash not set"))?;
     let wallet = EthereumWallet::from(eth_signer.clone());
     let provider = ProviderBuilder::new()
         .wallet(wallet)
@@ -599,7 +723,7 @@ async fn submit_multi(
         .await
         .context("submit_multi ws connect")?;
     let market = IMultiAgentMarket::new(market_addr, &provider);
-    let result_hash_b: FixedBytes<32> = job.result_hash.into();
+    let result_hash_b: FixedBytes<32> = result_hash.into();
 
     let pending = market
         .submitMulti(U256::from(job_id), result_hash_b, sigs)
@@ -666,79 +790,106 @@ async fn run_recv_loop<R: commonware_p2p::Receiver>(
                     "RX"
                 );
 
-                if let RoomMessage::Final {
-                    from_pubkey_hex: _,
-                    result_hash_hex,
-                    signature_hex,
-                } = &msg
-                {
-                    // Match the result hash to the active job. Any active job
-                    // with matching result_hash records the sig.
-                    let result_hash = match parse_hex_32(result_hash_hex) {
-                        Ok(h) => h,
-                        Err(_) => {
-                            warn!(agent = %me_name, "bad result_hash in Final");
-                            continue;
-                        }
-                    };
-                    let sig = match parse_hex_bytes(signature_hex) {
-                        Ok(b) => b,
-                        Err(_) => {
-                            warn!(agent = %me_name, "bad signature in Final");
-                            continue;
-                        }
-                    };
-
-                    // Recover the signer address from the digest+sig — that's
-                    // the EVM address whose sig we record.
-                    let mut map = active.lock().expect("active poisoned");
-                    for j in map.values_mut() {
-                        if j.result_hash != result_hash {
-                            continue;
-                        }
-                        // digest = keccak256(RESULT_DOMAIN || id_be || result_hash)
-                        let mut packed = Vec::new();
-                        packed.extend_from_slice(RESULT_DOMAIN);
-                        packed.extend_from_slice(&U256::from(j.job_id).to_be_bytes::<32>());
-                        packed.extend_from_slice(&j.result_hash);
-                        let digest = keccak256(&packed);
-                        if sig.len() != 65 {
-                            warn!(agent = %me_name, "Final sig wrong length");
-                            continue;
-                        }
-                        let sig_arr: [u8; 65] = sig.clone().try_into().expect("len 65 checked");
-                        let alloy_sig = match alloy::signers::Signature::from_raw(&sig_arr) {
-                            Ok(s) => s,
-                            Err(err) => {
-                                warn!(agent = %me_name, ?err, "sig parse failed");
-                                continue;
-                            }
-                        };
-                        let recovered = match alloy_sig.recover_address_from_prehash(&digest) {
-                            Ok(a) => a,
-                            Err(err) => {
-                                warn!(agent = %me_name, ?err, "recover failed");
-                                continue;
-                            }
-                        };
-                        if !j.winners.contains(&recovered) {
-                            debug!(
-                                agent = %me_name,
-                                recovered = %recovered,
-                                "Final sig from non-winner; ignoring"
-                            );
-                            continue;
-                        }
-                        j.collected_sigs.insert(recovered, sig.clone());
+                // Branch on message kind. PartialResult carries an ISFR
+                // proposal; Final carries result_hash + sig; Status is purely
+                // informational (visible in logs).
+                match &msg {
+                    RoomMessage::Status { phase, .. } => {
+                        // Surface the conversation prominently.
                         info!(
                             agent = %me_name,
-                            from_eth = %recovered,
-                            job_id = j.job_id,
-                            sigs_total = j.collected_sigs.len(),
-                            of = j.winners.len(),
-                            "sig recorded from peer Final"
+                            from_peer = %short(&peer_hex),
+                            "💬 {phase}"
                         );
                     }
+                    RoomMessage::PartialResult { from_pubkey_hex, content_ref, .. } => {
+                        // Parse `isfr_proposal/rate_bps=NNN`.
+                        if let Some(value_str) = content_ref.strip_prefix("isfr_proposal/rate_bps=") {
+                            if let Ok(rate_bps) = value_str.parse::<i32>() {
+                                let mut map = active.lock().expect("active poisoned");
+                                for j in map.values_mut() {
+                                    j.proposals_by_peer
+                                        .insert(from_pubkey_hex.clone(), rate_bps);
+                                    info!(
+                                        agent = %me_name,
+                                        from_peer = %short(&peer_hex),
+                                        rate_bps,
+                                        proposals_now = j.proposals_by_peer.len(),
+                                        "📊 received ISFR proposal"
+                                    );
+                                }
+                            } else {
+                                warn!(agent = %me_name, %content_ref, "bad rate in PartialResult");
+                            }
+                        }
+                    }
+                    RoomMessage::Final { result_hash_hex, signature_hex, .. } => {
+                        let Ok(result_hash) = parse_hex_32(result_hash_hex) else {
+                            warn!(agent = %me_name, "bad result_hash in Final");
+                            continue;
+                        };
+                        let Ok(sig) = parse_hex_bytes(signature_hex) else {
+                            warn!(agent = %me_name, "bad signature in Final");
+                            continue;
+                        };
+                        if sig.len() != 65 {
+                            warn!(agent = %me_name, len = sig.len(), "Final sig wrong length");
+                            continue;
+                        }
+                        let mut map = active.lock().expect("active poisoned");
+                        for j in map.values_mut() {
+                            // Match by result_hash if we've already set ours,
+                            // else accept the FIRST result_hash we see (so peer
+                            // Finals seed us with the consensus too).
+                            match j.result_hash {
+                                Some(rh) if rh != result_hash => continue,
+                                _ => {}
+                            }
+                            // digest = keccak256(RESULT_DOMAIN || id_be || result_hash)
+                            let mut packed = Vec::new();
+                            packed.extend_from_slice(RESULT_DOMAIN);
+                            packed.extend_from_slice(&U256::from(j.job_id).to_be_bytes::<32>());
+                            packed.extend_from_slice(&result_hash);
+                            let digest = keccak256(&packed);
+                            let sig_arr: [u8; 65] = match sig.clone().try_into() {
+                                Ok(a) => a,
+                                Err(_) => continue,
+                            };
+                            let Ok(alloy_sig) = alloy::signers::Signature::from_raw(&sig_arr) else {
+                                warn!(agent = %me_name, "sig parse failed");
+                                continue;
+                            };
+                            let Ok(recovered) = alloy_sig.recover_address_from_prehash(&digest) else {
+                                warn!(agent = %me_name, "recover failed");
+                                continue;
+                            };
+                            if !j.winners.contains(&recovered) {
+                                debug!(
+                                    agent = %me_name,
+                                    recovered = %recovered,
+                                    "Final sig from non-winner; ignoring"
+                                );
+                                continue;
+                            }
+                            j.collected_sigs.insert(recovered, sig.clone());
+                            // If we hadn't set our result_hash yet (peer beat us
+                            // to consensus broadcast), adopt theirs — this is
+                            // safe because consensus is deterministic given the
+                            // same proposal set.
+                            if j.result_hash.is_none() {
+                                j.result_hash = Some(result_hash);
+                            }
+                            info!(
+                                agent = %me_name,
+                                from_eth = %recovered,
+                                job_id = j.job_id,
+                                sigs_total = j.collected_sigs.len(),
+                                of = j.winners.len(),
+                                "✅ sig recorded from peer Final"
+                            );
+                        }
+                    }
+                    _ => {}
                 }
             }
             Err(err) => {
