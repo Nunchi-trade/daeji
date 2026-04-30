@@ -7,6 +7,7 @@
 
 pub mod card;
 pub mod chain;
+pub mod lobby;
 pub mod messages;
 pub mod registry;
 pub mod room;
