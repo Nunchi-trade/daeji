@@ -1,0 +1,30 @@
+[package]
+name = "isfr-keeper-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Long-running ISFR keeper agent. Subscribes to chain, calculates a rate, submits to ISFROracle via signed tx. Modeled after roko-chain-watcher's reactor pattern."
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+hex.workspace = true
+eyre.workspace = true
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Chain interaction (alloy WS subscription + signed tx submission).
+alloy = { version = "2.0.4", features = ["full", "providers", "rpc-types-eth", "sol-types", "contract", "network", "signer-local"] }
+futures = "0.3"
+rand = "0.8"
+
+[[bin]]
+name = "isfr-keeper-agent"
+path = "src/main.rs"
