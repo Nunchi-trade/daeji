@@ -22,6 +22,7 @@ use eyre::Result;
 mod abi;
 mod commands;
 mod config;
+mod daemon;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -65,6 +66,11 @@ enum Cmd {
     Mining(commands::mining::Args),
     /// Show resolved deployment configuration + accounts.
     Show,
+    /// JSON-RPC daemon mode for IDE / editor integration. Reads
+    /// newline-delimited JSON-RPC 2.0 requests on stdin, writes responses
+    /// (and chain-event notifications) to stdout. Methods mirror the CLI
+    /// subcommands 1:1 (e.g. `symphony.post`, `agent.register`).
+    Daemon,
 }
 
 #[tokio::main]
@@ -87,5 +93,6 @@ async fn main() -> Result<()> {
         Cmd::Isfr(args) => commands::isfr::run(&cfg, args).await,
         Cmd::Mining(args) => commands::mining::run(&cfg, args).await,
         Cmd::Show => commands::show(&cfg, cli.json),
+        Cmd::Daemon => daemon::run(&cfg).await,
     }
 }
