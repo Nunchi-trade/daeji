@@ -173,6 +173,19 @@ where
         return Err(ChatServiceError::Disabled);
     }
 
+    // Runtime kill switch (canonical-plan §19 B2.3): an operator can disable
+    // chat without touching config or recompiling by setting DAEJI_CHAT_DISABLED
+    // to a truthy value. The check here gates startup; the supervisor wrapper
+    // (PR-Daeji-G follow-up) will re-check on each respawn so SIGUSR1 + env-var
+    // flip can disable a running chat without restarting kora.
+    if crate::supervisor::disabled_via_env() {
+        info!(
+            env_var = crate::supervisor::DISABLE_ENV_VAR,
+            "chat: disabled via env var; not starting"
+        );
+        return Err(ChatServiceError::Disabled);
+    }
+
     let signer = ed25519::PrivateKey::from_seed(config.me_seed);
     info!(
         seed = config.me_seed,
