@@ -155,12 +155,28 @@ where
             ?block_digest,
             height,
             txs = block.txs.len(),
+            mempool_size = mempool_len,
+            excluded_size = excluded_len,
+            available_to_drain = mempool_len.saturating_sub(excluded_len),
             snapshot_ms = snapshot_elapsed.as_millis(),
             exec_ms = exec_elapsed.as_millis(),
             root_ms = root_elapsed.as_millis(),
             total_ms = total_elapsed.as_millis(),
             "built block"
         );
+        // Highlight drain-rate degradation: if mempool has lots of unincluded
+        // txs but we drained only a tiny fraction, log a separate WARN so
+        // operators can spot the load-test failure mode without noise from
+        // healthy idle blocks.
+        let available = mempool_len.saturating_sub(excluded_len);
+        if available > self.max_txs && block.txs.len() < self.max_txs / 4 {
+            warn!(
+                drained = block.txs.len(),
+                available,
+                max_txs = self.max_txs,
+                "build_block: drained <25% of available capacity while mempool is deep — producer drain may be degraded under load"
+            );
+        }
         Some(block)
     }
 
