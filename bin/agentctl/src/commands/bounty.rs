@@ -4,10 +4,7 @@
 //! mints. On production, `mint` is a no-op (the token has no public mint)
 //! and the operator must already hold balance.
 
-use crate::{
-    abi::{IMockERC20, IMultiAgentMarket},
-    config::Config,
-};
+use crate::{abi::IMockERC20, config::Config};
 use alloy::{
     network::EthereumWallet,
     primitives::{Address, U256},

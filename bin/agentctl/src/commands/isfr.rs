@@ -77,10 +77,12 @@ pub async fn run(cfg: &Config, args: Args) -> Result<()> {
                 .addrs
                 .multi_agent_market
                 .ok_or_else(|| eyre::eyre!("multi_agent_market address not set"))?;
-            let oracle = cfg
-                .addrs
-                .isfr_oracle
-                .ok_or_else(|| eyre::eyre!("isfr_oracle address not set"))?;
+            // ISFROracle is optional at registration time. Deployments that
+            // don't yet ship the R5 oracle stack (e.g. the symphony-demo
+            // branch) can still register the canonical jobType; the metadata
+            // encodes `address(0)` for the oracle and an off-chain keeper
+            // bridges the consensus rate later.
+            let oracle = cfg.addrs.isfr_oracle.unwrap_or(alloy::primitives::Address::ZERO);
 
             let wallet = EthereumWallet::from(cfg.signer.clone());
             let provider = ProviderBuilder::new()
@@ -90,7 +92,7 @@ pub async fn run(cfg: &Config, args: Args) -> Result<()> {
 
             let job_type: FixedBytes<32> = keccak256(b"isfr-consensus");
             // metadata = abi.encode(MULTI_AGENT_MARKET, ISFR_ORACLE) — both
-            // 20-byte addresses, padded.
+            // 20-byte addresses, padded. ISFR_ORACLE may be address(0).
             let metadata = encode_two_addrs(mam, oracle);
             let pending = registry
                 .register(
@@ -116,6 +118,9 @@ pub async fn run(cfg: &Config, args: Args) -> Result<()> {
             println!("  min_bounty        : {min_bounty}");
             println!("  max_deadline_off  : {max_deadline_offset}s");
             println!("  metadata (mam,oracle) : {mam:#x}, {oracle:#x}");
+            if oracle == alloy::primitives::Address::ZERO {
+                println!("  note              : oracle is address(0); deploy ISFROracle and re-register to wire the bridge");
+            }
             println!("  tx_hash           : {tx_hash:#x}");
         }
         Cmd::PostSymphony { markets, bounty: bounty_amt, num_agents, auto_fund } => {
