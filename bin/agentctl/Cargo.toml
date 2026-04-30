@@ -1,0 +1,30 @@
+[package]
+name = "agentctl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Operator + agent CLI for the Daeji agent-coordination layer (canonical-plan §22 Phase α). Wraps MultiAgentMarket / ISFROracle / AgentRegistry / WorkerRegistry contract calls + reads a deployment-registry.json so operators don't memorize Solidity ABIs."
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+hex.workspace = true
+eyre.workspace = true
+clap = { version = "4.5", features = ["derive", "env"] }
+toml = "0.8"
+dirs = "5"
+
+# Chain interaction (alloy WS + signed tx submission).
+alloy = { version = "2.0.4", features = ["full", "providers", "rpc-types-eth", "sol-types", "contract", "network", "signer-local"] }
+
+[[bin]]
+name = "agentctl"
+path = "src/main.rs"
