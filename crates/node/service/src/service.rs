@@ -146,7 +146,7 @@ impl LegacyNodeService {
                 let chat_ctx = context.clone();
                 tracing::info!(
                     bind_port = chat_cfg.bind_port,
-                    job_id = %chat_cfg.job_id,
+                    seeded_jobs = chat_cfg.seed_jobs.len(),
                     "starting chat service"
                 );
                 context.with_label("chat").spawn(move |_| async move {
