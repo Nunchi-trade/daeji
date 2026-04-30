@@ -36,6 +36,19 @@ sol! {
 
     #[sol(rpc)]
     interface IMultiAgentMarket {
+        struct Job {
+            address poster;
+            uint256 bounty;
+            uint64 deadline;
+            uint64 requiredCapabilities;
+            uint8 numAgents;
+            bytes32 specHash;
+            bytes32 resultHash;
+            bytes32 roomId;
+            uint8 state;
+            bool accepted;
+        }
+
         function postMultiJob(
             bytes32 specHash,
             uint256 bounty,
@@ -53,6 +66,7 @@ sol! {
         function resolve(uint256 id, bool accepted) external;
 
         function stateOf(uint256 id) external view returns (uint8);
+        function getJob(uint256 id) external view returns (Job memory);
         function getWinners(uint256 id) external view returns (address[] memory);
     }
 

@@ -1,5 +1,5 @@
 [workspace]
-members = ["bin/*", "crates/e2e", "crates/network/*", "crates/node/*", "crates/storage/*", "crates/utilities/*"]
+members = ["bin/*", "crates/agents/*", "crates/e2e", "crates/network/*", "crates/node/*", "crates/storage/*", "crates/utilities/*"]
 default-members = ["bin/kora"]
 resolver = "2"
 

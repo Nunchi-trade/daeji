@@ -18,6 +18,7 @@ version = "0.1.0"
 dependencies = [
  "alloy",
  "clap",
+ "daeji-agent-qualification",
  "dirs",
  "eyre",
  "hex",
@@ -2408,6 +2409,14 @@ dependencies = [
  "rand_core 0.6.4",
  "subtle-ng",
  "zeroize",
+]
+
+[[package]]
+name = "daeji-agent-qualification"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

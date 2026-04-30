@@ -25,6 +25,9 @@ dirs = "5"
 # Chain interaction (alloy WS + signed tx submission).
 alloy = { version = "2.0.4", features = ["full", "providers", "rpc-types-eth", "sol-types", "contract", "network", "signer-local"] }
 
+# In-workspace lib for self-qualification + profitability scoring.
+daeji-agent-qualification = { path = "../../crates/agents/agent-qualification" }
+
 [[bin]]
 name = "agentctl"
 path = "src/main.rs"

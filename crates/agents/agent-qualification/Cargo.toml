@@ -1,0 +1,17 @@
+[package]
+name = "daeji-agent-qualification"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Self-qualification + profitability assessment for Daeji agents"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
