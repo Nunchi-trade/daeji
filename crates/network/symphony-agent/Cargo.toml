@@ -19,6 +19,9 @@ commonware-p2p.workspace = true
 commonware-runtime.workspace = true
 commonware-utils.workspace = true
 
+# Chain integration: WS subscription + signed tx submission.
+alloy = { version = "2.0.4", features = ["full", "providers", "rpc-types-eth", "sol-types", "contract", "network", "signer-local"] }
+
 # daeji-chat for room.rs helpers + RoomMessage type (so the wire format is
 # identical to what kora's chat layer speaks).
 daeji-chat = { path = "../daeji-chat" }

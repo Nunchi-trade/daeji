@@ -6458,6 +6458,7 @@ checksum = "734676eb262c623cec13c3155096e08d1f8f29adce39ba17948b18dad1e54142"
 name = "symphony-agent"
 version = "0.1.0"
 dependencies = [
+ "alloy",
  "clap",
  "commonware-codec",
  "commonware-cryptography",
