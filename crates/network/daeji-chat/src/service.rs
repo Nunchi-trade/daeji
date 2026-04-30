@@ -619,6 +619,7 @@ async fn drive_sequence<S: Sender>(
             from_pubkey_hex: me_hex.to_string(),
             result_hash_hex: "deadbeef".into(),
             signature_hex: "feedface".into(),
+            contribution_score_bps: 0,
         },
     )
     .await;
