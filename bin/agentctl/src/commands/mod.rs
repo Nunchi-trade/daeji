@@ -1,6 +1,7 @@
 //! Subcommand dispatch.
 
 pub mod agent;
+pub mod autoresearch;
 pub mod bounty;
 pub mod isfr;
 pub mod mining;

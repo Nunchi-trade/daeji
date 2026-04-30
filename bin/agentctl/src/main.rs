@@ -64,6 +64,8 @@ enum Cmd {
     Isfr(commands::isfr::Args),
     /// Mining-bounty jobs (Phase η.3 — placeholder for now).
     Mining(commands::mining::Args),
+    /// Autoresearch (Predictive-Foraging) jobs — Phase η.1.
+    Autoresearch(commands::autoresearch::Args),
     /// Show resolved deployment configuration + accounts.
     Show,
     /// JSON-RPC daemon mode for IDE / editor integration. Reads
@@ -92,6 +94,7 @@ async fn main() -> Result<()> {
         Cmd::Symphony(args) => commands::symphony::run(&cfg, args).await,
         Cmd::Isfr(args) => commands::isfr::run(&cfg, args).await,
         Cmd::Mining(args) => commands::mining::run(&cfg, args).await,
+        Cmd::Autoresearch(args) => commands::autoresearch::run(&cfg, args).await,
         Cmd::Show => commands::show(&cfg, cli.json),
         Cmd::Daemon => daemon::run(&cfg).await,
     }

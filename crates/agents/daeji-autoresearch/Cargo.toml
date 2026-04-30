@@ -1,0 +1,18 @@
+[package]
+name = "daeji-autoresearch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Predictive-Foraging types + canonical jobType for the autoresearch agent class (Phase η.1)"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+bincode = "1"
