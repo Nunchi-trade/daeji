@@ -44,9 +44,21 @@ sol! {
             uint8 numAgents
         ) external returns (uint256 id);
 
+        function postMultiJobWithMode(
+            bytes32 specHash,
+            uint256 bounty,
+            uint64 deadline,
+            uint64 requiredCapabilities,
+            uint8 numAgents,
+            uint8 mode
+        ) external returns (uint256 id);
+
         function bid(uint256 id, uint256 askPrice, uint64 etaBlocks) external;
 
         function awardJob(uint256 id, address[] calldata winners) external;
+        function awardJobRandom(uint256 id) external;
+        function resolveAuctionVickrey(uint256 id) external;
+        function resolveAuctionFirstPrice(uint256 id) external;
 
         function submitMulti(uint256 id, bytes32 resultHash, bytes[] calldata signatures) external;
 
@@ -54,6 +66,7 @@ sol! {
 
         function stateOf(uint256 id) external view returns (uint8);
         function getWinners(uint256 id) external view returns (address[] memory);
+        function getPayments(uint256 id) external view returns (uint256[] memory);
     }
 
     #[sol(rpc)]

@@ -1,8 +1,9 @@
 //! `agentctl symphony` — multi-agent symphony jobs (MultiAgentMarket).
 //!
-//! Phase α covers direct-pick selection (`awardJob(winners[])`). VRF random
-//! and Vickrey/first-price auctions land in Phase γ once the contracts
-//! support them.
+//! Phase α covered direct-pick selection (`awardJob(winners[])`). Phase γ adds
+//! Random / Vickrey / FirstPrice modes — the contract picks winners from the
+//! bidder pool when the job is posted with a non-Direct mode and the deadline
+//! has passed.
 
 use crate::{
     abi::IMultiAgentMarket,
@@ -14,8 +15,33 @@ use alloy::{
     primitives::{Address, FixedBytes, U256},
     providers::ProviderBuilder,
 };
-use clap::{Args as ClapArgs, Subcommand};
+use clap::{Args as ClapArgs, Subcommand, ValueEnum};
 use eyre::{Context, Result};
+
+/// On-chain `MultiAgentMarket.SelectionMode`.
+#[derive(Debug, Clone, Copy, ValueEnum, Default, PartialEq, Eq)]
+pub enum SelectionMode {
+    /// Poster picks winners directly via `awardJob`. Default for backwards-compat.
+    #[default]
+    Direct,
+    /// Resolver triggers blockhash-seeded random pick from bidders post-deadline.
+    Random,
+    /// Resolver triggers Vickrey uniform-pay auction (top-N by rep-adjusted score; clearing = (N+1)-th lowest bid).
+    Vickrey,
+    /// Resolver triggers first-price pay-as-bid auction (top-N by raw price; each pays own bid).
+    FirstPrice,
+}
+
+impl SelectionMode {
+    const fn as_u8(self) -> u8 {
+        match self {
+            Self::Direct => 0,
+            Self::Random => 1,
+            Self::Vickrey => 2,
+            Self::FirstPrice => 3,
+        }
+    }
+}
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
@@ -45,6 +71,11 @@ enum Cmd {
         /// Number of agents to award.
         #[arg(long)]
         num_agents: u8,
+        /// Selection mode. `direct` = poster picks via `award`; `random` = resolver
+        /// picks blockhash-seeded post-deadline; `vickrey` / `first-price` =
+        /// resolver runs the corresponding auction post-deadline.
+        #[arg(long, value_enum, default_value = "direct")]
+        selection: SelectionMode,
         /// Mint + approve the bounty before posting.
         #[arg(long, default_value = "false")]
         auto_fund: bool,
@@ -62,12 +93,23 @@ enum Cmd {
     },
     /// Show job state, winners, and (if any) submissions.
     Status { job_id: u64 },
-    /// Award the job. Direct-pick only in Phase α.
+    /// Award the job. For direct-pick jobs, pass `--winners`. For Random / Vickrey /
+    /// FirstPrice jobs, the resolver picks via the corresponding auction trigger;
+    /// pass `--random`, `--vickrey`, or `--first-price` (mutually exclusive).
     Award {
         job_id: u64,
-        /// Comma-separated winner addresses.
-        #[arg(long, value_delimiter = ',')]
+        /// Comma-separated winner addresses (direct-pick only).
+        #[arg(long, value_delimiter = ',', conflicts_with_all = ["random", "vickrey", "first_price"])]
         winners: Vec<Address>,
+        /// Trigger blockhash-random selection (job must be posted with --selection=random).
+        #[arg(long, conflicts_with_all = ["winners", "vickrey", "first_price"])]
+        random: bool,
+        /// Trigger Vickrey auction resolution (job must be posted with --selection=vickrey).
+        #[arg(long, conflicts_with_all = ["winners", "random", "first_price"])]
+        vickrey: bool,
+        /// Trigger first-price auction resolution (job must be posted with --selection=first-price).
+        #[arg(long, conflicts_with_all = ["winners", "random", "vickrey"])]
+        first_price: bool,
     },
     /// Resolve the job (resolver only). Pays winners on accept; refunds poster on reject.
     Resolve {
@@ -100,6 +142,7 @@ pub async fn run(cfg: &Config, args: Args) -> Result<()> {
             deadline,
             required_capabilities,
             num_agents,
+            selection,
             auto_fund,
         } => {
             let spec = match (spec_hash, spec_content) {
@@ -116,11 +159,26 @@ pub async fn run(cfg: &Config, args: Args) -> Result<()> {
                 println!("[post] auto-funding bounty: {bounty} wei");
                 bounty::auto_fund(cfg, bounty).await?;
             }
-            let pending = market
-                .postMultiJob(spec, bounty, deadline, required_capabilities, num_agents)
-                .send()
-                .await
-                .context("postMultiJob send")?;
+            let pending = if selection == SelectionMode::Direct {
+                market
+                    .postMultiJob(spec, bounty, deadline, required_capabilities, num_agents)
+                    .send()
+                    .await
+                    .context("postMultiJob send")?
+            } else {
+                market
+                    .postMultiJobWithMode(
+                        spec,
+                        bounty,
+                        deadline,
+                        required_capabilities,
+                        num_agents,
+                        selection.as_u8(),
+                    )
+                    .send()
+                    .await
+                    .context("postMultiJobWithMode send")?
+            };
             let tx_hash = *pending.tx_hash();
             let receipt = pending.with_required_confirmations(1).get_receipt().await?;
             if !receipt.status() {
@@ -135,9 +193,16 @@ pub async fn run(cfg: &Config, args: Args) -> Result<()> {
             println!("  deadline (unix)   : {deadline}");
             println!("  num_agents        : {num_agents}");
             println!("  required_capabs   : {required_capabilities:#018b}");
+            println!("  selection         : {:?}", selection);
             println!("  tx_hash           : {tx_hash:#x}");
             println!("  block             : {}", receipt.block_number.unwrap_or_default());
-            println!("  next: agents bid; operator runs `symphony award <job_id> --winners ...`");
+            let next_hint = match selection {
+                SelectionMode::Direct => "agents bid; operator runs `symphony award <job_id> --winners ...`",
+                SelectionMode::Random => "agents bid; after deadline, resolver runs `symphony award <job_id> --random`",
+                SelectionMode::Vickrey => "agents bid; after deadline, resolver runs `symphony award <job_id> --vickrey`",
+                SelectionMode::FirstPrice => "agents bid; after deadline, resolver runs `symphony award <job_id> --first-price`",
+            };
+            println!("  next: {next_hint}");
         }
         Cmd::Bid { job_id, price, eta_blocks } => {
             let pending = market
@@ -170,21 +235,50 @@ pub async fn run(cfg: &Config, args: Args) -> Result<()> {
                 }
             }
         }
-        Cmd::Award { job_id, winners } => {
-            if winners.is_empty() {
-                eyre::bail!("--winners cannot be empty");
-            }
-            let pending = market.awardJob(U256::from(job_id), winners.clone()).send().await?;
+        Cmd::Award { job_id, winners, random, vickrey, first_price } => {
+            let id = U256::from(job_id);
+            let pending = match (winners.is_empty(), random, vickrey, first_price) {
+                (false, false, false, false) => {
+                    market.awardJob(id, winners.clone()).send().await
+                        .context("awardJob send")?
+                }
+                (true, true, false, false) => {
+                    market.awardJobRandom(id).send().await.context("awardJobRandom send")?
+                }
+                (true, false, true, false) => {
+                    market.resolveAuctionVickrey(id).send().await.context("resolveAuctionVickrey send")?
+                }
+                (true, false, false, true) => {
+                    market.resolveAuctionFirstPrice(id).send().await.context("resolveAuctionFirstPrice send")?
+                }
+                _ => eyre::bail!("specify exactly one of --winners, --random, --vickrey, --first-price"),
+            };
             let tx_hash = *pending.tx_hash();
             let receipt = pending.with_required_confirmations(1).get_receipt().await?;
             if !receipt.status() {
-                eyre::bail!("awardJob reverted: {tx_hash:#x}");
+                eyre::bail!("award reverted: {tx_hash:#x}");
             }
             println!("awarded job");
             println!("  job_id    : {job_id}");
-            println!("  winners   : {} entries", winners.len());
-            for w in &winners {
-                println!("    {w:#x}");
+            if !winners.is_empty() {
+                println!("  mode      : direct");
+                println!("  winners   : {} entries", winners.len());
+                for w in &winners {
+                    println!("    {w:#x}");
+                }
+            } else {
+                let mode = if random { "random" } else if vickrey { "vickrey" } else { "first-price" };
+                println!("  mode      : {mode}");
+                let picked = market.getWinners(id).call().await?;
+                println!("  winners   : {} entries (auction-picked)", picked.len());
+                for w in &picked {
+                    println!("    {w:#x}");
+                }
+                if vickrey || first_price {
+                    let payments = market.getPayments(id).call().await?;
+                    let total: U256 = payments.iter().copied().sum();
+                    println!("  payments  : total {total} wei across {} winners", payments.len());
+                }
             }
             println!("  tx_hash   : {tx_hash:#x}");
             println!("  next: agents coordinate via chat; one will call submitMulti; operator runs `symphony resolve <job_id> --accept`");
