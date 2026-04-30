@@ -80,6 +80,16 @@ sol! {
         int256 compositeBps,
         uint16 voterCount
     );
+
+    /// WorkerRegistry events for tier filtering. Mirrors `WorkerRegistry.sol`.
+    #[derive(Debug)]
+    event WorkerRegistered(address indexed worker, uint256 bond);
+
+    #[derive(Debug)]
+    event ReputationUpdated(address indexed worker, uint256 oldRep, uint256 newRep, bool outcome);
+
+    #[derive(Debug)]
+    event WorkerSlashed(address indexed worker, uint8 reasonCode, uint256 amount, uint256 newBond);
 }
 
 #[derive(Debug, Parser)]
@@ -108,6 +118,14 @@ struct Cli {
     /// per-market deployments are surfaced via `GET /isfr/markets`.
     #[arg(long, env = "DAEJI_INDEXER_ISFR_ORACLES", value_delimiter = ',')]
     isfr_oracles: Vec<String>,
+
+    /// WorkerRegistry contract address (0x-hex). When set, indexer subscribes to
+    /// `WorkerRegistered` / `ReputationUpdated` / `WorkerSlashed` and exposes
+    /// per-worker tier + reputation_bps + bond. Enables the `?min_tier=` filter
+    /// on `/agents` for reputation-gated job discovery (canonical-plan §0 row
+    /// "Reputation-gated").
+    #[arg(long, env = "DAEJI_INDEXER_WORKER_REGISTRY")]
+    worker_registry: Option<String>,
 
     /// Block to start scanning from. Defaults to the chain head at startup.
     #[arg(long, env = "DAEJI_INDEXER_FROM_BLOCK")]
@@ -168,6 +186,65 @@ struct IsfrRate {
     seen_at_unix: u64,
 }
 
+/// Worker reputation/bond/tier snapshot. Mirrors `WorkerRegistry.sol`'s view.
+/// `tier` is computed locally from `reputation` (matching the on-chain thresholds);
+/// decay is NOT applied — the indexer's tier reflects last-known reputation, not
+/// the lazily-decayed view. Consumers wanting strict accuracy call the contract
+/// directly. Decay-aware indexer tier is a follow-up.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Worker {
+    address: String,
+    bond: String,           // uint256 as decimal string (avoid JSON precision loss)
+    reputation: u32,        // 0..1_000_000 raw scale
+    reputation_bps: u16,    // 0..10000 (reputation / 100)
+    tier: WorkerTier,
+    block: u64,
+    seen_at_unix: u64,
+}
+
+/// Tier mirrors `WorkerRegistry.Tier` enum. Order is significant — used for
+/// `min_tier` filtering (each tier must be `>=` the requested level).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum WorkerTier {
+    Unregistered,
+    Probation,
+    Standard,
+    Trusted,
+    Elite,
+}
+
+impl WorkerTier {
+    /// Compute tier from raw reputation (0..1_000_000). Mirrors
+    /// `WorkerRegistry.tier()` view. Does NOT factor in `bond < MIN_BOND`
+    /// demotion — caller checks bond separately if needed.
+    fn from_reputation(rep: u32) -> Self {
+        if rep < 350_000 {
+            Self::Probation
+        } else if rep < 550_000 {
+            Self::Standard
+        } else if rep < 800_000 {
+            Self::Trusted
+        } else {
+            Self::Elite
+        }
+    }
+}
+
+impl std::str::FromStr for WorkerTier {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "unregistered" => Ok(Self::Unregistered),
+            "probation" => Ok(Self::Probation),
+            "standard" => Ok(Self::Standard),
+            "trusted" => Ok(Self::Trusted),
+            "elite" => Ok(Self::Elite),
+            _ => Err(format!("unknown tier: {s}")),
+        }
+    }
+}
+
 /// Latest `RangeClosed` per ISFR oracle deployment + rangeId. Consumers query
 /// `GET /isfr/ranges?market=<addr>` to see closed ranges.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,6 +268,8 @@ struct Store {
     /// (market_addr_lower, range_id_lower) → latest close summary. Multiple ranges
     /// can be open per market; we keep them all.
     isfr_ranges: HashMap<(String, String), IsfrRangeClose>,
+    /// Per-worker reputation/tier snapshots for `?min_tier=` filtering on /agents.
+    workers: HashMap<String, Worker>, // 0x-lower address → Worker
 }
 
 type SharedStore = Arc<RwLock<Store>>;
@@ -226,8 +305,14 @@ async fn main() -> Result<()> {
                 .with_context(|| format!("invalid ISFR oracle address: {}", s))
         })
         .collect::<Result<Vec<_>>>()?;
-    if agent_addr.is_none() && market_addr.is_none() && isfr_addrs.is_empty() {
-        warn!("daeji-indexer: no event sources configured (--agent-registry / --market / --isfr-oracles); HTTP server will only return empty results");
+    let worker_registry_addr =
+        parse_optional_address("worker_registry", cli.worker_registry.as_deref())?;
+    if agent_addr.is_none()
+        && market_addr.is_none()
+        && isfr_addrs.is_empty()
+        && worker_registry_addr.is_none()
+    {
+        warn!("daeji-indexer: no event sources configured (--agent-registry / --market / --isfr-oracles / --worker-registry); HTTP server will only return empty results");
     }
 
     let watch_store = store.clone();
@@ -240,6 +325,7 @@ async fn main() -> Result<()> {
             agent_addr,
             market_addr,
             watch_isfr,
+            worker_registry_addr,
             watch_from,
             watch_store,
         )
@@ -260,6 +346,8 @@ async fn main() -> Result<()> {
         .route("/isfr/rates", get(list_isfr_rates))
         .route("/isfr/rates/{market}", get(get_isfr_rate))
         .route("/isfr/ranges", get(list_isfr_ranges))
+        .route("/workers", get(list_workers))
+        .route("/workers/{address}", get(get_worker))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(store.clone());
@@ -293,6 +381,7 @@ async fn run_chain_watcher(
     agent_addr: Option<Address>,
     market_addr: Option<Address>,
     isfr_addrs: Vec<Address>,
+    worker_registry_addr: Option<Address>,
     from_block_override: Option<u64>,
     store: SharedStore,
 ) -> Result<()> {
@@ -366,6 +455,36 @@ async fn run_chain_watcher(
         None
     };
 
+    let mut worker_register_stream = if let Some(addr) = worker_registry_addr {
+        let f = Filter::new()
+            .address(addr)
+            .event_signature(WorkerRegistered::SIGNATURE_HASH)
+            .from_block(from_block);
+        Some(provider.subscribe_logs(&f).await?.into_stream())
+    } else {
+        None
+    };
+
+    let mut reputation_stream = if let Some(addr) = worker_registry_addr {
+        let f = Filter::new()
+            .address(addr)
+            .event_signature(ReputationUpdated::SIGNATURE_HASH)
+            .from_block(from_block);
+        Some(provider.subscribe_logs(&f).await?.into_stream())
+    } else {
+        None
+    };
+
+    let mut slash_stream = if let Some(addr) = worker_registry_addr {
+        let f = Filter::new()
+            .address(addr)
+            .event_signature(WorkerSlashed::SIGNATURE_HASH)
+            .from_block(from_block);
+        Some(provider.subscribe_logs(&f).await?.into_stream())
+    } else {
+        None
+    };
+
     info!("daeji-indexer: subscribed");
 
     loop {
@@ -401,6 +520,30 @@ async fn run_chain_watcher(
                 }
             } => {
                 handle_isfr_range_closed(log, &store).await;
+            }
+            Some(log) = async {
+                match worker_register_stream.as_mut() {
+                    Some(s) => s.next().await,
+                    None => futures::future::pending().await,
+                }
+            } => {
+                handle_worker_registered(log, &store).await;
+            }
+            Some(log) = async {
+                match reputation_stream.as_mut() {
+                    Some(s) => s.next().await,
+                    None => futures::future::pending().await,
+                }
+            } => {
+                handle_reputation_updated(log, &store).await;
+            }
+            Some(log) = async {
+                match slash_stream.as_mut() {
+                    Some(s) => s.next().await,
+                    None => futures::future::pending().await,
+                }
+            } => {
+                handle_worker_slashed(log, &store).await;
             }
             else => break,
         }
@@ -467,6 +610,104 @@ async fn handle_job_awarded(log: AlloyRpcLog, store: &SharedStore) {
         Err(err) => {
             error!(?err, "failed to decode JobAwarded log");
         }
+    }
+}
+
+async fn handle_worker_registered(log: AlloyRpcLog, store: &SharedStore) {
+    let raw = AlloyLog::new(log.address(), log.topics().to_vec(), log.data().data.clone())
+        .unwrap_or_else(|| AlloyLog::new_unchecked(log.address(), Vec::new(), Default::default()));
+    match WorkerRegistered::decode_log(&raw) {
+        Ok(decoded) => {
+            // Fresh registration: reputation starts at SCALE/2 = 500_000 → bps 5000.
+            let entry = Worker {
+                address: format!("{:#x}", decoded.worker),
+                bond: decoded.bond.to_string(),
+                reputation: 500_000,
+                reputation_bps: 5000,
+                tier: WorkerTier::Standard,
+                block: log.block_number.unwrap_or_default(),
+                seen_at_unix: now_unix(),
+            };
+            let key = entry.address.to_ascii_lowercase();
+            let mut s = store.write().await;
+            s.workers.insert(key, entry);
+            info!(
+                worker = %format!("{:#x}", decoded.worker),
+                bond = %decoded.bond,
+                block = log.block_number.unwrap_or_default(),
+                "WorkerRegistered indexed"
+            );
+        }
+        Err(err) => error!(?err, "failed to decode WorkerRegistered log"),
+    }
+}
+
+async fn handle_reputation_updated(log: AlloyRpcLog, store: &SharedStore) {
+    let raw = AlloyLog::new(log.address(), log.topics().to_vec(), log.data().data.clone())
+        .unwrap_or_else(|| AlloyLog::new_unchecked(log.address(), Vec::new(), Default::default()));
+    match ReputationUpdated::decode_log(&raw) {
+        Ok(decoded) => {
+            let key = format!("{:#x}", decoded.worker).to_ascii_lowercase();
+            let new_rep_u32 = u32::try_from(decoded.newRep).unwrap_or(u32::MAX);
+            let new_bps = u16::try_from(new_rep_u32 / 100).unwrap_or(u16::MAX);
+            let new_tier = WorkerTier::from_reputation(new_rep_u32);
+            let mut s = store.write().await;
+            if let Some(w) = s.workers.get_mut(&key) {
+                w.reputation = new_rep_u32;
+                w.reputation_bps = new_bps;
+                w.tier = new_tier;
+                w.block = log.block_number.unwrap_or_default();
+                w.seen_at_unix = now_unix();
+            } else {
+                // ReputationUpdated for an unknown worker — defensively insert
+                // with whatever info we have. Bond is 0 (we'll learn it from a
+                // later WorkerRegistered or rely on contract reads at /workers/:addr).
+                s.workers.insert(
+                    key.clone(),
+                    Worker {
+                        address: format!("{:#x}", decoded.worker),
+                        bond: "0".into(),
+                        reputation: new_rep_u32,
+                        reputation_bps: new_bps,
+                        tier: new_tier,
+                        block: log.block_number.unwrap_or_default(),
+                        seen_at_unix: now_unix(),
+                    },
+                );
+            }
+            info!(
+                worker = %format!("{:#x}", decoded.worker),
+                old_rep = %decoded.oldRep,
+                new_rep = %decoded.newRep,
+                outcome = decoded.outcome,
+                "ReputationUpdated indexed"
+            );
+        }
+        Err(err) => error!(?err, "failed to decode ReputationUpdated log"),
+    }
+}
+
+async fn handle_worker_slashed(log: AlloyRpcLog, store: &SharedStore) {
+    let raw = AlloyLog::new(log.address(), log.topics().to_vec(), log.data().data.clone())
+        .unwrap_or_else(|| AlloyLog::new_unchecked(log.address(), Vec::new(), Default::default()));
+    match WorkerSlashed::decode_log(&raw) {
+        Ok(decoded) => {
+            let key = format!("{:#x}", decoded.worker).to_ascii_lowercase();
+            let mut s = store.write().await;
+            if let Some(w) = s.workers.get_mut(&key) {
+                w.bond = decoded.newBond.to_string();
+                w.block = log.block_number.unwrap_or_default();
+                w.seen_at_unix = now_unix();
+            }
+            info!(
+                worker = %format!("{:#x}", decoded.worker),
+                reason_code = decoded.reasonCode,
+                amount = %decoded.amount,
+                new_bond = %decoded.newBond,
+                "WorkerSlashed indexed"
+            );
+        }
+        Err(err) => error!(?err, "failed to decode WorkerSlashed log"),
     }
 }
 
@@ -552,11 +793,39 @@ async fn health(State(store): State<SharedStore>) -> impl IntoResponse {
     }))
 }
 
-async fn list_agents(State(store): State<SharedStore>) -> impl IntoResponse {
+/// Query params for `/agents`. Supports `?min_tier=Probation|Standard|Trusted|Elite`
+/// for reputation-gated discovery; agent-tier lookup goes through `workers` map.
+#[derive(Debug, Deserialize)]
+struct AgentListQuery {
+    min_tier: Option<String>,
+}
+
+async fn list_agents(
+    State(store): State<SharedStore>,
+    axum::extract::Query(q): axum::extract::Query<AgentListQuery>,
+) -> Result<Json<Vec<Agent>>, StatusCode> {
+    let min_tier = match q.min_tier.as_deref() {
+        None => None,
+        Some(s) => Some(s.parse::<WorkerTier>().map_err(|_| StatusCode::BAD_REQUEST)?),
+    };
+
     let s = store.read().await;
-    let mut out: Vec<Agent> = s.agents.values().cloned().collect();
+    let mut out: Vec<Agent> = if let Some(min) = min_tier {
+        // Filter: agent's address must have a Worker record with tier >= min.
+        s.agents
+            .values()
+            .filter(|a| {
+                s.workers
+                    .get(&a.address.to_ascii_lowercase())
+                    .map_or(false, |w| w.tier >= min)
+            })
+            .cloned()
+            .collect()
+    } else {
+        s.agents.values().cloned().collect()
+    };
     out.sort_by(|a, b| b.block.cmp(&a.block));
-    Json(out)
+    Ok(Json(out))
 }
 
 async fn get_agent(
@@ -632,6 +901,22 @@ async fn list_isfr_ranges(State(store): State<SharedStore>) -> impl IntoResponse
     let mut out: Vec<IsfrRangeClose> = s.isfr_ranges.values().cloned().collect();
     out.sort_by(|a, b| b.block.cmp(&a.block));
     Json(out)
+}
+
+async fn list_workers(State(store): State<SharedStore>) -> impl IntoResponse {
+    let s = store.read().await;
+    let mut out: Vec<Worker> = s.workers.values().cloned().collect();
+    out.sort_by(|a, b| b.reputation.cmp(&a.reputation));
+    Json(out)
+}
+
+async fn get_worker(
+    State(store): State<SharedStore>,
+    Path(address): Path<String>,
+) -> Result<Json<Worker>, StatusCode> {
+    let key = normalize_address(&address);
+    let s = store.read().await;
+    s.workers.get(&key).cloned().map(Json).ok_or(StatusCode::NOT_FOUND)
 }
 
 /// Local re-derivation of the slot index + channel id. Mirrors the constants in
@@ -712,5 +997,43 @@ mod tests {
             normalize_address("  0xABcDef0123  "),
             "0xabcdef0123".to_string()
         );
+    }
+
+    #[test]
+    fn worker_tier_thresholds_match_contract() {
+        // Mirrors `WorkerRegistry.tier()` thresholds at lines 168-171 of
+        // contracts-core/packages/agents/src/WorkerRegistry.sol.
+        assert_eq!(WorkerTier::from_reputation(0), WorkerTier::Probation);
+        assert_eq!(WorkerTier::from_reputation(349_999), WorkerTier::Probation);
+        assert_eq!(WorkerTier::from_reputation(350_000), WorkerTier::Standard);
+        assert_eq!(WorkerTier::from_reputation(549_999), WorkerTier::Standard);
+        assert_eq!(WorkerTier::from_reputation(550_000), WorkerTier::Trusted);
+        assert_eq!(WorkerTier::from_reputation(799_999), WorkerTier::Trusted);
+        assert_eq!(WorkerTier::from_reputation(800_000), WorkerTier::Elite);
+        assert_eq!(WorkerTier::from_reputation(1_000_000), WorkerTier::Elite);
+    }
+
+    #[test]
+    fn worker_tier_ordering_is_correct_for_min_tier_filter() {
+        // PartialOrd derive uses variant order. Filter logic is `tier >= min`.
+        assert!(WorkerTier::Elite > WorkerTier::Trusted);
+        assert!(WorkerTier::Trusted > WorkerTier::Standard);
+        assert!(WorkerTier::Standard > WorkerTier::Probation);
+        assert!(WorkerTier::Probation > WorkerTier::Unregistered);
+    }
+
+    #[test]
+    fn worker_tier_parse_round_trip() {
+        use std::str::FromStr as _;
+        assert_eq!(
+            WorkerTier::from_str("trusted").unwrap(),
+            WorkerTier::Trusted
+        );
+        assert_eq!(WorkerTier::from_str("ELITE").unwrap(), WorkerTier::Elite);
+        assert_eq!(
+            WorkerTier::from_str("Probation").unwrap(),
+            WorkerTier::Probation
+        );
+        assert!(WorkerTier::from_str("nonsense").is_err());
     }
 }
