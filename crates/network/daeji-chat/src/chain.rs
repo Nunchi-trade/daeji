@@ -69,12 +69,16 @@ pub struct ChainConfig {
     pub my_controller: Option<String>,
 }
 
+/// Failures from spawning / running the chain-event watcher.
 #[derive(Debug, thiserror::Error)]
 pub enum ChainWatcherError {
+    /// Configured `agent_registry`, `market`, or `my_controller` was not a valid hex address.
     #[error("invalid hex address: {0}")]
     InvalidAddress(String),
+    /// Could not establish or maintain the WebSocket connection to the EVM RPC endpoint.
     #[error("WS connection failed: {0}")]
     Connect(String),
+    /// Could not subscribe to the requested log filter.
     #[error("subscription failed: {0}")]
     Subscribe(String),
 }
@@ -118,14 +122,10 @@ pub async fn run_chain_watcher(
         .await
         .map_err(|e| ChainWatcherError::Connect(e.to_string()))?;
 
-    let chain_id = provider
-        .get_chain_id()
-        .await
-        .map_err(|e| ChainWatcherError::Connect(e.to_string()))?;
-    let head = provider
-        .get_block_number()
-        .await
-        .map_err(|e| ChainWatcherError::Connect(e.to_string()))?;
+    let chain_id =
+        provider.get_chain_id().await.map_err(|e| ChainWatcherError::Connect(e.to_string()))?;
+    let head =
+        provider.get_block_number().await.map_err(|e| ChainWatcherError::Connect(e.to_string()))?;
     info!(chain_id, head, "chat-chain-watcher: connected");
 
     let from_block = cfg.from_block.unwrap_or(head);
@@ -224,7 +224,7 @@ fn handle_job_awarded(log: AlloyRpcLog, my_controller: Option<Address>) {
             let parity = if derived_room == room_id.0 { "✓" } else { "MISMATCH" };
 
             // Did we get awarded?
-            let awarded_self = my_controller.map_or(false, |me| winners.iter().any(|w| *w == me));
+            let awarded_self = my_controller.is_some_and(|me| winners.contains(&me));
 
             info!(
                 job_id = job_id_u64,

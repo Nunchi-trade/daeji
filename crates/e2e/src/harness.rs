@@ -242,6 +242,7 @@ impl BlockContextProvider for TestContextProvider {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start_all_nodes(
     context: &tokio::Context,
     sim_control: &Arc<Mutex<SimControl<ed25519::PublicKey>>>,
@@ -827,10 +828,12 @@ where
     type Context = Context<ConsensusDigest, S::PublicKey>;
     type Block = Block;
 
+    #[allow(clippy::manual_async_fn)]
     fn genesis(&mut self) -> impl std::future::Future<Output = Self::Block> + Send {
         async move { self.ledger.genesis_block() }
     }
 
+    #[allow(clippy::manual_async_fn)]
     fn propose<A: BlockProvider<Block = Self::Block>>(
         &mut self,
         _context: (Env, Self::Context),
@@ -848,6 +851,7 @@ where
     Env: Rng + Spawner + Metrics + Clock,
     S: CertScheme + Send + Sync + 'static,
 {
+    #[allow(clippy::manual_async_fn)]
     fn verify<A: BlockProvider<Block = Self::Block>>(
         &mut self,
         _context: (Env, Self::Context),

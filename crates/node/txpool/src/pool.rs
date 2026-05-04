@@ -392,8 +392,8 @@ mod tests {
         let tx0 = make_ordered_tx(sender, 0, 100);
         let tx1 = make_ordered_tx(sender, 1, 100);
 
-        pool.add(tx0.clone()).unwrap();
-        pool.add(tx1.clone()).unwrap();
+        pool.add(tx0).unwrap();
+        pool.add(tx1).unwrap();
 
         assert_eq!(pool.pending_count(), 2);
         assert_eq!(pool.len(), 2);

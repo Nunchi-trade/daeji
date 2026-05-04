@@ -14,15 +14,23 @@
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
 
+/// Off-chain agent metadata served at the URL inside the on-chain `capabilities` string.
+/// `keccak256(canonical_json(self))` MUST equal the on-chain `passportHash` for the card
+/// to be trusted.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StatusCard {
+    /// EVM controller address (0x-hex). Echoes the on-chain agent identity.
     pub agent: String,
+    /// Pipe-delimited capabilities string (mirror of the on-chain registration).
     pub capabilities: String,
+    /// Transport-layer credentials used to dial / authenticate the agent on the chat mesh.
     pub transport: TransportInfo,
 }
 
+/// Transport credentials advertised inside a [`StatusCard`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TransportInfo {
+    /// Signature algorithm. Currently always `"ed25519"`.
     pub alg: String,
     /// 32-byte ed25519 public key, base64-encoded (or 0x-prefixed hex).
     pub pubkey: String,
@@ -50,9 +58,7 @@ impl StatusCard {
 /// Extract the `endpoint=URL` field out of a capabilities string of the form
 /// `cap_a|cap_b|endpoint=URL|cap_c`. Returns `None` if no `endpoint=` segment.
 pub fn parse_endpoint(capabilities: &str) -> Option<&str> {
-    capabilities
-        .split('|')
-        .find_map(|seg| seg.strip_prefix("endpoint="))
+    capabilities.split('|').find_map(|seg| seg.strip_prefix("endpoint="))
 }
 
 /// `keccak256` of the raw bytes that the operator served. Compared to the on-chain
@@ -65,7 +71,10 @@ pub fn keccak_passport_hash(raw_body: &[u8]) -> [u8; 32] {
 
 /// Fetch + verify in one shot: parse the JSON, compare its raw bytes' keccak to the expected
 /// passport hash, and return the verified card.
-pub fn verify_card(raw_body: &[u8], expected_passport_hash: &[u8; 32]) -> Result<StatusCard, CardError> {
+pub fn verify_card(
+    raw_body: &[u8],
+    expected_passport_hash: &[u8; 32],
+) -> Result<StatusCard, CardError> {
     let actual = keccak_passport_hash(raw_body);
     if &actual != expected_passport_hash {
         return Err(CardError::PassportHashMismatch {
@@ -79,16 +88,27 @@ pub fn verify_card(raw_body: &[u8], expected_passport_hash: &[u8; 32]) -> Result
     Ok(card)
 }
 
+/// Failures from parsing / verifying a [`StatusCard`] body.
 #[derive(Debug, thiserror::Error)]
 pub enum CardError {
+    /// The body was not valid JSON for the [`StatusCard`] schema.
     #[error("invalid JSON: {0}")]
     Json(#[from] serde_json::Error),
+    /// `keccak256(body)` did not equal the on-chain `passportHash`.
     #[error("passport hash mismatch (expected {expected}, got {actual})")]
-    PassportHashMismatch { expected: String, actual: String },
+    PassportHashMismatch {
+        /// On-chain `passportHash` (hex).
+        expected: String,
+        /// Computed `keccak256(body)` (hex).
+        actual: String,
+    },
+    /// Transport algorithm is not supported (only `"ed25519"` is accepted today).
     #[error("unsupported transport alg: {0}")]
     UnsupportedAlg(String),
+    /// Decoded transport pubkey was the wrong length (must be 32 bytes for ed25519).
     #[error("transport pubkey is {0} bytes, expected 32")]
     WrongPubkeyLength(usize),
+    /// Transport pubkey string could not be decoded as hex or base64.
     #[error("transport pubkey could not be decoded as hex or base64")]
     PubkeyDecode,
 }
@@ -159,10 +179,7 @@ mod tests {
         let body = serde_json::to_vec(&card).unwrap();
         let mut wrong = [0u8; 32];
         wrong[0] = 0xFF;
-        assert!(matches!(
-            verify_card(&body, &wrong),
-            Err(CardError::PassportHashMismatch { .. })
-        ));
+        assert!(matches!(verify_card(&body, &wrong), Err(CardError::PassportHashMismatch { .. })));
     }
 
     #[test]
@@ -196,9 +213,6 @@ mod tests {
                 bootstrappable: vec![],
             },
         };
-        assert!(matches!(
-            card.transport_pubkey_bytes(),
-            Err(CardError::UnsupportedAlg(_))
-        ));
+        assert!(matches!(card.transport_pubkey_bytes(), Err(CardError::UnsupportedAlg(_))));
     }
 }

@@ -1,6 +1,6 @@
 use chacha20poly1305::{
-    aead::{Aead, KeyInit, Payload},
     ChaCha20Poly1305, Key, Nonce,
+    aead::{Aead, KeyInit, Payload},
 };
 use rand::RngCore;
 use sha3::{Digest, Keccak256};
@@ -90,15 +90,7 @@ pub fn encrypt(room_key: &[u8; 32], room: &[u8; 32], plaintext: &[u8]) -> Vec<u8
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
-    let ct = cipher
-        .encrypt(
-            nonce,
-            Payload {
-                msg: plaintext,
-                aad: room,
-            },
-        )
-        .expect("AEAD seal");
+    let ct = cipher.encrypt(nonce, Payload { msg: plaintext, aad: room }).expect("AEAD seal");
 
     let mut out = Vec::with_capacity(12 + ct.len());
     out.extend_from_slice(&nonce_bytes);
@@ -114,15 +106,7 @@ pub fn decrypt(room_key: &[u8; 32], room: &[u8; 32], wire: &[u8]) -> Option<Vec<
     }
     let cipher = ChaCha20Poly1305::new(Key::from_slice(room_key));
     let nonce = Nonce::from_slice(&wire[..12]);
-    cipher
-        .decrypt(
-            nonce,
-            Payload {
-                msg: &wire[12..],
-                aad: room,
-            },
-        )
-        .ok()
+    cipher.decrypt(nonce, Payload { msg: &wire[12..], aad: room }).ok()
 }
 
 #[cfg(test)]

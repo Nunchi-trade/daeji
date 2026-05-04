@@ -172,7 +172,7 @@ mod tests {
     #[test]
     fn clone_preserves_values() {
         let config = PoolConfig::new().with_max_pending_txs(100).with_min_gas_price(999);
-        let cloned = config.clone();
+        let cloned = config;
 
         assert_eq!(cloned.max_pending_txs, 100);
         assert_eq!(cloned.min_gas_price, 999);

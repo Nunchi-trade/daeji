@@ -51,7 +51,9 @@ pub enum LobbyMessage {
     /// Each winner sends after they unwrap their room key — informational, signals
     /// liveness so the room knows who's actually online.
     RoomJoined {
+        /// On-chain job id (decimal string).
         job_id: String,
+        /// On-chain passport id of the joining agent (decimal string).
         passport_id: String,
         /// ed25519 signature over `keccak256("DAEJI_ROOM_JOINED_V1" || room_id)`.
         signature_over_room_id: String,
@@ -59,15 +61,20 @@ pub enum LobbyMessage {
     /// Coordinator (or any winner, with retry/dedup) signals job done.
     /// Receivers free up the per-job state; the slot becomes immediately reusable.
     JobConcluded {
+        /// On-chain job id (decimal string).
         job_id: String,
+        /// Slot index in `0..POOL_SIZE` that this job was occupying.
         slot_index: u32,
     },
     /// Competitive job (mining-bounty): an agent broadcasts their first-claim proof
     /// on the lobby. Settlement is on-chain; this is just for visibility + race
     /// dedup hints for other agents.
     MiningClaim {
+        /// On-chain job id (decimal string).
         job_id: String,
+        /// Slot index in `0..POOL_SIZE` derived from `job_id`.
         slot_index: u32,
+        /// Claiming agent's transport pubkey (0x-hex).
         agent: String,
         /// Optional branch identifier in the mining-bounty branch DAG.
         #[serde(default)]
@@ -82,10 +89,10 @@ impl LobbyMessage {
     /// Stable variant tag. Useful for logging without cloning the whole payload.
     pub const fn label(&self) -> &'static str {
         match self {
-            LobbyMessage::JobAnnounce { .. } => "job_announce",
-            LobbyMessage::RoomJoined { .. } => "room_joined",
-            LobbyMessage::JobConcluded { .. } => "job_concluded",
-            LobbyMessage::MiningClaim { .. } => "mining_claim",
+            Self::JobAnnounce { .. } => "job_announce",
+            Self::RoomJoined { .. } => "room_joined",
+            Self::JobConcluded { .. } => "job_concluded",
+            Self::MiningClaim { .. } => "mining_claim",
         }
     }
 
@@ -93,10 +100,10 @@ impl LobbyMessage {
     /// (none currently).
     pub fn job_id(&self) -> Option<&str> {
         match self {
-            LobbyMessage::JobAnnounce { job_id, .. }
-            | LobbyMessage::RoomJoined { job_id, .. }
-            | LobbyMessage::JobConcluded { job_id, .. }
-            | LobbyMessage::MiningClaim { job_id, .. } => Some(job_id),
+            Self::JobAnnounce { job_id, .. }
+            | Self::RoomJoined { job_id, .. }
+            | Self::JobConcluded { job_id, .. }
+            | Self::MiningClaim { job_id, .. } => Some(job_id),
         }
     }
 }
@@ -112,6 +119,7 @@ pub struct RoomKeyWrap {
     /// Either:
     /// - v1 (pre-handshake): the 32-byte room key as 0x-hex (plaintext).
     /// - v2 (post-handshake): X25519-ECDH-derived AEAD ciphertext + nonce as 0x-hex.
+    ///
     /// Receivers MUST treat any wrap as opaque bytes and try-parse + try-decrypt.
     pub ciphertext_hex: String,
 }
@@ -161,10 +169,7 @@ mod tests {
 
     #[test]
     fn job_concluded_round_trip() {
-        let msg = LobbyMessage::JobConcluded {
-            job_id: "42".into(),
-            slot_index: 17,
-        };
+        let msg = LobbyMessage::JobConcluded { job_id: "42".into(), slot_index: 17 };
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: LobbyMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, msg);

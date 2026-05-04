@@ -8,21 +8,28 @@
 //!   `~/contracts-core/packages/agents/src/AgentRegistry.sol`, with the off-chain status.json
 //!   resolved + verified via `card.rs`.
 
-use commonware_cryptography::{ed25519, Signer as _};
-use commonware_utils::ordered::Set;
-use serde::{Deserialize, Serialize};
 use std::{
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
 };
 
+use commonware_cryptography::{Signer as _, ed25519};
+use commonware_utils::ordered::Set;
+use serde::{Deserialize, Serialize};
+
+/// One authorized agent. The registry round-trips through the same JSON regardless of
+/// variant (untagged), so seed-shortcut and chain-sourced records can coexist.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum AgentRecord {
+    /// POC shortcut — pubkey is derived deterministically from `seed` via
+    /// `ed25519::PrivateKey::from_seed(seed)`. Only used by Phase-1/2 demos.
     Seed {
+        /// Deterministic seed driving `ed25519::PrivateKey::from_seed`.
         seed: u64,
     },
+    /// Production-shape record sourced from `AgentRegistry.AgentRegistered` events plus
+    /// the off-chain status.json verified via [`crate::card`].
     Chain {
         /// EVM controller address (0x-prefixed hex), the agent's `msg.sender` to AgentRegistry.
         controller: String,
@@ -39,12 +46,10 @@ impl AgentRecord {
     /// Derive (Seed) or parse (Chain) the commonware ed25519 pubkey for this agent.
     pub fn pubkey(&self) -> Result<ed25519::PublicKey, RegistryError> {
         match self {
-            AgentRecord::Seed { seed } => Ok(ed25519::PrivateKey::from_seed(*seed).public_key()),
-            AgentRecord::Chain { transport_pubkey, .. } => {
-                let stripped = transport_pubkey
-                    .trim()
-                    .strip_prefix("0x")
-                    .unwrap_or(transport_pubkey);
+            Self::Seed { seed } => Ok(ed25519::PrivateKey::from_seed(*seed).public_key()),
+            Self::Chain { transport_pubkey, .. } => {
+                let stripped =
+                    transport_pubkey.trim().strip_prefix("0x").unwrap_or(transport_pubkey);
                 let raw = hex::decode(stripped).map_err(|_| RegistryError::BadPubkey)?;
                 if raw.len() != 32 {
                     return Err(RegistryError::BadPubkey);
@@ -60,31 +65,35 @@ impl AgentRecord {
     /// Stable identity key for change detection / dedup.
     pub fn ident(&self) -> String {
         match self {
-            AgentRecord::Seed { seed } => format!("seed:{seed}"),
-            AgentRecord::Chain { controller, .. } => format!("chain:{controller}"),
+            Self::Seed { seed } => format!("seed:{seed}"),
+            Self::Chain { controller, .. } => format!("chain:{controller}"),
         }
     }
 }
 
+/// File-backed authorized peer set. Persists to disk as JSON; the chat service polls
+/// the file and pushes changes to `oracle.track` so the commonware mesh stays in sync.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Registry {
+    /// Monotonic counter — bumped whenever the agent set changes. Drives `oracle.track`.
     pub epoch: u64,
+    /// Authorized agents, mixed seed-shortcut and chain-sourced records.
     pub agents: Vec<AgentRecord>,
 }
 
 impl Registry {
-    pub fn empty() -> Self {
-        Self {
-            epoch: 0,
-            agents: Vec::new(),
-        }
+    /// Construct an empty registry at epoch `0`.
+    pub const fn empty() -> Self {
+        Self { epoch: 0, agents: Vec::new() }
     }
 
+    /// Read a registry JSON file from disk.
     pub fn load(path: &Path) -> io::Result<Self> {
         let raw = fs::read_to_string(path)?;
         serde_json::from_str(&raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
+    /// Atomically persist the registry to disk (write `{path}.tmp` then rename).
     pub fn save(&self, path: &Path) -> io::Result<()> {
         let mut tmp: PathBuf = path.into();
         tmp.set_extension("json.tmp");
@@ -133,6 +142,8 @@ impl Registry {
         self.remove_by_ident(&ident)
     }
 
+    /// Remove a chain-mode record by its EVM controller address. Returns `true` if a
+    /// record was removed (and bumps `epoch`).
     pub fn remove_chain(&mut self, controller: &str) -> bool {
         let ident = format!("chain:{controller}");
         self.remove_by_ident(&ident)
@@ -151,11 +162,8 @@ impl Registry {
     /// Materialize the authorized pubkey set as commonware expects it. Mixed seed + chain
     /// records both work; commonware just sees the union of public keys.
     pub fn pubkey_set(&self) -> Set<ed25519::PublicKey> {
-        let pubs: Vec<ed25519::PublicKey> = self
-            .agents
-            .iter()
-            .filter_map(|a| a.pubkey().ok())
-            .collect();
+        let pubs: Vec<ed25519::PublicKey> =
+            self.agents.iter().filter_map(|a| a.pubkey().ok()).collect();
         Set::try_from(pubs).expect("registry pubkeys are unique")
     }
 
@@ -171,8 +179,10 @@ impl Registry {
     }
 }
 
+/// Failures from materializing an [`AgentRecord`] into a usable pubkey.
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
+    /// Chain-record `transport_pubkey` was not 32 bytes of hex.
     #[error("transport pubkey is not 32 bytes of hex")]
     BadPubkey,
 }
@@ -274,10 +284,8 @@ mod tests {
 
     fn tempdir() -> PathBuf {
         let pid = std::process::id();
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let nanos =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         let dir = std::env::temp_dir().join(format!("daeji-poc-{pid}-{nanos}"));
         std::fs::create_dir_all(&dir).unwrap();
         dir
