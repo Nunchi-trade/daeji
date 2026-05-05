@@ -3373,6 +3373,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "futures",
+ "kora-precompiles",
  "kora-qmdb",
  "kora-traits",
  "revm",
@@ -3457,6 +3458,18 @@ dependencies = [
  "kora-qmdb",
  "kora-traits",
  "tokio",
+]
+
+[[package]]
+name = "kora-precompiles"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "parking_lot",
+ "revm",
+ "rstest",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
