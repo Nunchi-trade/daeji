@@ -86,9 +86,13 @@ impl RevmExecutor {
             )));
         }
 
-        if header.timestamp <= parent.timestamp {
+        // At ~400ms block times, multiple blocks land within the same wall-clock
+        // second and `header.timestamp == parent.timestamp` is normal. Reject
+        // only strictly-decreasing timestamps so contracts using `block.timestamp`
+        // for cooldowns/deadlines still see monotonic time.
+        if header.timestamp < parent.timestamp {
             return Err(ExecutionError::BlockValidation(format!(
-                "timestamp not increasing: parent {}, current {}",
+                "timestamp regressed: parent {}, current {}",
                 parent.timestamp, header.timestamp
             )));
         }

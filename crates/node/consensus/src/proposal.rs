@@ -11,10 +11,23 @@ use kora_traits::StateDb;
 
 use crate::{ConsensusError, Digest, Mempool, Snapshot, SnapshotStore, TxId};
 
+/// Compute the wall-clock Unix timestamp in seconds.
+///
+/// Per Will's `02-daeji/05-roadmap.md` Phase-1 #1, block timestamps must be
+/// real seconds since the Unix epoch — not block height. Every contract that
+/// uses cooldowns, decay, or deadlines depends on this. If the system clock
+/// is somehow before Unix epoch, fall back to 0 so consensus does not panic.
+fn wall_clock_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 fn block_context(height: u64, prevrandao: B256) -> BlockContext {
     let header = Header {
         number: height,
-        timestamp: height,
+        timestamp: wall_clock_secs(),
         gas_limit: kora_config::DEFAULT_GAS_LIMIT,
         beneficiary: Address::ZERO,
         base_fee_per_gas: Some(0),
