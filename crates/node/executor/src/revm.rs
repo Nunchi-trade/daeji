@@ -1,9 +1,11 @@
 //! REVM-based block executor.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use alloy_consensus::Header;
 use alloy_primitives::{B256, Bytes, U256, keccak256};
+use kora_precompiles::{HDCState, KoraPrecompiles};
 use kora_qmdb::{AccountUpdate, ChangeSet};
 use kora_traits::StateDb;
 use revm::{
@@ -31,23 +33,47 @@ use crate::{
 ///
 /// This executor uses REVM to execute EVM transactions against a state database.
 /// The actual EVM execution is performed via the REVM handler traits.
+///
+/// Holds an `Arc<HDCState>` shared across all EVM invocations so the HDC
+/// precompile at `0xA0C` retains its in-memory similarity index between calls.
 #[derive(Clone, Debug)]
 pub struct RevmExecutor {
     /// Execution configuration.
     config: ExecutionConfig,
+    /// Persistent HDC index state, shared with the `0xA0C` precompile.
+    /// Cloning the executor cheaply shares the same underlying index via `Arc`.
+    hdc_state: Arc<HDCState>,
 }
 
 impl RevmExecutor {
     /// Create a new REVM executor with the given chain ID.
     #[must_use]
-    pub const fn new(chain_id: u64) -> Self {
-        Self { config: ExecutionConfig::new(chain_id) }
+    pub fn new(chain_id: u64) -> Self {
+        Self {
+            config: ExecutionConfig::new(chain_id),
+            hdc_state: HDCState::new(),
+        }
     }
 
     /// Create a new REVM executor with full configuration.
     #[must_use]
-    pub const fn with_config(config: ExecutionConfig) -> Self {
-        Self { config }
+    pub fn with_config(config: ExecutionConfig) -> Self {
+        Self {
+            config,
+            hdc_state: HDCState::new(),
+        }
+    }
+
+    /// Create with an existing HDC state (e.g. for sharing between simulator + executor).
+    #[must_use]
+    pub fn with_config_and_hdc_state(config: ExecutionConfig, hdc_state: Arc<HDCState>) -> Self {
+        Self { config, hdc_state }
+    }
+
+    /// Borrow the shared HDC state.
+    #[must_use]
+    pub fn hdc_state(&self) -> Arc<HDCState> {
+        Arc::clone(&self.hdc_state)
     }
 
     /// Get the chain ID.
@@ -231,7 +257,11 @@ impl RevmExecutor {
                 blk.prevrandao = Some(context.prevrandao);
             });
 
-        let mut evm = ctx.build_mainnet();
+        let built = ctx.build_mainnet();
+        let mut evm = built.with_precompiles(KoraPrecompiles::new(
+            self.config.spec_id,
+            Arc::clone(&self.hdc_state),
+        ));
 
         let tx_env =
             call_params_to_tx_env(&params, self.config.chain_id, context.header.gas_limit)?;
@@ -380,7 +410,11 @@ impl<S: StateDb> BlockExecutor<S> for RevmExecutor {
                 blk.prevrandao = Some(context.prevrandao);
             });
 
-        let mut evm = ctx.build_mainnet();
+        let built = ctx.build_mainnet();
+        let mut evm = built.with_precompiles(KoraPrecompiles::new(
+            self.config.spec_id,
+            Arc::clone(&self.hdc_state),
+        ));
 
         let mut outcome = ExecutionOutcome::new();
         let mut cumulative_gas = 0u64;

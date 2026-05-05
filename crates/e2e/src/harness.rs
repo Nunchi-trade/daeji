@@ -677,7 +677,7 @@ impl<S> std::fmt::Debug for TestApplication<S> {
 }
 
 impl<S> TestApplication<S> {
-    const fn new(max_txs: usize, ledger: LedgerView) -> Self {
+    fn new(max_txs: usize, ledger: LedgerView) -> Self {
         Self {
             ledger,
             executor: RevmExecutor::new(1337),

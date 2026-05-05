@@ -1,0 +1,21 @@
+[package]
+name = "kora-precompiles"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Chain-specific REVM precompiles for Kora: HDC similarity (0xA0C) + agent-namespace (0xA10-0xA1F)"
+
+[dependencies]
+alloy-primitives.workspace = true
+parking_lot.workspace = true
+revm.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+
+[lints]
+workspace = true

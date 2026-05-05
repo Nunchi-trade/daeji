@@ -13,6 +13,7 @@ alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 futures.workspace = true
+kora-precompiles.workspace = true
 kora-qmdb = { path = "../../storage/qmdb" }
 kora-traits = { path = "../../storage/traits" }
 revm.workspace = true
