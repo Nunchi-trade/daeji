@@ -61,7 +61,22 @@ https://github.com/user-attachments/assets/8ea05477-039d-4dd2-a7f3-660f179299f7
 The released [`commonware-chat`](https://github.com/commonwarexyz/monorepo/tree/v2026.4.0/examples/chat)
 example is vendored verbatim at [`crates/network/commonware-chat-upstream`](./crates/network/commonware-chat-upstream)
 (byte-identical to upstream `v2026.4.0`; see [`SYNC.md`](./crates/network/commonware-chat-upstream/SYNC.md)
-for the sync policy). Run a 4-node demo from four terminals:
+for the sync policy). The `commonware-chat` binary is baked into the `kora:local`
+docker image, so the devnet ships with chat available out of the box.
+
+**Attached to the devnet** (recommended) — start the devnet, then open four
+terminals and run a chat node in each. Each chat node runs in its own
+container on the same docker network as the validators (`kora-devnet_kora-net`):
+
+```sh
+just devnet           # in terminal 1, start the chain devnet
+just devnet-chat-1    # in terminal 2 — friend 1 (bootstrapper)
+just devnet-chat-2    # in terminal 3
+just devnet-chat-3    # in terminal 4
+just devnet-chat-4    # in terminal 5
+```
+
+**Standalone** (no devnet, no docker) — run the binary directly via `cargo`:
 
 ```sh
 just chat-1   # bootstrapper

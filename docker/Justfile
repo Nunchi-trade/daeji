@@ -96,3 +96,35 @@ lint:
 
 validate:
     docker compose -f compose/devnet.yaml config --quiet && echo "Compose valid"
+
+# Run a commonware-chat node attached to the live devnet network.
+# Requires the devnet to be running (`just devnet` first).
+# Usage: just chat <id> [bootstrapper-id]
+#   just chat 1            # friend 1 (bootstrapper)
+#   just chat 2 1          # friend 2, bootstraps from friend 1
+#   just chat 3 1
+#   just chat 4 3
+chat me bootstrapper="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    NETWORK="kora-devnet_kora-net"
+    if ! docker network inspect "$NETWORK" >/dev/null 2>&1; then
+        echo "Error: docker network '$NETWORK' not found." >&2
+        echo "Start the devnet first from the repo root: just devnet" >&2
+        exit 1
+    fi
+    PORT="300{{me}}"
+    EXTRA=()
+    if [[ -n "{{bootstrapper}}" ]]; then
+        BPORT="300{{bootstrapper}}"
+        EXTRA+=(--bootstrappers="{{bootstrapper}}@kora-chat-{{bootstrapper}}:$BPORT")
+    fi
+    exec docker run --rm -it \
+        --network "$NETWORK" \
+        --name "kora-chat-{{me}}" \
+        --hostname "kora-chat-{{me}}" \
+        kora:local \
+        commonware-chat \
+        --me="{{me}}@$PORT" \
+        --friends=1,2,3,4 \
+        "${EXTRA[@]}"

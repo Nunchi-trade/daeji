@@ -110,3 +110,18 @@ chat-3:
 chat-4:
     cargo run --release -p commonware-chat-upstream --bin commonware-chat -- \
         --me=4@3004 --friends=1,2,3,4 --bootstrappers=3@127.0.0.1:3003
+
+# Run chat node N attached to the live devnet's docker network. Requires `just devnet`
+# to be running. Open four terminals and run devnet-chat-1 .. devnet-chat-4 to spin
+# up the 4-node chat across the same docker network as the validators.
+devnet-chat-1:
+    cd docker && just chat 1
+
+devnet-chat-2:
+    cd docker && just chat 2 1
+
+devnet-chat-3:
+    cd docker && just chat 3 1
+
+devnet-chat-4:
+    cd docker && just chat 4 3
