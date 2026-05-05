@@ -56,6 +56,24 @@ for how a secondary peer joins the network.
 
 https://github.com/user-attachments/assets/8ea05477-039d-4dd2-a7f3-660f179299f7
 
+## Commonware Chat (released example)
+
+The released [`commonware-chat`](https://github.com/commonwarexyz/monorepo/tree/v2026.4.0/examples/chat)
+example is vendored verbatim at [`crates/network/commonware-chat-upstream`](./crates/network/commonware-chat-upstream)
+(byte-identical to upstream `v2026.4.0`; see [`SYNC.md`](./crates/network/commonware-chat-upstream/SYNC.md)
+for the sync policy). Run a 4-node demo from four terminals:
+
+```sh
+just chat-1   # bootstrapper
+just chat-2
+just chat-3
+just chat-4
+```
+
+This surfaces released Commonware chat as-is — independent of the symphony
+protocol in [`crates/network/daeji-chat`](./crates/network/daeji-chat), which
+is the chain-integrated chat layer.
+
 ## Architecture
 
 The devnet runs in three phases. Phase 0 generates ed25519 identity keys for each validator node and the built-in secondary peer. Phase 1 is the DKG ceremony, an interactive threshold key generation process using Ed25519 simplex consensus where validators collaborate to generate a shared BLS12-381 threshold key. Phase 2 launches full validator nodes running BLS12-381 threshold consensus, the REVM execution engine, and QMDB state storage, then starts the secondary peer as a non-voting P2P follower.

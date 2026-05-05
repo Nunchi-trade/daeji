@@ -84,3 +84,29 @@ loadtest:
 # Stress test (10000 txs with 50 accounts)
 stresstest:
     cargo run --release --bin loadgen -- --total-txs 10000 --accounts 50
+
+# Build the released commonware-chat example (vendored from commonwarexyz/monorepo@v2026.4.0
+# at crates/network/commonware-chat-upstream).
+chat-build:
+    cargo build --release -p commonware-chat-upstream
+
+# Released commonware-chat example — friend 1 (bootstrapper).
+# Open four terminals and run chat-1 .. chat-4 to spin up the 4-node demo.
+chat-1:
+    cargo run --release -p commonware-chat-upstream --bin commonware-chat -- \
+        --me=1@3001 --friends=1,2,3,4
+
+# Released commonware-chat example — friend 2.
+chat-2:
+    cargo run --release -p commonware-chat-upstream --bin commonware-chat -- \
+        --me=2@3002 --friends=1,2,3,4 --bootstrappers=1@127.0.0.1:3001
+
+# Released commonware-chat example — friend 3.
+chat-3:
+    cargo run --release -p commonware-chat-upstream --bin commonware-chat -- \
+        --me=3@3003 --friends=1,2,3,4 --bootstrappers=1@127.0.0.1:3001
+
+# Released commonware-chat example — friend 4.
+chat-4:
+    cargo run --release -p commonware-chat-upstream --bin commonware-chat -- \
+        --me=4@3004 --friends=1,2,3,4 --bootstrappers=3@127.0.0.1:3003
