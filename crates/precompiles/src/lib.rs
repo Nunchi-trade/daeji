@@ -29,6 +29,7 @@ pub mod hdc_vector;
 pub mod insight_event;
 pub mod insight_id;
 pub mod projection;
+pub mod stigmergy;
 
 pub use agent_ns::AGENT_NS_RESERVED;
 // Re-export the primary type the executor needs.
@@ -36,5 +37,12 @@ pub use hdc::HDCPrecompiles as KoraPrecompiles;
 pub use hdc::{HDC_PRECOMPILE_ADDRESS, HDCPrecompiles, HDCState, InsightPostedEvent};
 pub use hdc_index::{HdcIndex, Hit, IndexedVector};
 pub use hdc_vector::HdcVector;
-pub use insight_event::{decode_insight_posted, insight_posted_topic0};
+pub use insight_event::{
+    InsightConfirmedEvent, InsightPromotedEvent, decode_insight_confirmed, decode_insight_posted,
+    decode_insight_promoted, insight_confirmed_topic0, insight_posted_topic0,
+    insight_promoted_topic0,
+};
 pub use insight_id::{InsightId, KnowledgeKind};
+pub use stigmergy::{
+    KnowledgeKindCode, STIGMERGY_PRECOMPILE_ADDRESS, StigmergyPrecompile, StigmergyState, TierCode,
+};

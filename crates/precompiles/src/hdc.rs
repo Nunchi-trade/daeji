@@ -141,7 +141,8 @@ impl HDCState {
     }
 }
 
-/// Decoded `InsightPosted` event fields the HDC precompile cares about.
+/// Decoded `InsightPosted` event fields the HDC + stigmergy precompiles
+/// care about.
 ///
 /// Populated by `crate::insight_event::decode_insight_posted` from the raw
 /// log; abstracted into a struct so the on_finalize hook stays decoupled
@@ -155,6 +156,9 @@ pub struct InsightPostedEvent {
     pub insight_id: InsightId,
     /// Block timestamp at which the post was finalized.
     pub posted_at: u64,
+    /// Knowledge kind. Consumed by `StigmergyState::apply_posted` to
+    /// derive effective half-life.
+    pub kind: crate::stigmergy::KnowledgeKindCode,
     /// `halfLifeOf(kind) × tierMultiplierBps(tier) / 1000`. New posts
     /// always start at `Tier.Transient` so this is `baseHl × 100 / 1000`.
     pub effective_half_life_seconds: u64,

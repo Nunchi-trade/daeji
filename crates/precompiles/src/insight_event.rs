@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+#![allow(clippy::missing_const_for_fn)]
 //! Decoder for the `InsightPosted` event emitted by `InsightBoard.sol`.
 //!
 //! Mirrors the Solidity event signature at
@@ -47,11 +49,53 @@ sol! {
         bytes   hdcVector,
         string  uri
     );
+
+    /// `confirm(id, contextTag)` event consumed by the stigmergy precompile
+    /// to update pheromone counter + distinct-context tracking.
+    #[derive(Debug)]
+    event InsightConfirmed(
+        uint256 indexed id,
+        address indexed confirmer,
+        bytes32         contextTag
+    );
+
+    /// Tier-change event consumed by the stigmergy precompile.
+    #[derive(Debug)]
+    event InsightPromoted(
+        uint256 indexed id,
+        uint8   indexed newTier
+    );
+}
+
+/// Decoded `InsightConfirmed` event the stigmergy precompile consumes.
+#[derive(Debug, Clone)]
+pub struct InsightConfirmedEvent {
+    pub emitter: Address,
+    pub insight_id: InsightId,
+    pub context_tag: B256,
+}
+
+/// Decoded `InsightPromoted` event the stigmergy precompile consumes.
+#[derive(Debug, Clone)]
+pub struct InsightPromotedEvent {
+    pub emitter: Address,
+    pub insight_id: InsightId,
+    pub new_tier_code: u8,
 }
 
 /// Topic[0] for the `InsightPosted` event signature.
 pub fn insight_posted_topic0() -> B256 {
     InsightPosted::SIGNATURE_HASH
+}
+
+/// Topic[0] for the `InsightConfirmed` event signature.
+pub fn insight_confirmed_topic0() -> B256 {
+    InsightConfirmed::SIGNATURE_HASH
+}
+
+/// Topic[0] for the `InsightPromoted` event signature.
+pub fn insight_promoted_topic0() -> B256 {
+    InsightPromoted::SIGNATURE_HASH
 }
 
 /// Decode an `InsightPosted` log into the precompile's reduced event view.
@@ -84,49 +128,47 @@ pub fn decode_insight_posted(emitter: Address, log: &LogData) -> Option<InsightP
         emitter,
         insight_id,
         posted_at: parsed.postedAt,
+        kind,
         effective_half_life_seconds,
         hdc_vector: parsed.hdcVector.clone(),
     })
 }
 
-/// Knowledge kind enum mirror — must stay in sync with the Solidity enum
-/// `Kind` in `InsightBoard.sol`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum KnowledgeKindCode {
-    Insight,
-    Heuristic,
-    Warning,
-    AntiKnowledge,
-    CausalLink,
-    StrategyFragment,
+/// Decode an `InsightConfirmed` log into the precompile's event view.
+pub fn decode_insight_confirmed(emitter: Address, log: &LogData) -> Option<InsightConfirmedEvent> {
+    let topic0 = *log.topics().first()?;
+    if topic0 != insight_confirmed_topic0() {
+        return None;
+    }
+    let alloy_log = Log { address: emitter, data: log.clone() };
+    let parsed = InsightConfirmed::decode_log(&alloy_log).ok()?;
+    let id_u128: u128 = u128::try_from(parsed.id).ok()?;
+    Some(InsightConfirmedEvent {
+        emitter,
+        insight_id: InsightId(id_u128.to_be_bytes()),
+        context_tag: parsed.contextTag,
+    })
 }
 
-impl KnowledgeKindCode {
-    fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            0 => Some(Self::Insight),
-            1 => Some(Self::Heuristic),
-            2 => Some(Self::Warning),
-            3 => Some(Self::AntiKnowledge),
-            4 => Some(Self::CausalLink),
-            5 => Some(Self::StrategyFragment),
-            _ => None,
-        }
+/// Decode an `InsightPromoted` log into the precompile's event view.
+pub fn decode_insight_promoted(emitter: Address, log: &LogData) -> Option<InsightPromotedEvent> {
+    let topic0 = *log.topics().first()?;
+    if topic0 != insight_promoted_topic0() {
+        return None;
     }
-
-    /// Spec on-chain half-life in seconds. Matches `InsightBoard.halfLifeOf`
-    /// at `~/contracts-core/packages/agents/src/InsightBoard.sol`.
-    fn half_life_seconds(self) -> u64 {
-        match self {
-            Self::Warning => 3 * 60,              // 3 minutes
-            Self::Insight => 7 * 24 * 60 * 60,    // 7 days
-            Self::Heuristic => 15 * 24 * 60 * 60, // 15 days
-            Self::AntiKnowledge => 15 * 24 * 60 * 60,
-            Self::CausalLink => 15 * 24 * 60 * 60,
-            Self::StrategyFragment => 15 * 24 * 60 * 60,
-        }
-    }
+    let alloy_log = Log { address: emitter, data: log.clone() };
+    let parsed = InsightPromoted::decode_log(&alloy_log).ok()?;
+    let id_u128: u128 = u128::try_from(parsed.id).ok()?;
+    Some(InsightPromotedEvent {
+        emitter,
+        insight_id: InsightId(id_u128.to_be_bytes()),
+        new_tier_code: parsed.newTier,
+    })
 }
+
+/// Public mirror of the Solidity `Kind` enum, in sync with
+/// `InsightBoard.sol`. Re-exported for use by the stigmergy precompile.
+pub use crate::stigmergy::KnowledgeKindCode;
 
 #[cfg(test)]
 mod tests {
