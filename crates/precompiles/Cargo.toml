@@ -9,6 +9,7 @@ description = "Chain-specific REVM precompiles for Kora: HDC similarity (0xA0C) 
 
 [dependencies]
 alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
 parking_lot.workspace = true
 revm.workspace = true
 serde.workspace = true

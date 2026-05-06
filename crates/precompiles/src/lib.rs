@@ -26,14 +26,15 @@ pub mod agent_ns;
 pub mod hdc;
 pub mod hdc_index;
 pub mod hdc_vector;
+pub mod insight_event;
 pub mod insight_id;
 pub mod projection;
 
 pub use agent_ns::AGENT_NS_RESERVED;
-pub use hdc::{HDCPrecompiles, HDCState, HDC_PRECOMPILE_ADDRESS};
-pub use hdc_index::{HdcIndex, Hit, IndexedVector};
-pub use hdc_vector::HdcVector;
-pub use insight_id::{InsightId, KnowledgeKind};
-
 // Re-export the primary type the executor needs.
 pub use hdc::HDCPrecompiles as KoraPrecompiles;
+pub use hdc::{HDC_PRECOMPILE_ADDRESS, HDCPrecompiles, HDCState, InsightPostedEvent};
+pub use hdc_index::{HdcIndex, Hit, IndexedVector};
+pub use hdc_vector::HdcVector;
+pub use insight_event::{decode_insight_posted, insight_posted_topic0};
+pub use insight_id::{InsightId, KnowledgeKind};

@@ -93,6 +93,7 @@ alloy-primitives = "1.0"
 alloy-consensus = { version = "1.0", features = ["k256"] }
 alloy-eips = "1.0"
 alloy-rlp = "0.3"
+alloy-sol-types = "1.0"
 
 # Execution
 revm = { version = "38.0.0", default-features = false }

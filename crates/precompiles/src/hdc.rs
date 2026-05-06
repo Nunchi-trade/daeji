@@ -17,14 +17,19 @@
 //! # State
 //!
 //! The HDC index lives in Rust memory (wrapped in `parking_lot::RwLock`) and is
-//! **not** visible to EVM storage. Mutations via `insert` / `remove` persist
-//! across transactions within the same process. Cold-start recovery happens via
-//! event-replay from `InsightPosted` events on `BlockExecutor::on_finalize()`
-//! (follow-up wiring; see D-PR1 description).
+//! **not** visible to EVM storage. Mutation is node-internal only — external
+//! `insert` / `remove` selectors revert post-D-PR1-v2 because validator-local
+//! mutation would diverge consensus state. The index is a deterministic
+//! function of `InsightPosted` events on the canonical `InsightBoard`
+//! contract: every validator runs `HDCState::on_finalize_extend` from
+//! `FinalizedReporter::handle_finalized_update` after block execution,
+//! decoding logs and applying inserts + eviction in lockstep.
 //!
 //! # Gas
 //!
-//! Flat 5,000 gas per call. Phase 3 will introduce a size-aware model.
+//! Flat 50,000 gas per call (spec `02-precompiles-and-contracts.md:165` —
+//! cache-friendly memory access dominates the cost; ~24 storage reads' worth
+//! for an entire knowledge-base scan).
 
 use std::sync::Arc;
 
@@ -38,10 +43,12 @@ use revm::{
     primitives::{Bytes, hardfork::SpecId},
 };
 
-use crate::hdc_index::{HdcIndex, Hit};
-use crate::hdc_vector::HdcVector;
-use crate::insight_id::InsightId;
-use crate::projection;
+use crate::{
+    hdc_index::{HdcIndex, Hit},
+    hdc_vector::HdcVector,
+    insight_id::InsightId,
+    projection,
+};
 
 /// Canonical precompile address — reserved `0xA0C` slot in the Nunchi `0xA00–0xA0F` range.
 pub const HDC_PRECOMPILE_ADDRESS: Address = address!("0x0000000000000000000000000000000000000A0C");
@@ -49,8 +56,11 @@ pub const HDC_PRECOMPILE_ADDRESS: Address = address!("0x000000000000000000000000
 /// Length of a packed `HdcVector` in bytes (10,240 bits).
 pub const HDC_VECTOR_BYTES: usize = 1_280;
 
-/// Flat gas cost per HDC precompile call. Refined in Phase 3.
-const FLAT_GAS_COST: u64 = 5_000;
+/// Flat gas cost per HDC precompile call. Per Will's spec at
+/// `02-precompiles-and-contracts.md:165` (50,000 gas — cache-friendly memory
+/// access dominates the cost; ~24 storage reads' worth for an entire
+/// knowledge-base scan).
+const FLAT_GAS_COST: u64 = 50_000;
 
 /// Maximum `k` accepted by `search` — prevents quadratic encoding cost under adversarial calldata.
 const MAX_SEARCH_K: usize = 256;
@@ -87,6 +97,69 @@ impl HDCState {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
     }
+
+    /// Replay finalized-block logs into the HDC index. Called from
+    /// `FinalizedReporter::handle_finalized_update` after block
+    /// execution so all validators converge on the same index state
+    /// purely as a function of `InsightPosted` event history.
+    ///
+    /// `insight_board_address` filters logs to those emitted by the
+    /// canonical InsightBoard contract. Pass the deployed address from
+    /// chain config / genesis.
+    ///
+    /// After insertion, expired entries are evicted using `block_timestamp`
+    /// as the reference clock — matches `InsightBoard.currentWeight()`'s
+    /// "considered dead at >=7 half-lives" rule.
+    pub fn on_finalize_extend(
+        &self,
+        block_timestamp: u64,
+        insight_board_address: alloy_primitives::Address,
+        decoded_events: impl IntoIterator<Item = InsightPostedEvent>,
+    ) {
+        let mut index = self.index.write();
+        for event in decoded_events {
+            if event.emitter != insight_board_address {
+                continue;
+            }
+            let weight = 1.0; // initial weight (Tier.Transient at posting time).
+            // Validate vector size; skip malformed events rather than panic.
+            if event.hdc_vector.len() != crate::hdc::HDC_VECTOR_BYTES {
+                continue;
+            }
+            let mut bytes = [0u8; crate::hdc::HDC_VECTOR_BYTES];
+            bytes.copy_from_slice(&event.hdc_vector);
+            let vector = HdcVector::from_bytes(&bytes);
+            index.insert_with_decay(
+                event.insight_id,
+                vector,
+                weight,
+                event.posted_at,
+                event.effective_half_life_seconds,
+            );
+        }
+        index.evict_expired(block_timestamp);
+    }
+}
+
+/// Decoded `InsightPosted` event fields the HDC precompile cares about.
+///
+/// Populated by `crate::insight_event::decode_insight_posted` from the raw
+/// log; abstracted into a struct so the on_finalize hook stays decoupled
+/// from the alloy `Log` type and is easy to fixture in tests.
+#[derive(Debug, Clone)]
+pub struct InsightPostedEvent {
+    /// Address of the contract that emitted the event (used to filter
+    /// foreign InsightBoard deployments out of consensus state).
+    pub emitter: alloy_primitives::Address,
+    /// Insight id in the originating contract.
+    pub insight_id: InsightId,
+    /// Block timestamp at which the post was finalized.
+    pub posted_at: u64,
+    /// `halfLifeOf(kind) × tierMultiplierBps(tier) / 1000`. New posts
+    /// always start at `Tier.Transient` so this is `baseHl × 100 / 1000`.
+    pub effective_half_life_seconds: u64,
+    /// Full 1280-byte HDC vector from the event.
+    pub hdc_vector: alloy_primitives::Bytes,
 }
 
 /// Custom `PrecompileProvider` that delegates to [`EthPrecompiles`] for standard Ethereum
@@ -101,10 +174,7 @@ impl HDCPrecompiles {
     /// Construct the combined Ethereum-plus-HDC precompile provider for the given spec.
     #[must_use]
     pub fn new(spec: SpecId, state: Arc<HDCState>) -> Self {
-        Self {
-            eth: EthPrecompiles::new(spec),
-            state,
-        }
+        Self { eth: EthPrecompiles::new(spec), state }
     }
 
     /// Dispatch an HDC precompile call by selector. Returns the ABI-encoded output
@@ -132,8 +202,14 @@ impl HDCPrecompiles {
             SELECTOR_BUNDLE => dispatch_bundle(payload, gas),
             SELECTOR_SIMILARITY => dispatch_similarity(payload, gas),
             SELECTOR_SEARCH => dispatch_search(payload, gas, &self.state),
-            SELECTOR_INSERT => dispatch_insert(payload, gas, &self.state),
-            SELECTOR_REMOVE => dispatch_remove(payload, gas, &self.state),
+            // `insert` / `remove` are node-internal post-spec-alignment.
+            // The HDC index is a deterministic function of `InsightPosted`
+            // events — replayed on `BlockExecutor::on_finalize`. External
+            // mutation would diverge validator state and break consensus.
+            // See `HDCState::on_finalize_extend` and `HdcIndex::evict_expired`.
+            SELECTOR_INSERT | SELECTOR_REMOVE => {
+                revert(gas, b"hdc: insert/remove are node-internal; mutation is via InsightPosted event-replay only")
+            }
             _ => revert(gas, b"hdc: unknown selector"),
         }
     }
@@ -303,6 +379,10 @@ fn dispatch_search(payload: &[u8], gas: Gas, state: &HDCState) -> InterpreterRes
     }
 }
 
+/// Internal mutation impl. External selector dispatch was removed for
+/// consensus correctness (D-PR1-v2); kept here as reference for any future
+/// admin-only mutation API or genesis-replay path.
+#[allow(dead_code)]
 fn dispatch_insert(payload: &[u8], gas: Gas, state: &HDCState) -> InterpreterResult {
     // Calldata head: bytes16 (32) | offset_of_bytes (32) | uint32 (32)
     if payload.len() < 96 {
@@ -325,17 +405,13 @@ fn dispatch_insert(payload: &[u8], gas: Gas, state: &HDCState) -> InterpreterRes
     }
     let vector = HdcVector::from_bytes(vec_bytes.try_into().expect("len checked"));
     let weight_f32 = (weight_scaled as f32) / 1_000_000.0;
-    state
-        .index
-        .write()
-        .insert(InsightId(id), vector, weight_f32);
-    InterpreterResult {
-        result: InstructionResult::Return,
-        gas,
-        output: Bytes::new(),
-    }
+    state.index.write().insert(InsightId(id), vector, weight_f32);
+    InterpreterResult { result: InstructionResult::Return, gas, output: Bytes::new() }
 }
 
+/// Internal mutation impl. External selector dispatch was removed for
+/// consensus correctness (D-PR1-v2). See `dispatch_insert`.
+#[allow(dead_code)]
 fn dispatch_remove(payload: &[u8], gas: Gas, state: &HDCState) -> InterpreterResult {
     if payload.len() < 32 {
         return revert(gas, b"hdc.remove: calldata too short");
@@ -432,6 +508,7 @@ fn read_uint_as_usize(word: &[u8]) -> Option<usize> {
     Some(u64::from_be_bytes(buf) as usize)
 }
 
+#[allow(dead_code)]
 fn read_uint32(word: &[u8]) -> Option<u32> {
     if word.len() != 32 {
         return None;
@@ -439,13 +516,12 @@ fn read_uint32(word: &[u8]) -> Option<u32> {
     if word[..28].iter().any(|b| *b != 0) {
         return None;
     }
-    Some(u32::from_be_bytes(
-        word[28..32].try_into().expect("len checked"),
-    ))
+    Some(u32::from_be_bytes(word[28..32].try_into().expect("len checked")))
 }
 
 /// Decode a `bytes16` from a 32-byte word. Solidity `bytesN` is left-aligned with zero padding
 /// on the right, so the value is `word[0..16]` and `word[16..32]` must be zero.
+#[allow(dead_code)]
 fn decode_bytes16(word: &[u8]) -> Option<[u8; 16]> {
     if word.len() != 32 {
         return None;
@@ -464,6 +540,7 @@ fn encode_uint32(v: u32) -> Vec<u8> {
 }
 
 /// Encode a `bool` as a 32-byte word (`1` or `0`).
+#[allow(dead_code)]
 fn encode_bool(v: bool) -> Vec<u8> {
     let mut out = vec![0u8; 32];
     out[31] = u8::from(v);
@@ -513,11 +590,7 @@ fn encode_word_from_usize(v: usize) -> [u8; 32] {
 /// Convert an `f32` in `[0, 1]` to a `uint32` in `[0, 1_000_000]`. NaN → 0. Weights above 1.0
 /// saturate at 1e6 (the Solidity `similarity1e6` contract expects a bounded value).
 fn scale_f32_to_uint32(v: f32) -> u32 {
-    if v.is_nan() {
-        0
-    } else {
-        (v.clamp(0.0, 1.0) * 1_000_000.0).round() as u32
-    }
+    if v.is_nan() { 0 } else { (v.clamp(0.0, 1.0) * 1_000_000.0).round() as u32 }
 }
 
 // ---- Revert helpers ----
@@ -593,10 +666,7 @@ mod tests {
     fn project_tokens_round_trip() {
         let text = "agent-42 observed a resonance cascade";
         let expected = projection::project_tokens(text);
-        let out = run(
-            SELECTOR_PROJECT_TOKENS,
-            &encode_single_bytes_arg(text.as_bytes()),
-        );
+        let out = run(SELECTOR_PROJECT_TOKENS, &encode_single_bytes_arg(text.as_bytes()));
         assert_eq!(out.result, InstructionResult::Return);
         let decoded = decode_returned_bytes(&out.output);
         assert_eq!(decoded, expected.to_bytes().as_slice());
@@ -645,41 +715,36 @@ mod tests {
     }
 
     #[test]
-    fn insert_then_remove_round_trip() {
+    fn external_insert_selector_reverts_after_spec_alignment() {
+        // Post-D-PR1-v2: insert/remove are node-internal. External callers
+        // cannot mutate the HDC index — only event-replay on
+        // `BlockExecutor::on_finalize` can. This guards against contracts
+        // attempting to drive the index out of consensus state.
         let state = HDCState::new();
         let provider = HDCPrecompiles::new(SpecId::SHANGHAI, Arc::clone(&state));
         let id = [0x11u8; 16];
         let v = HdcVector::from_seed(b"insert-test");
-
-        // Insert
         let insert_data = encode_insert_args(id, &v, 750_000);
         let out = provider.run_hdc(&with_selector(SELECTOR_INSERT, &insert_data), 1_000_000);
-        assert_eq!(out.result, InstructionResult::Return);
-        assert_eq!(state.index.read().len(), 1);
-
-        // Remove
-        let remove_data = encode_bytes16_arg(id);
-        let out = provider.run_hdc(&with_selector(SELECTOR_REMOVE, &remove_data), 1_000_000);
-        assert_eq!(out.result, InstructionResult::Return);
-        let removed = out.output[31] == 1;
-        assert!(removed);
+        assert_eq!(out.result, InstructionResult::Revert);
+        assert!(out.output.starts_with(b"hdc: insert/remove are node-internal"));
         assert_eq!(state.index.read().len(), 0);
     }
 
     #[test]
-    fn remove_missing_id_returns_false() {
+    fn external_remove_selector_reverts_after_spec_alignment() {
         let state = HDCState::new();
         let provider = HDCPrecompiles::new(SpecId::SHANGHAI, state);
-        let out = provider.run_hdc(
-            &with_selector(SELECTOR_REMOVE, &encode_bytes16_arg([0xAAu8; 16])),
-            1_000_000,
-        );
-        assert_eq!(out.result, InstructionResult::Return);
-        assert_eq!(out.output[31], 0);
+        let out = provider
+            .run_hdc(&with_selector(SELECTOR_REMOVE, &encode_bytes16_arg([0xAAu8; 16])), 1_000_000);
+        assert_eq!(out.result, InstructionResult::Revert);
+        assert!(out.output.starts_with(b"hdc: insert/remove are node-internal"));
     }
 
     #[test]
-    fn search_returns_nearest_neighbour() {
+    fn search_returns_nearest_neighbour_from_internal_index() {
+        // Populate the index via the internal API (mirrors what
+        // `HDCState::on_finalize_extend` will do during event replay).
         let state = HDCState::new();
         let provider = HDCPrecompiles::new(SpecId::SHANGHAI, Arc::clone(&state));
 
@@ -687,14 +752,11 @@ mod tests {
         let noise_a = HdcVector::from_seed(b"noise-a");
         let noise_b = HdcVector::from_seed(b"noise-b");
 
-        for (id, v) in &[
-            ([0x01u8; 16], &target),
-            ([0x02u8; 16], &noise_a),
-            ([0x03u8; 16], &noise_b),
-        ] {
-            let data = encode_insert_args(*id, v, 1_000_000);
-            let out = provider.run_hdc(&with_selector(SELECTOR_INSERT, &data), 1_000_000);
-            assert_eq!(out.result, InstructionResult::Return);
+        {
+            let mut index = state.index.write();
+            index.insert_with_decay(InsightId([0x01u8; 16]), target.clone(), 1.0, 0, u64::MAX);
+            index.insert_with_decay(InsightId([0x02u8; 16]), noise_a, 1.0, 0, u64::MAX);
+            index.insert_with_decay(InsightId([0x03u8; 16]), noise_b, 1.0, 0, u64::MAX);
         }
 
         let args = encode_search_args(&target, 3, 40);

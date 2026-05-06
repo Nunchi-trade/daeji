@@ -94,12 +94,12 @@ impl KnowledgeKind {
     #[must_use]
     pub const fn default_half_life_seconds(self) -> u64 {
         match self {
-            Self::Warning => 7 * 86_400,            // 7 days
-            Self::Insight => 30 * 86_400,           // 30 days
-            Self::StrategyFragment => 60 * 86_400,  // 60 days
-            Self::Heuristic => 90 * 86_400,         // 90 days
-            Self::CausalLink => 180 * 86_400,       // 180 days
-            Self::AntiKnowledge => 365 * 86_400,    // 365 days
+            Self::Warning => 7 * 86_400,           // 7 days
+            Self::Insight => 30 * 86_400,          // 30 days
+            Self::StrategyFragment => 60 * 86_400, // 60 days
+            Self::Heuristic => 90 * 86_400,        // 90 days
+            Self::CausalLink => 180 * 86_400,      // 180 days
+            Self::AntiKnowledge => 365 * 86_400,   // 365 days
         }
     }
 }

@@ -24,8 +24,9 @@
 //! Vendored from `roko/apps/mirage-rs/src/chain/projection.rs` (MIT OR
 //! Apache-2.0). Imports re-pointed to local crate modules.
 
-use crate::hdc_vector::HdcVector;
 use serde::{Deserialize, Serialize};
+
+use crate::hdc_vector::HdcVector;
 
 /// Bit width of the HDC hypervector (matches `roko_primitives::HdcVector`).
 pub const HDC_BITS: usize = 10_240;
@@ -73,12 +74,7 @@ impl ProjectionMatrix {
             }
             rows.push(row);
         }
-        Self {
-            input_dim,
-            output_dim: HDC_BITS,
-            rows,
-            seed,
-        }
+        Self { input_dim, output_dim: HDC_BITS, rows, seed }
     }
 
     /// Projects a slice of floats into an HDC vector via sign-projection.
@@ -147,10 +143,8 @@ pub fn project_bytes(bytes: &[u8]) -> HdcVector {
 /// will typically exceed 0.75. Completely disjoint token sets yield ~0.50 (random).
 #[must_use]
 pub fn project_tokens(text: &str) -> HdcVector {
-    let tokens: Vec<HdcVector> = text
-        .split_whitespace()
-        .map(|tok| HdcVector::from_seed(tok.as_bytes()))
-        .collect();
+    let tokens: Vec<HdcVector> =
+        text.split_whitespace().map(|tok| HdcVector::from_seed(tok.as_bytes())).collect();
     if tokens.is_empty() {
         return HdcVector::zeros();
     }
@@ -234,10 +228,7 @@ mod tests {
         let c = project_tokens("transfer erc20 tokens to vault");
         let ab = a.similarity(&b);
         let ac = a.similarity(&c);
-        assert!(
-            ab > ac,
-            "shared tokens should boost similarity: ab={ab} ac={ac}"
-        );
+        assert!(ab > ac, "shared tokens should boost similarity: ab={ab} ac={ac}");
     }
 
     #[test]

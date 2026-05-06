@@ -91,11 +91,7 @@ impl HdcVector {
     /// non-deterministic randomness has no place in a chain precompile.)
     #[must_use]
     pub fn random_from_seed(seed: u64) -> Self {
-        let mut state = if seed == 0 {
-            0xA5A5_A5A5_5A5A_5A5A
-        } else {
-            seed
-        };
+        let mut state = if seed == 0 { 0xA5A5_A5A5_5A5A_5A5A } else { seed };
 
         let mut bits = [0u64; 160];
         for word in &mut bits {
@@ -256,10 +252,7 @@ impl BundleAccumulator {
     /// Create an empty accumulator.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            votes: vec![0; HDC_BITS],
-            count: 0,
-        }
+        Self { votes: vec![0; HDC_BITS], count: 0 }
     }
 
     /// Add one vector to the running vote tally.
@@ -272,9 +265,8 @@ impl BundleAccumulator {
     ///
     /// Negative weights subtract the vector's contribution.
     pub fn add_weighted(&mut self, hv: &HdcVector, weight: i32) {
-        self.count = self
-            .count
-            .saturating_add(usize::try_from(weight.unsigned_abs()).unwrap_or(usize::MAX));
+        self.count =
+            self.count.saturating_add(usize::try_from(weight.unsigned_abs()).unwrap_or(usize::MAX));
         update_votes_i32(&mut self.votes, hv, weight);
     }
 
@@ -334,11 +326,7 @@ impl DecayingBundleAccumulator {
             decay_factor > 0.0 && decay_factor <= 1.0,
             "decay_factor must be in (0.0, 1.0], got {decay_factor}"
         );
-        Self {
-            votes: vec![0.0; HDC_BITS],
-            count: 0,
-            decay_factor,
-        }
+        Self { votes: vec![0.0; HDC_BITS], count: 0, decay_factor }
     }
 
     /// Add one vector after decaying prior votes.
@@ -573,10 +561,7 @@ mod tests {
             label: String,
             vector: HdcVector,
         }
-        let w = Wrapper {
-            label: "t".into(),
-            vector: HdcVector::from_seed(b"inside struct"),
-        };
+        let w = Wrapper { label: "t".into(), vector: HdcVector::from_seed(b"inside struct") };
         let json = serde_json::to_string(&w).expect("serialize");
         let decoded: Wrapper = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded.label, "t");

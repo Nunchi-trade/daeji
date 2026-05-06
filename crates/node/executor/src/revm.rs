@@ -1,7 +1,6 @@
 //! REVM-based block executor.
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use alloy_consensus::Header;
 use alloy_primitives::{B256, Bytes, U256, keccak256};
@@ -49,19 +48,13 @@ impl RevmExecutor {
     /// Create a new REVM executor with the given chain ID.
     #[must_use]
     pub fn new(chain_id: u64) -> Self {
-        Self {
-            config: ExecutionConfig::new(chain_id),
-            hdc_state: HDCState::new(),
-        }
+        Self { config: ExecutionConfig::new(chain_id), hdc_state: HDCState::new() }
     }
 
     /// Create a new REVM executor with full configuration.
     #[must_use]
     pub fn with_config(config: ExecutionConfig) -> Self {
-        Self {
-            config,
-            hdc_state: HDCState::new(),
-        }
+        Self { config, hdc_state: HDCState::new() }
     }
 
     /// Create with an existing HDC state (e.g. for sharing between simulator + executor).
