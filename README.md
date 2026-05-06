@@ -62,6 +62,8 @@ The devnet runs in three phases. Phase 0 generates ed25519 identity keys for eac
 
 Observability is provided through Prometheus metrics with Grafana dashboards for monitoring node health, consensus performance, and execution metrics.
 
+Additional design research lives in [`docs/research`](./docs/research/), including notes on [Tempo transaction submission](./docs/research/tempo-tx-submission.md).
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
