@@ -78,11 +78,17 @@ const INITIAL_WEIGHT_E6: u64 = 1_000_000;
 const DEAD_QUANTA: u64 = 7;
 
 // ---- Selectors (keccak256(sig)[..4]) ----
-const SELECTOR_CURRENT_WEIGHT: [u8; 4] = [0x82, 0x05, 0x68, 0xc4]; // currentWeight(uint256)
-const SELECTOR_TIER_OF: [u8; 4] = [0x9e, 0x67, 0xf2, 0x09]; // tierOf(uint256)
-const SELECTOR_PHEROMONE_OF: [u8; 4] = [0x4f, 0x82, 0xfb, 0x68]; // pheromoneOf(uint256)
-const SELECTOR_DISTINCT_CONTEXTS: [u8; 4] = [0x88, 0xfe, 0xfa, 0x12]; // distinctContextsCount(uint256)
-const SELECTOR_EARNED_TIER: [u8; 4] = [0xa3, 0xb1, 0x16, 0xc1]; // earnedTier(uint256)
+//
+// Verified via `cast sig "<sig>"`. Previous values were stale / wrong;
+// Solidity callers send keccak256(signature)[..4] and would have hit the
+// "stig: unknown selector" revert path for every call. Tests exercise the
+// state-mutation logic (`apply_*`, `tier_of`, etc.) directly without going
+// through dispatch, so the regression slipped through.
+const SELECTOR_CURRENT_WEIGHT: [u8; 4] = [0x3c, 0x5f, 0xa7, 0x2b]; // currentWeight(uint256)
+const SELECTOR_TIER_OF: [u8; 4] = [0x53, 0xf9, 0x6d, 0xf2]; // tierOf(uint256)
+const SELECTOR_PHEROMONE_OF: [u8; 4] = [0x90, 0xa4, 0x49, 0x3b]; // pheromoneOf(uint256)
+const SELECTOR_DISTINCT_CONTEXTS: [u8; 4] = [0x1d, 0x5a, 0x9c, 0xcc]; // distinctContextsCount(uint256)
+const SELECTOR_EARNED_TIER: [u8; 4] = [0xad, 0xf2, 0xef, 0x27]; // earnedTier(uint256)
 
 /// Knowledge kind code mirror — matches `InsightBoard.Kind` enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -467,6 +473,26 @@ mod tests {
     use super::*;
 
     const BOARD: Address = address!("0x000000000000000000000000000000000000000a");
+
+    /// Lock the dispatch selectors against keccak256(signature)[..4]. Caught a
+    /// stale-constant regression that would have made every Solidity call
+    /// hit the "stig: unknown selector" revert path. Computed values come
+    /// from `cast sig "<signature>"`.
+    #[test]
+    fn selectors_match_solidity_signatures() {
+        use alloy_primitives::keccak256;
+        fn selector(sig: &str) -> [u8; 4] {
+            let digest = keccak256(sig.as_bytes());
+            let mut out = [0u8; 4];
+            out.copy_from_slice(&digest[..4]);
+            out
+        }
+        assert_eq!(selector("currentWeight(uint256)"), SELECTOR_CURRENT_WEIGHT);
+        assert_eq!(selector("tierOf(uint256)"), SELECTOR_TIER_OF);
+        assert_eq!(selector("pheromoneOf(uint256)"), SELECTOR_PHEROMONE_OF);
+        assert_eq!(selector("distinctContextsCount(uint256)"), SELECTOR_DISTINCT_CONTEXTS);
+        assert_eq!(selector("earnedTier(uint256)"), SELECTOR_EARNED_TIER);
+    }
 
     fn fresh_state() -> Arc<StigmergyState> {
         let s = StigmergyState::new();
