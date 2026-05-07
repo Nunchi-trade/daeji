@@ -85,30 +85,29 @@ loadtest:
 stresstest:
     cargo run --release --bin loadgen -- --total-txs 10000 --accounts 50
 
-# Build the released commonware-chat example (vendored from commonwarexyz/monorepo@v2026.4.0
-# at crates/network/commonware-chat-upstream).
+# Install the released commonware-chat binary from crates.io.
 chat-build:
-    cargo build --release -p commonware-chat-upstream
+    cargo install --locked commonware-chat --version 2026.4.0 --root ./target/commonware-chat
 
 # Released commonware-chat example — friend 1 (bootstrapper).
 # Open four terminals and run chat-1 .. chat-4 to spin up the 4-node demo.
-chat-1:
-    cargo run --release -p commonware-chat-upstream --bin commonware-chat -- \
+chat-1: chat-build
+    ./target/commonware-chat/bin/commonware-chat \
         --me=1@3001 --friends=1,2,3,4
 
 # Released commonware-chat example — friend 2.
-chat-2:
-    cargo run --release -p commonware-chat-upstream --bin commonware-chat -- \
+chat-2: chat-build
+    ./target/commonware-chat/bin/commonware-chat \
         --me=2@3002 --friends=1,2,3,4 --bootstrappers=1@127.0.0.1:3001
 
 # Released commonware-chat example — friend 3.
-chat-3:
-    cargo run --release -p commonware-chat-upstream --bin commonware-chat -- \
+chat-3: chat-build
+    ./target/commonware-chat/bin/commonware-chat \
         --me=3@3003 --friends=1,2,3,4 --bootstrappers=1@127.0.0.1:3001
 
 # Released commonware-chat example — friend 4.
-chat-4:
-    cargo run --release -p commonware-chat-upstream --bin commonware-chat -- \
+chat-4: chat-build
+    ./target/commonware-chat/bin/commonware-chat \
         --me=4@3004 --friends=1,2,3,4 --bootstrappers=3@127.0.0.1:3003
 
 # Run chat node N attached to the live devnet's docker network. Requires `just devnet`
