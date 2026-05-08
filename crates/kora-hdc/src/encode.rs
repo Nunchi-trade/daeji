@@ -23,7 +23,7 @@ impl TrigramEncoder {
     }
 
     /// Encode a string into a hypervector via character trigrams.
-    pub fn encode(&self, text: &str) -> HdcVector {
+    pub fn encode(text: &str) -> HdcVector {
         let chars: Vec<char> = text.chars().collect();
         match chars.len() {
             0 => HdcVector::default(),
@@ -83,7 +83,7 @@ impl ProjectionEncoder {
     /// Project an f32 embedding into a binary hypervector.
     ///
     /// **OFF-CHAIN ONLY** — uses f32 arithmetic.
-    pub fn encode(&self, embedding: &[f32]) -> HdcVector {
+    pub fn project(&self, embedding: &[f32]) -> HdcVector {
         assert_eq!(
             embedding.len(),
             self.input_dim,
@@ -136,7 +136,7 @@ impl StructuredEncoder {
     }
 
     /// Bundle all fields into a single hypervector.
-    pub fn encode(&self) -> HdcVector {
+    pub fn build(&self) -> HdcVector {
         if self.fields.is_empty() {
             return HdcVector::default();
         }
@@ -164,34 +164,30 @@ mod tests {
 
     #[test]
     fn trigram_encoder_deterministic() {
-        let enc = TrigramEncoder::new();
-        let a = enc.encode("hello world");
-        let b = enc.encode("hello world");
+        let a = TrigramEncoder::encode("hello world");
+        let b = TrigramEncoder::encode("hello world");
         assert_eq!(a, b);
     }
 
     #[test]
     fn trigram_encoder_similar_strings_are_similar() {
-        let enc = TrigramEncoder::new();
-        let a = enc.encode("hello world");
-        let b = enc.encode("hello world!");
+        let a = TrigramEncoder::encode("hello world");
+        let b = TrigramEncoder::encode("hello world!");
         let dist = hamming_distance(&a, &b);
         assert!(dist < 4000, "similar strings have hamming {dist}, expected < 4000");
     }
 
     #[test]
     fn trigram_encoder_different_strings_are_dissimilar() {
-        let enc = TrigramEncoder::new();
-        let a = enc.encode("hello world");
-        let b = enc.encode("quantum computing");
+        let a = TrigramEncoder::encode("hello world");
+        let b = TrigramEncoder::encode("quantum computing");
         let dist = hamming_distance(&a, &b);
         assert!(dist > 4500, "different strings have hamming {dist}, expected > 4500");
     }
 
     #[test]
     fn trigram_encoder_empty_returns_zero() {
-        let enc = TrigramEncoder::new();
-        let result = enc.encode("");
+        let result = TrigramEncoder::encode("");
         assert_eq!(result, HdcVector::default());
     }
 
@@ -200,7 +196,7 @@ mod tests {
         let mut enc = StructuredEncoder::new();
         enc.add_field("name", "alice");
         enc.add_field("role", "engineer");
-        let record = enc.encode();
+        let record = enc.build();
 
         // Unbind with "name" to retrieve the filler
         let name_key = HdcVector::symbol("name");
