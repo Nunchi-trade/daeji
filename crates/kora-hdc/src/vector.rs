@@ -268,4 +268,37 @@ mod tests {
         let b = HdcVector::random(51);
         assert_ne!(vector_id(&a), vector_id(&b));
     }
+
+    #[test]
+    fn symbol_different_names_differ() {
+        assert_ne!(HdcVector::symbol("foo"), HdcVector::symbol("bar"));
+    }
+
+    #[test]
+    fn bind_result_is_dissimilar_to_inputs() {
+        let a = HdcVector::random(60);
+        let b = HdcVector::random(61);
+        let bound = bind(&a, &b);
+        // bind produces quasi-orthogonal result to both inputs
+        let dist_a = hamming_distance(&bound, &a);
+        let dist_b = hamming_distance(&bound, &b);
+        assert!(dist_a > 4500, "bound should be dissimilar to a, got {dist_a}");
+        assert!(dist_b > 4500, "bound should be dissimilar to b, got {dist_b}");
+    }
+
+    #[test]
+    fn serialize_length() {
+        let v = HdcVector::random(70);
+        let bytes = serialize(&v);
+        assert_eq!(bytes.len(), crate::constants::BYTES);
+    }
+
+    #[test]
+    fn permute_result_is_quasi_orthogonal() {
+        let v = HdcVector::random(80);
+        let p = permute(&v, 37);
+        let dist = hamming_distance(&v, &p);
+        // Permuted vector should be quasi-orthogonal to original
+        assert!(dist > 4500, "permuted should be quasi-orthogonal, got {dist}");
+    }
 }
