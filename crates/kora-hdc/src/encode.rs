@@ -74,7 +74,7 @@ impl ProjectionEncoder {
         let mut rng = ChaCha20Rng::seed_from_u64(seed);
         let mut matrix = Vec::with_capacity(D * input_dim);
         for _ in 0..(D * input_dim) {
-            let val = if rng.next_u32() & 1 == 0 { 1i8 } else { -1i8 };
+            let val = if (rng.next_u32() >> 31) == 0 { 1i8 } else { -1i8 };
             matrix.push(val);
         }
         Self { input_dim, matrix }
