@@ -60,6 +60,20 @@ impl Evm {
         nonce: u64,
         gas_limit: u64,
     ) -> Tx {
+        Self::sign_eip1559_call_with_value(key, chain_id, to, input, U256::ZERO, nonce, gas_limit)
+    }
+
+    /// Sign an EIP-1559 call transaction with a value (for payable functions).
+    #[allow(clippy::too_many_arguments)]
+    pub fn sign_eip1559_call_with_value(
+        key: &SigningKey,
+        chain_id: u64,
+        to: Address,
+        input: Bytes,
+        value: U256,
+        nonce: u64,
+        gas_limit: u64,
+    ) -> Tx {
         let tx = TxEip1559 {
             chain_id,
             nonce,
@@ -67,7 +81,7 @@ impl Evm {
             max_fee_per_gas: 0,
             max_priority_fee_per_gas: 0,
             to: TxKind::Call(to),
-            value: U256::ZERO,
+            value,
             access_list: Default::default(),
             input,
         };

@@ -32,11 +32,13 @@ pub struct OnChainHdcIndex {
     entries: BTreeMap<B256, (HdcVector, InsightMeta)>,
     /// Maximum number of entries. 0 means unlimited.
     max_entries: usize,
+    /// Pheromone tracking: topic → region → cumulative strength.
+    pheromones: BTreeMap<B256, BTreeMap<B256, u64>>,
 }
 
 impl Default for OnChainHdcIndex {
     fn default() -> Self {
-        Self { entries: BTreeMap::new(), max_entries: 0 }
+        Self { entries: BTreeMap::new(), max_entries: 0, pheromones: BTreeMap::new() }
     }
 }
 
@@ -92,7 +94,7 @@ impl OnChainHdcIndex {
     /// When the index is full, [`insert_insight`](Self::insert_insight) returns
     /// [`IndexError::CapacityExceeded`].
     pub fn with_capacity(max_entries: usize) -> Self {
-        Self { entries: BTreeMap::new(), max_entries }
+        Self { entries: BTreeMap::new(), max_entries, pheromones: BTreeMap::new() }
     }
 
     /// Insert or update an insight vector.
@@ -172,9 +174,31 @@ impl OnChainHdcIndex {
         self.entries.iter().map(|(id, (vec, meta))| (id, vec, meta))
     }
 
-    /// Record a pheromone event.
-    pub fn record_pheromone(&mut self, _topic: B256, _region: B256, _strength: u64) {
-        // TODO: implement pheromone tracking
+    /// Record a pheromone event, accumulating strength for a topic/region pair.
+    pub fn record_pheromone(&mut self, topic: B256, region: B256, strength: u64) {
+        let entry = self
+            .pheromones
+            .entry(topic)
+            .or_default()
+            .entry(region)
+            .or_insert(0);
+        *entry = entry.saturating_add(strength);
+    }
+
+    /// Query the pheromone strength for a specific topic and region.
+    pub fn pheromone_strength(&self, topic: &B256, region: &B256) -> u64 {
+        self.pheromones
+            .get(topic)
+            .and_then(|regions| regions.get(region))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Iterate all pheromone entries in deterministic order.
+    pub fn iter_pheromones(&self) -> impl Iterator<Item = (&B256, &B256, u64)> {
+        self.pheromones.iter().flat_map(|(topic, regions)| {
+            regions.iter().map(move |(region, &strength)| (topic, region, strength))
+        })
     }
 
     /// Number of indexed vectors.
@@ -259,6 +283,42 @@ mod tests {
         for i in 1..ids.len() {
             assert!(ids[i - 1] < ids[i], "iter_vectors must be sorted by key");
         }
+    }
+
+    #[test]
+    fn test_pheromone_tracking() {
+        let mut index = OnChainHdcIndex::new();
+        let topic = B256::from([1u8; 32]);
+        let region = B256::from([2u8; 32]);
+
+        assert_eq!(index.pheromone_strength(&topic, &region), 0);
+
+        index.record_pheromone(topic, region, 100);
+        assert_eq!(index.pheromone_strength(&topic, &region), 100);
+
+        // Accumulates
+        index.record_pheromone(topic, region, 50);
+        assert_eq!(index.pheromone_strength(&topic, &region), 150);
+
+        // Different region
+        let region2 = B256::from([3u8; 32]);
+        index.record_pheromone(topic, region2, 200);
+        assert_eq!(index.pheromone_strength(&topic, &region2), 200);
+
+        // Iter deterministic
+        let entries: Vec<_> = index.iter_pheromones().collect();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn test_pheromone_saturating_add() {
+        let mut index = OnChainHdcIndex::new();
+        let topic = B256::from([1u8; 32]);
+        let region = B256::from([2u8; 32]);
+
+        index.record_pheromone(topic, region, u64::MAX);
+        index.record_pheromone(topic, region, 1);
+        assert_eq!(index.pheromone_strength(&topic, &region), u64::MAX);
     }
 
     #[test]

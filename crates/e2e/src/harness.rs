@@ -93,6 +93,8 @@ pub struct TestOutcome {
     pub blocks_finalized: u64,
     /// Per-node finalization counts.
     pub node_finalization_counts: Vec<u64>,
+    /// Test nodes for post-run queries (balance, storage, etc.).
+    pub nodes: Vec<TestNode>,
 }
 
 /// Test harness for running e2e consensus tests.
@@ -186,6 +188,7 @@ impl TestHarness {
             seed,
             blocks_finalized: config.max_blocks,
             node_finalization_counts: node_counts,
+            nodes,
         })
     }
 }

@@ -67,10 +67,10 @@ export async function hdcSimilarity(a, b) {
     });
     return Number(result);
 }
-export async function hdcBind(vectors) {
+export async function hdcBind(a, b) {
     const result = await client.request({
         method: 'hdc_bind',
-        params: [vectors],
+        params: [a, b],
     });
     return result;
 }
@@ -84,11 +84,11 @@ export async function hdcBundle(vectors) {
 export async function hdcSearch(query, topK) {
     const result = await client.request({
         method: 'hdc_search',
-        params: [query, `0x${topK.toString(16)}`],
+        params: [query, topK],
     });
     return result.map((r) => ({
         id: r.id,
-        similarity: Number(r.similarity),
+        distance: r.distance,
     }));
 }
 export async function hdcVectorId(vector) {
@@ -98,10 +98,10 @@ export async function hdcVectorId(vector) {
     });
     return result;
 }
-export async function hdcEncode(data, encodingType) {
+export async function hdcEncode(text) {
     const result = await client.request({
         method: 'hdc_encode',
-        params: [data, encodingType],
+        params: [text],
     });
     return result;
 }

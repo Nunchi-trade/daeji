@@ -157,6 +157,20 @@ impl LedgerView {
         snapshot.state.balance(&address).await.ok()
     }
 
+    /// Query a storage slot at the given digest.
+    pub async fn query_storage(
+        &self,
+        digest: ConsensusDigest,
+        address: Address,
+        slot: U256,
+    ) -> Option<U256> {
+        let snapshot = {
+            let inner = self.inner.lock().await;
+            inner.snapshots.get(&digest)
+        }?;
+        snapshot.state.storage(&address, &slot).await.ok()
+    }
+
     /// Query a state root at the given digest.
     pub async fn query_state_root(&self, digest: ConsensusDigest) -> Option<StateRoot> {
         let inner = self.inner.lock().await;
@@ -343,6 +357,16 @@ impl LedgerService {
     /// Query a balance at the given digest.
     pub async fn query_balance(&self, digest: ConsensusDigest, address: Address) -> Option<U256> {
         self.view.query_balance(digest, address).await
+    }
+
+    /// Query a storage slot at the given digest.
+    pub async fn query_storage(
+        &self,
+        digest: ConsensusDigest,
+        address: Address,
+        slot: U256,
+    ) -> Option<U256> {
+        self.view.query_storage(digest, address, slot).await
     }
 
     /// Query the stored state root at the given digest.

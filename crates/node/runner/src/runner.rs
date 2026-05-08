@@ -257,6 +257,11 @@ impl NodeRunner for ProductionRunner {
         let ledger = LedgerService::new(state.clone());
         spawn_ledger_observers(ledger.clone(), context.clone());
 
+        // Create the shared HDC on-chain index (used by both RPC and FinalizedReporter).
+        let hdc_index = Arc::new(parking_lot::RwLock::new(
+            kora_hdc_chain::OnChainHdcIndex::new(),
+        ));
+
         if let Some((node_state, addr)) = &self.rpc_config {
             let qmdb_state = state.qmdb_state().await;
             let rpc_executor = Arc::new(RevmExecutor::new(self.chain_id));
@@ -305,12 +310,9 @@ impl NodeRunner for ProductionRunner {
             .with_block_broadcast(block_broadcast_tx.clone())
             .with_consensus_broadcast(consensus_broadcast_tx.clone());
 
-            // Wire up HDC RPC namespace.
-            let hdc_index = Arc::new(parking_lot::RwLock::new(
-                kora_hdc_chain::OnChainHdcIndex::new(),
-            ));
+            // Wire up HDC RPC namespace (shares the same index as FinalizedReporter).
             let hdc_api = kora_rpc::HdcApiImpl::new(
-                kora_hdc_chain::rpc::HdcApi::new(hdc_index),
+                kora_hdc_chain::rpc::HdcApi::new(Arc::clone(&hdc_index)),
             );
             let rpc = rpc.with_hdc_api(hdc_api);
 
@@ -327,7 +329,8 @@ impl NodeRunner for ProductionRunner {
         let context_provider = RevmContextProvider { gas_limit: self.gas_limit };
         let mut finalized_reporter =
             FinalizedReporter::new(ledger.clone(), context.clone(), executor, context_provider)
-                .with_block_broadcast(block_broadcast_tx);
+                .with_block_broadcast(block_broadcast_tx)
+                .with_hdc_index(hdc_index);
         if let Some(block_index) = block_index {
             finalized_reporter = finalized_reporter.with_block_index(block_index);
         }

@@ -29,6 +29,16 @@ impl TestNode {
         self.ledger.query_balance(digest, address).await
     }
 
+    /// Query a storage slot at a specific block digest.
+    pub async fn query_storage(
+        &self,
+        digest: ConsensusDigest,
+        address: Address,
+        slot: U256,
+    ) -> Option<U256> {
+        self.ledger.query_storage(digest, address, slot).await
+    }
+
     /// Query the state root at a specific block digest.
     pub async fn query_state_root(&self, digest: ConsensusDigest) -> Option<StateRoot> {
         self.ledger.query_state_root(digest).await

@@ -94,11 +94,12 @@ export async function hdcSimilarity(
 }
 
 export async function hdcBind(
-  vectors: `0x${string}`[],
+  a: `0x${string}`,
+  b: `0x${string}`,
 ): Promise<`0x${string}`> {
   const result = await client.request({
     method: 'hdc_bind' as never,
-    params: [vectors] as never,
+    params: [a, b] as never,
   });
   return result as `0x${string}`;
 }
@@ -116,14 +117,14 @@ export async function hdcBundle(
 export async function hdcSearch(
   query: `0x${string}`,
   topK: number,
-): Promise<Array<{ id: `0x${string}`; similarity: number }>> {
+): Promise<Array<{ id: `0x${string}`; distance: number }>> {
   const result = await client.request({
     method: 'hdc_search' as never,
-    params: [query, `0x${topK.toString(16)}`] as never,
+    params: [query, topK] as never,
   });
-  return (result as Array<{ id: string; similarity: string }>).map((r) => ({
+  return (result as Array<{ id: string; distance: number }>).map((r) => ({
     id: r.id as `0x${string}`,
-    similarity: Number(r.similarity),
+    distance: r.distance,
   }));
 }
 
@@ -138,12 +139,11 @@ export async function hdcVectorId(
 }
 
 export async function hdcEncode(
-  data: `0x${string}`,
-  encodingType: string,
+  text: string,
 ): Promise<`0x${string}`> {
   const result = await client.request({
     method: 'hdc_encode' as never,
-    params: [data, encodingType] as never,
+    params: [text] as never,
   });
   return result as `0x${string}`;
 }

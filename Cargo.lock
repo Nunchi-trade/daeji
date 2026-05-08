@@ -3971,6 +3971,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-consensus 1.8.3",
  "alloy-primitives",
+ "alloy-rlp",
  "anyhow",
  "commonware-consensus",
  "commonware-cryptography",
@@ -3979,6 +3980,7 @@ dependencies = [
  "commonware-runtime",
  "commonware-utils",
  "futures",
+ "hex",
  "k256",
  "kora-consensus",
  "kora-crypto",
@@ -3995,6 +3997,7 @@ dependencies = [
  "kora-transport-sim",
  "rand 0.8.6",
  "rstest",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
