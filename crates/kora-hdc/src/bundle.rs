@@ -32,7 +32,7 @@ impl BundleAccumulator {
 
     /// Add a vector with a positive integer weight.
     pub fn add_weighted(&mut self, vector: &HdcVector, weight: u32) {
-        let w = weight as i32;
+        let w: i32 = weight.try_into().expect("weight exceeds i32::MAX");
         for i in 0..D {
             if vector.bit(i) == 1 {
                 self.counts[i] += w;
@@ -101,11 +101,11 @@ mod tests {
     #[test]
     fn bundle_tie_breaks_to_zero() {
         let a = HdcVector::random(42);
-        // Build complement manually
-        let mut comp = HdcVector::default();
-        for i in 0..D {
-            comp.set_bit(i, 1 - a.bit(i));
+        let mut comp_words = [0u64; crate::constants::WORDS];
+        for (i, w) in a.0.iter().enumerate() {
+            comp_words[i] = !w;
         }
+        let comp = HdcVector(comp_words);
         let result = bundle(&[&a, &comp]);
         assert_eq!(result, HdcVector::default());
     }
