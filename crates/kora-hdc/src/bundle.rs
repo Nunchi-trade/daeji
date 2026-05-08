@@ -1,17 +1,20 @@
 //! BundleAccumulator — streaming majority-vote bundling for HDC vectors.
 
 use crate::constants::D;
-use crate::vector::{hamming_distance, HdcVector};
+use crate::vector::HdcVector;
 
 // ─── BundleAccumulator ────────────────────────────────────────────────────────
 
+/// Streaming majority-vote accumulator for bundling HDC vectors.
+#[derive(Debug)]
 pub struct BundleAccumulator {
     counts: Vec<i32>, // one counter per bit position
 }
 
 impl BundleAccumulator {
+    /// Create a new zero-initialized accumulator.
     pub fn new() -> Self {
-        BundleAccumulator {
+        Self {
             counts: vec![0i32; D],
         }
     }
@@ -60,6 +63,7 @@ impl Default for BundleAccumulator {
 
 // ─── Free function ────────────────────────────────────────────────────────────
 
+/// Bundle a slice of vectors into one via majority vote.
 pub fn bundle(vectors: &[&HdcVector]) -> HdcVector {
     let mut acc = BundleAccumulator::new();
     for v in vectors {
@@ -74,7 +78,7 @@ pub fn bundle(vectors: &[&HdcVector]) -> HdcVector {
 mod tests {
     use super::*;
     use crate::constants::THRESHOLD_HAMMING;
-    use crate::vector::HdcVector;
+    use crate::vector::{hamming_distance, HdcVector};
 
     #[test]
     fn bundle_single_vector_returns_same() {

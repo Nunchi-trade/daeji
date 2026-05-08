@@ -13,11 +13,13 @@ use crate::vector::{bind, permute, HdcVector};
 /// Encodes text into a hypervector using character-level trigrams.
 ///
 /// CONSENSUS-SAFE: no floats, deterministic.
+#[derive(Debug)]
 pub struct TrigramEncoder;
 
 impl TrigramEncoder {
-    pub fn new() -> Self {
-        TrigramEncoder
+    /// Create a new `TrigramEncoder`.
+    pub const fn new() -> Self {
+        Self
     }
 
     /// Encode a string into a hypervector via character trigrams.
@@ -59,6 +61,7 @@ impl Default for TrigramEncoder {
 /// Projects f32 embeddings into binary hypervectors.
 ///
 /// **OFF-CHAIN ONLY** — uses f32 arithmetic, not consensus-safe.
+#[derive(Debug)]
 pub struct ProjectionEncoder {
     input_dim: usize,
     /// D × input_dim matrix of i8 {-1, +1}, stored row-major.
@@ -74,7 +77,7 @@ impl ProjectionEncoder {
             let val = if rng.next_u32() & 1 == 0 { 1i8 } else { -1i8 };
             matrix.push(val);
         }
-        ProjectionEncoder { input_dim, matrix }
+        Self { input_dim, matrix }
     }
 
     /// Project an f32 embedding into a binary hypervector.
@@ -92,8 +95,8 @@ impl ProjectionEncoder {
         for row in 0..D {
             let row_start = row * self.input_dim;
             let mut dot = 0.0f32;
-            for col in 0..self.input_dim {
-                dot += self.matrix[row_start + col] as f32 * embedding[col];
+            for (col, &emb_val) in embedding.iter().enumerate() {
+                dot += self.matrix[row_start + col] as f32 * emb_val;
             }
             if dot > 0.0 {
                 out.set_bit(row, 1);
@@ -108,13 +111,15 @@ impl ProjectionEncoder {
 /// Encodes role-filler pairs (key-value) into a single hypervector.
 ///
 /// CONSENSUS-SAFE: no floats, deterministic.
+#[derive(Debug)]
 pub struct StructuredEncoder {
     fields: Vec<HdcVector>,
 }
 
 impl StructuredEncoder {
-    pub fn new() -> Self {
-        StructuredEncoder { fields: Vec::new() }
+    /// Create a new empty `StructuredEncoder`.
+    pub const fn new() -> Self {
+        Self { fields: Vec::new() }
     }
 
     /// Add a string role-filler pair.

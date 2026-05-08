@@ -17,7 +17,7 @@
 //! # Core Operations
 //!
 //! - [`bind`] -- XOR association (self-inverse)
-//! - [`bundle`] -- majority-vote superposition
+//! - [`bundle()`] -- majority-vote superposition
 //! - [`permute`] -- cyclic bit rotation (sequence encoding)
 //! - [`hamming_distance`] -- integer distance (on-chain)
 //! - [`similarity`] -- normalized float similarity (off-chain only)

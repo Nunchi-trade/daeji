@@ -9,13 +9,14 @@ use crate::constants::{BYTES, D, WORDS};
 
 // ─── Type ────────────────────────────────────────────────────────────────────
 
+/// A 10,240-bit binary hypervector stored as 160 `u64` words.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[repr(C, align(64))]
 pub struct HdcVector(pub [u64; WORDS]);
 
 impl Default for HdcVector {
     fn default() -> Self {
-        HdcVector([0u64; WORDS])
+        Self([0u64; WORDS])
     }
 }
 
@@ -70,7 +71,7 @@ impl HdcVector {
         for w in words.iter_mut() {
             *w = rng.next_u64();
         }
-        HdcVector(words)
+        Self(words)
     }
 
     /// Generate a deterministic vector for a symbol name via FNV-1a → random.
@@ -85,8 +86,8 @@ impl HdcVector {
 /// Association: word-by-word XOR. Self-inverse: bind(bind(a,b), b) == a.
 pub fn bind(a: &HdcVector, b: &HdcVector) -> HdcVector {
     let mut out = [0u64; WORDS];
-    for i in 0..WORDS {
-        out[i] = a.0[i] ^ b.0[i];
+    for ((o, aw), bw) in out.iter_mut().zip(a.0.iter()).zip(b.0.iter()) {
+        *o = aw ^ bw;
     }
     HdcVector(out)
 }
@@ -117,14 +118,14 @@ pub fn permute(v: &HdcVector, n: usize) -> HdcVector {
 
     let mut out = [0u64; WORDS];
     if bit_shift == 0 {
-        for i in 0..WORDS {
-            out[i] = v.0[(i + word_shift) % WORDS];
+        for (i, o) in out.iter_mut().enumerate() {
+            *o = v.0[(i + word_shift) % WORDS];
         }
     } else {
-        for i in 0..WORDS {
+        for (i, o) in out.iter_mut().enumerate() {
             let src_hi = (i + word_shift) % WORDS;
             let src_lo = (i + word_shift + 1) % WORDS;
-            out[i] = (v.0[src_hi] >> bit_shift) | (v.0[src_lo] << (64 - bit_shift));
+            *o = (v.0[src_hi] >> bit_shift) | (v.0[src_lo] << (64 - bit_shift));
         }
     }
     HdcVector(out)
