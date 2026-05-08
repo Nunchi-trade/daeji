@@ -175,14 +175,10 @@ impl Cli {
         let rpc_addr: std::net::SocketAddr = "0.0.0.0:8545".parse()?;
         let node_state = NodeState::new(config.chain_id, dkg_output.share_index);
 
-        let runner = ProductionRunner::new(
-            scheme,
-            config.chain_id,
-            kora_config::DEFAULT_GAS_LIMIT,
-            bootstrap,
-        )
-        .with_rpc(node_state, rpc_addr)
-        .with_secondary_peers(secondary_participants);
+        let runner =
+            ProductionRunner::new(scheme, config.chain_id, config.execution.gas_limit, bootstrap)
+                .with_rpc(node_state, rpc_addr)
+                .with_secondary_peers(secondary_participants);
 
         runner.run_standalone(config).map_err(|e| eyre::eyre!("Runner failed: {}", e.0))
     }
@@ -212,7 +208,10 @@ impl Cli {
             "Starting secondary peer"
         );
 
-        let executor = commonware_runtime::tokio::Runner::default();
+        let executor = commonware_runtime::tokio::Runner::new(
+            commonware_runtime::tokio::Config::default()
+                .with_storage_directory(config.data_dir.join("runtime")),
+        );
         executor.start(|context| async move {
             let mut transport = config
                 .network

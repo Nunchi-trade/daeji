@@ -55,7 +55,9 @@ where
         R::Error: Into<eyre::Error>,
         T::Error: Into<eyre::Error>,
     {
-        let executor = tokio::Runner::default();
+        let executor = tokio::Runner::new(
+            tokio::Config::default().with_storage_directory(self.config.data_dir.join("runtime")),
+        );
         executor.start(|context| async move { self.run_with_context(context).await })
     }
 
@@ -109,7 +111,9 @@ impl LegacyNodeService {
 
     /// Run the legacy node service.
     pub fn run(self) -> eyre::Result<()> {
-        let executor = tokio::Runner::default();
+        let executor = tokio::Runner::new(
+            tokio::Config::default().with_storage_directory(self.config.data_dir.join("runtime")),
+        );
         executor.start(|context| async move { self.run_with_context(context).await })
     }
 
