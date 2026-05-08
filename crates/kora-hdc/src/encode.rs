@@ -83,7 +83,7 @@ impl ProjectionEncoder {
     /// Project an f32 embedding into a binary hypervector.
     ///
     /// **OFF-CHAIN ONLY** — uses f32 arithmetic.
-    pub fn project(&self, embedding: &[f32]) -> HdcVector {
+    pub fn encode(&self, embedding: &[f32]) -> HdcVector {
         assert_eq!(
             embedding.len(),
             self.input_dim,
@@ -136,7 +136,7 @@ impl StructuredEncoder {
     }
 
     /// Bundle all fields into a single hypervector.
-    pub fn build(&self) -> HdcVector {
+    pub fn encode(&self) -> HdcVector {
         if self.fields.is_empty() {
             return HdcVector::default();
         }
@@ -196,7 +196,7 @@ mod tests {
         let mut enc = StructuredEncoder::new();
         enc.add_field("name", "alice");
         enc.add_field("role", "engineer");
-        let record = enc.build();
+        let record = enc.encode();
 
         // Unbind with "name" to retrieve the filler
         let name_key = HdcVector::symbol("name");
@@ -240,12 +240,12 @@ mod tests {
         let enc1 = ProjectionEncoder::new(4, 99);
         let enc2 = ProjectionEncoder::new(4, 99);
         let input = [1.0f32, -0.5, 0.3, 0.0];
-        assert_eq!(enc1.project(&input), enc2.project(&input));
+        assert_eq!(enc1.encode(&input), enc2.encode(&input));
     }
 
     #[test]
     fn structured_encoder_empty_returns_zero() {
         let enc = StructuredEncoder::new();
-        assert_eq!(enc.build(), HdcVector::default());
+        assert_eq!(enc.encode(), HdcVector::default());
     }
 }
