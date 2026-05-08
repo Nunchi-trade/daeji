@@ -217,4 +217,35 @@ mod tests {
             "distance to alice {dist_alice} should be < THRESHOLD_HAMMING {THRESHOLD_HAMMING}"
         );
     }
+
+    #[test]
+    fn trigram_encoder_single_char() {
+        let result = TrigramEncoder::encode("a");
+        let expected = HdcVector::symbol("a");
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn trigram_encoder_two_chars() {
+        use crate::vector::permute;
+        let result = TrigramEncoder::encode("ab");
+        let s0 = HdcVector::symbol("a");
+        let s1 = HdcVector::symbol("b");
+        let expected = bind(&permute(&s0, 1), &s1);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn projection_encoder_deterministic() {
+        let enc1 = ProjectionEncoder::new(4, 99);
+        let enc2 = ProjectionEncoder::new(4, 99);
+        let input = [1.0f32, -0.5, 0.3, 0.0];
+        assert_eq!(enc1.project(&input), enc2.project(&input));
+    }
+
+    #[test]
+    fn structured_encoder_empty_returns_zero() {
+        let enc = StructuredEncoder::new();
+        assert_eq!(enc.build(), HdcVector::default());
+    }
 }
