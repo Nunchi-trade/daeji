@@ -21,6 +21,7 @@ pub struct NodeState {
 struct NodeStateInner {
     chain_id: u64,
     validator_index: u32,
+    validator_count: u32,
     started_at: Instant,
     current_view: AtomicU64,
     finalized_count: AtomicU64,
@@ -34,10 +35,17 @@ impl NodeState {
     /// Create a new node state.
     #[must_use]
     pub fn new(chain_id: u64, validator_index: u32) -> Self {
+        Self::with_validator_count(chain_id, validator_index, 1)
+    }
+
+    /// Create a new node state with the known validator set size.
+    #[must_use]
+    pub fn with_validator_count(chain_id: u64, validator_index: u32, validator_count: u32) -> Self {
         Self {
             inner: Arc::new(NodeStateInner {
                 chain_id,
                 validator_index,
+                validator_count: validator_count.max(1),
                 started_at: Instant::now(),
                 current_view: AtomicU64::new(0),
                 finalized_count: AtomicU64::new(0),
@@ -52,8 +60,13 @@ impl NodeState {
     /// Update the current view.
     pub fn set_view(&self, view: u64) {
         self.inner.current_view.store(view, Ordering::Relaxed);
-        // Compute leader: view mod 4 (for 4 validators)
-        let is_leader = (view % 4) as u32 == self.inner.validator_index;
+        let is_leader =
+            (view % u64::from(self.inner.validator_count)) as u32 == self.inner.validator_index;
+        *self.inner.is_leader.write() = is_leader;
+    }
+
+    /// Set whether this node is the current leader.
+    pub fn set_leader(&self, is_leader: bool) {
         *self.inner.is_leader.write() = is_leader;
     }
 
@@ -82,6 +95,7 @@ impl NodeState {
         NodeStatus {
             chain_id: self.inner.chain_id,
             validator_index: self.inner.validator_index,
+            validator_count: self.inner.validator_count,
             uptime_secs: self.inner.started_at.elapsed().as_secs(),
             current_view: self.inner.current_view.load(Ordering::Relaxed),
             finalized_count: self.inner.finalized_count.load(Ordering::Relaxed),
@@ -99,8 +113,10 @@ impl NodeState {
 pub struct NodeStatus {
     /// Chain ID.
     pub chain_id: u64,
-    /// This validator's index (0-3).
+    /// This validator's index in the current validator set.
     pub validator_index: u32,
+    /// Number of validators in the current validator set.
+    pub validator_count: u32,
     /// Seconds since node started.
     pub uptime_secs: u64,
     /// Current consensus view number.
@@ -126,6 +142,7 @@ mod tests {
         let status = NodeStatus {
             chain_id: 1337,
             validator_index: 2,
+            validator_count: 4,
             uptime_secs: 3600,
             current_view: 100,
             finalized_count: 50,
@@ -140,6 +157,7 @@ mod tests {
 
         assert_eq!(status.chain_id, parsed.chain_id);
         assert_eq!(status.validator_index, parsed.validator_index);
+        assert_eq!(status.validator_count, parsed.validator_count);
         assert_eq!(status.uptime_secs, parsed.uptime_secs);
         assert_eq!(status.current_view, parsed.current_view);
         assert_eq!(status.finalized_count, parsed.finalized_count);
@@ -154,6 +172,7 @@ mod tests {
         let status = NodeStatus {
             chain_id: 1,
             validator_index: 0,
+            validator_count: 1,
             uptime_secs: 0,
             current_view: 0,
             finalized_count: 0,
@@ -166,6 +185,7 @@ mod tests {
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("chainId"));
         assert!(json.contains("validatorIndex"));
+        assert!(json.contains("validatorCount"));
         assert!(json.contains("uptimeSecs"));
         assert!(json.contains("currentView"));
         assert!(json.contains("finalizedCount"));
@@ -181,16 +201,26 @@ mod tests {
         let status = state.status();
         assert_eq!(status.chain_id, 1337);
         assert_eq!(status.validator_index, 2);
+        assert_eq!(status.validator_count, 1);
         assert!(!status.is_leader);
     }
 
     #[test]
     fn node_state_set_view() {
-        let state = NodeState::new(1, 0);
-        state.set_view(4);
+        let state = NodeState::with_validator_count(1, 0, 3);
+        state.set_view(3);
         let status = state.status();
-        assert_eq!(status.current_view, 4);
+        assert_eq!(status.current_view, 3);
         assert!(status.is_leader);
+    }
+
+    #[test]
+    fn node_state_set_leader_overrides_view_fallback() {
+        let state = NodeState::with_validator_count(1, 0, 3);
+        state.set_view(1);
+        assert!(!state.status().is_leader);
+        state.set_leader(true);
+        assert!(state.status().is_leader);
     }
 
     #[test]

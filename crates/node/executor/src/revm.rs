@@ -10,6 +10,7 @@ use revm::{
     Context, DatabaseCommit as _, ExecuteEvm, Journal, MainBuilder,
     bytecode::Bytecode,
     context::{
+        Evm,
         block::BlockEnv,
         result::{ExecutionResult, Output},
     },
@@ -18,6 +19,7 @@ use revm::{
         transaction::{AccessList, AccessListItem},
     },
     database::State,
+    handler::instructions::EthInstructions,
     primitives::{TxKind, hardfork::SpecId},
     state::{EvmState, EvmStorageSlot},
 };
@@ -27,6 +29,10 @@ use crate::{
     ExecutionReceipt, ParentBlock, StateDbAdapter,
 };
 
+#[path = "hdc_precompiles.rs"]
+mod hdc_precompiles;
+use hdc_precompiles::HdcPrecompileProvider;
+
 /// REVM-based block executor.
 ///
 /// This executor uses REVM to execute EVM transactions against a state database.
@@ -35,19 +41,28 @@ use crate::{
 pub struct RevmExecutor {
     /// Execution configuration.
     config: ExecutionConfig,
+    /// Whether to register the HDC precompile at address 0x09.
+    pub hdc_precompile_enabled: bool,
 }
 
 impl RevmExecutor {
     /// Create a new REVM executor with the given chain ID.
     #[must_use]
     pub const fn new(chain_id: u64) -> Self {
-        Self { config: ExecutionConfig::new(chain_id) }
+        Self { config: ExecutionConfig::new(chain_id), hdc_precompile_enabled: false }
     }
 
     /// Create a new REVM executor with full configuration.
     #[must_use]
     pub const fn with_config(config: ExecutionConfig) -> Self {
-        Self { config }
+        Self { config, hdc_precompile_enabled: false }
+    }
+
+    /// Enable the HDC precompile at address 0x09.
+    #[must_use]
+    pub const fn with_hdc_precompile(mut self) -> Self {
+        self.hdc_precompile_enabled = true;
+        self
     }
 
     /// Get the chain ID.
@@ -231,24 +246,39 @@ impl RevmExecutor {
                 blk.prevrandao = Some(context.prevrandao);
             });
 
-        let mut evm = ctx.build_mainnet();
-
         let tx_env =
             call_params_to_tx_env(&params, self.config.chain_id, context.header.gas_limit)?;
-        evm.set_tx(tx_env);
 
-        let result_and_state =
-            evm.replay().map_err(|e| ExecutionError::TxExecution(format!("{:?}", e)))?;
+        macro_rules! simulate {
+            ($evm:expr) => {{
+                let mut evm = $evm;
+                evm.set_tx(tx_env);
 
-        match result_and_state.result {
-            ExecutionResult::Success { output, .. } => match output {
-                Output::Call(bytes) => Ok(bytes),
-                Output::Create(bytes, _) => Ok(bytes),
-            },
-            ExecutionResult::Revert { output, .. } => Err(ExecutionError::Revert(output)),
-            ExecutionResult::Halt { reason, .. } => {
-                Err(ExecutionError::TxExecution(format!("halt: {:?}", reason)))
-            }
+                let result_and_state =
+                    evm.replay().map_err(|e| ExecutionError::TxExecution(format!("{:?}", e)))?;
+
+                match result_and_state.result {
+                    ExecutionResult::Success { output, .. } => match output {
+                        Output::Call(bytes) => Ok(bytes),
+                        Output::Create(bytes, _) => Ok(bytes),
+                    },
+                    ExecutionResult::Revert { output, .. } => Err(ExecutionError::Revert(output)),
+                    ExecutionResult::Halt { reason, .. } => {
+                        Err(ExecutionError::TxExecution(format!("halt: {:?}", reason)))
+                    }
+                }
+            }};
+        }
+
+        if self.hdc_precompile_enabled {
+            let spec = self.config.spec_id;
+            simulate!(Evm::new(
+                ctx,
+                EthInstructions::new_mainnet_with_spec(spec),
+                HdcPrecompileProvider::new(spec),
+            ))
+        } else {
+            simulate!(ctx.build_mainnet())
         }
     }
 
@@ -380,35 +410,51 @@ impl<S: StateDb> BlockExecutor<S> for RevmExecutor {
                 blk.prevrandao = Some(context.prevrandao);
             });
 
-        let mut evm = ctx.build_mainnet();
+        macro_rules! execute_block {
+            ($evm:expr) => {{
+                let mut evm = $evm;
+                let mut outcome = ExecutionOutcome::new();
+                let mut cumulative_gas = 0u64;
 
-        let mut outcome = ExecutionOutcome::new();
-        let mut cumulative_gas = 0u64;
+                for tx_bytes in txs {
+                    let tx_hash = keccak256(tx_bytes);
 
-        for tx_bytes in txs {
-            let tx_hash = keccak256(tx_bytes);
+                    let tx_env = decode_tx_env(tx_bytes, self.config.chain_id)?;
+                    evm.set_tx(tx_env);
 
-            let tx_env = decode_tx_env(tx_bytes, self.config.chain_id)?;
-            evm.set_tx(tx_env);
+                    let result_and_state = evm
+                        .replay()
+                        .map_err(|e| ExecutionError::TxExecution(format!("{:?}", e)))?;
 
-            let result_and_state =
-                evm.replay().map_err(|e| ExecutionError::TxExecution(format!("{:?}", e)))?;
+                    let gas_used = result_and_state.result.tx_gas_used();
+                    cumulative_gas = cumulative_gas.saturating_add(gas_used);
 
-            let gas_used = result_and_state.result.tx_gas_used();
-            cumulative_gas = cumulative_gas.saturating_add(gas_used);
+                    let receipt =
+                        build_receipt(&result_and_state.result, tx_hash, gas_used, cumulative_gas);
+                    outcome.receipts.push(receipt);
 
-            let receipt =
-                build_receipt(&result_and_state.result, tx_hash, gas_used, cumulative_gas);
-            outcome.receipts.push(receipt);
+                    let state = result_and_state.state;
+                    let changes = extract_changes(state.clone());
+                    evm.ctx.modify_db(|db| db.commit(state));
+                    outcome.changes.merge(changes);
+                }
 
-            let state = result_and_state.state;
-            let changes = extract_changes(state.clone());
-            evm.ctx.modify_db(|db| db.commit(state));
-            outcome.changes.merge(changes);
+                outcome.gas_used = cumulative_gas;
+                Ok(outcome)
+            }};
         }
 
-        outcome.gas_used = cumulative_gas;
-        Ok(outcome)
+        if self.hdc_precompile_enabled {
+            let spec = self.config.spec_id;
+            let evm = Evm::new(
+                ctx,
+                EthInstructions::new_mainnet_with_spec(spec),
+                HdcPrecompileProvider::new(spec),
+            );
+            execute_block!(evm)
+        } else {
+            execute_block!(ctx.build_mainnet())
+        }
     }
 
     fn validate_header(&self, header: &Header) -> Result<(), ExecutionError> {

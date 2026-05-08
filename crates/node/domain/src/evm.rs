@@ -21,6 +21,67 @@ impl Evm {
         Address::from_slice(&hash[12..])
     }
 
+    /// Sign an EIP-1559 contract creation transaction and return its encoded bytes.
+    pub fn sign_eip1559_create(
+        key: &SigningKey,
+        chain_id: u64,
+        bytecode: Bytes,
+        nonce: u64,
+        gas_limit: u64,
+    ) -> Tx {
+        let tx = TxEip1559 {
+            chain_id,
+            nonce,
+            gas_limit,
+            max_fee_per_gas: 0,
+            max_priority_fee_per_gas: 0,
+            to: TxKind::Create,
+            value: U256::ZERO,
+            access_list: Default::default(),
+            input: bytecode,
+        };
+
+        let digest = Keccak256::new_with_prefix(tx.encoded_for_signing());
+        let (sig, recid) = key.sign_digest_recoverable(digest).expect("sign tx");
+        let signature = Signature::from((sig, recid));
+        let signed = tx.into_signed(signature);
+        let envelope = TxEnvelope::from(signed);
+        let mut raw_bytes = Vec::new();
+        envelope.encode_2718(&mut raw_bytes);
+        Tx::new(Bytes::from(raw_bytes))
+    }
+
+    /// Sign a simple EIP-1559 call transaction with arbitrary input data.
+    pub fn sign_eip1559_call(
+        key: &SigningKey,
+        chain_id: u64,
+        to: Address,
+        input: Bytes,
+        nonce: u64,
+        gas_limit: u64,
+    ) -> Tx {
+        let tx = TxEip1559 {
+            chain_id,
+            nonce,
+            gas_limit,
+            max_fee_per_gas: 0,
+            max_priority_fee_per_gas: 0,
+            to: TxKind::Call(to),
+            value: U256::ZERO,
+            access_list: Default::default(),
+            input,
+        };
+
+        let digest = Keccak256::new_with_prefix(tx.encoded_for_signing());
+        let (sig, recid) = key.sign_digest_recoverable(digest).expect("sign tx");
+        let signature = Signature::from((sig, recid));
+        let signed = tx.into_signed(signature);
+        let envelope = TxEnvelope::from(signed);
+        let mut raw_bytes = Vec::new();
+        envelope.encode_2718(&mut raw_bytes);
+        Tx::new(Bytes::from(raw_bytes))
+    }
+
     /// Sign a simple EIP-1559 transfer transaction and return its encoded bytes.
     #[allow(clippy::too_many_arguments)]
     pub fn sign_eip1559_transfer(

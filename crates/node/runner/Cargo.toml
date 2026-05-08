@@ -24,6 +24,7 @@ kora-service.workspace = true
 kora-simplex.workspace = true
 kora-transport.workspace = true
 kora-txpool.workspace = true
+kora-hdc-chain.workspace = true
 
 commonware-codec.workspace = true
 commonware-consensus.workspace = true
@@ -37,9 +38,11 @@ alloy-consensus = { workspace = true }
 alloy-primitives.workspace = true
 
 futures.workspace = true
+tokio_crate = { version = "1", features = ["sync"], package = "tokio" }
 tracing.workspace = true
 anyhow.workspace = true
 rand.workspace = true
+parking_lot.workspace = true
 
 [lints]
 workspace = true

@@ -26,7 +26,7 @@ bootstrap_peers = ["peer1:30303", "peer2:30303"]
 
 [execution]
 gas_limit = 250000000
-block_time = 2
+block_time_ms = 2000
 
 [rpc]
 http_addr = "0.0.0.0:8545"

@@ -54,6 +54,8 @@ pub struct RpcBlock {
     pub hash: B256,
     /// Parent block hash.
     pub parent_hash: B256,
+    /// SHA3 of uncles data.
+    pub sha3_uncles: B256,
     /// Block number.
     pub number: U64,
     /// State root.

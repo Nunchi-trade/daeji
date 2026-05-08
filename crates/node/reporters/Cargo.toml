@@ -20,6 +20,7 @@ kora-ledger = { path = "../ledger" }
 kora-overlay = { path = "../../storage/overlay" }
 kora-qmdb-ledger = { path = "../../storage/qmdb-ledger" }
 kora-rpc = { path = "../rpc" }
+kora-hdc-chain = { path = "../../hdc/chain" }
 
 # Commonware
 commonware-codec.workspace = true
@@ -33,5 +34,9 @@ alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 
+# Async
+tokio_crate = { version = "1", features = ["sync"], package = "tokio" }
+
 # Tracing
 tracing.workspace = true
+parking_lot.workspace = true

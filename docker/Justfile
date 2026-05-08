@@ -91,8 +91,48 @@ redo-dkg:
     docker compose -f compose/devnet.yaml up -d validator-node0 validator-node1 validator-node2 validator-node3 secondary-node0
     echo "DKG complete. Validators restarted."
 
+# Start fast devnet (3 validators, 50ms blocks, HDC enabled)
+fast-devnet:
+    #!/bin/bash
+    set -euo pipefail
+    echo "Building kora:local image..."
+    docker buildx bake --allow=fs.read=.. -f docker-bake.hcl kora-local
+    echo "Starting fast devnet (3 validators, 50ms blocks)..."
+    docker compose -f compose/fast-devnet.yaml run --rm init-config
+    docker compose -f compose/fast-devnet.yaml up -d validator-node0 validator-node1 validator-node2
+    echo "Fast devnet started. RPC on localhost:8545-8547"
+
+fast-devnet-down:
+    docker compose -f compose/fast-devnet.yaml down
+
+fast-devnet-reset:
+    docker compose -f compose/fast-devnet.yaml down -v
+
+fast-devnet-logs:
+    docker compose -f compose/fast-devnet.yaml logs -f validator-node0 validator-node1 validator-node2
+
+# Generate Railway deployment configs locally
+railway-init:
+    #!/bin/bash
+    set -euo pipefail
+    echo "Building kora:local image..."
+    docker buildx bake --allow=fs.read=.. -f docker-bake.hcl kora-local
+    echo "Generating Railway configs (3 validators, threshold 2)..."
+    docker run --rm \
+        -v "$(pwd)/../deploy/railway/init-config.sh:/init-config.sh:ro" \
+        -v railway-shared:/shared \
+        -e CHAIN_ID=1337 \
+        -e NUM_VALIDATORS=3 \
+        -e THRESHOLD=2 \
+        -e SHARED_DIR=/shared \
+        --user root \
+        kora:local /bin/bash /init-config.sh
+    echo "Railway configs generated in railway-shared volume."
+    echo "Export with: docker run --rm -v railway-shared:/shared -v \$(pwd):/out alpine cp -r /shared /out/railway-output"
+
 lint:
     hadolint Dockerfile
 
 validate:
     docker compose -f compose/devnet.yaml config --quiet && echo "Compose valid"
+    docker compose -f compose/fast-devnet.yaml config --quiet && echo "Fast devnet compose valid"

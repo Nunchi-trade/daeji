@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ConfigError, ConsensusConfig, ExecutionConfig, NetworkConfig, RpcConfig};
+use crate::{ConfigError, ConsensusConfig, ExecutionConfig, HdcConfig, NetworkConfig, RpcConfig};
 
 /// Default chain ID for local development.
 pub const DEFAULT_CHAIN_ID: u64 = 1;
@@ -38,6 +38,10 @@ pub struct NodeConfig {
     /// RPC configuration.
     #[serde(default)]
     pub rpc: RpcConfig,
+
+    /// HDC (Hyperdimensional Computing) configuration.
+    #[serde(default)]
+    pub hdc: HdcConfig,
 }
 
 impl Default for NodeConfig {
@@ -49,6 +53,7 @@ impl Default for NodeConfig {
             network: NetworkConfig::default(),
             execution: ExecutionConfig::default(),
             rpc: RpcConfig::default(),
+            hdc: HdcConfig::default(),
         }
     }
 }

@@ -98,6 +98,7 @@ impl LedgerView {
         let genesis_block = Block {
             parent: BlockId(B256::ZERO),
             height: 0,
+            timestamp: 0,
             prevrandao: B256::ZERO,
             state_root: genesis_root,
             txs: Vec::new(),
@@ -497,10 +498,10 @@ mod tests {
         )
     }
 
-    fn block_context(height: u64, prevrandao: B256) -> BlockContext {
+    fn block_context(height: u64, timestamp: u64, prevrandao: B256) -> BlockContext {
         let header = Header {
             number: height,
-            timestamp: height,
+            timestamp,
             gas_limit: 30_000_000,
             beneficiary: Address::ZERO,
             base_fee_per_gas: Some(0),
@@ -531,7 +532,8 @@ mod tests {
         txs: Vec<Tx>,
     ) -> BuiltBlock {
         let executor = RevmExecutor::new(CHAIN_ID);
-        let context = block_context(height, PREVRANDAO);
+        let timestamp = parent.timestamp + 1;
+        let context = block_context(height, timestamp, PREVRANDAO);
         let txs_bytes: Vec<Bytes> = txs.iter().map(|tx| tx.bytes.clone()).collect();
         let outcome =
             executor.execute(&parent_snapshot.state, &context, &txs_bytes).expect("execute txs");
@@ -541,8 +543,14 @@ mod tests {
             .compute_root(parent_digest, outcome.changes.clone())
             .await
             .expect("compute root");
-        let block =
-            Block { parent: parent.id(), height, prevrandao: PREVRANDAO, state_root: root, txs };
+        let block = Block {
+            parent: parent.id(),
+            height,
+            timestamp,
+            prevrandao: PREVRANDAO,
+            state_root: root,
+            txs,
+        };
         let digest = block.commitment();
         let next_state = OverlayState::new(parent_snapshot.state.base(), merged_changes);
         service

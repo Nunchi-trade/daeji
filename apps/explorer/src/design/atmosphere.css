@@ -1,0 +1,52 @@
+/* -- Grain -- */
+.grain {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: var(--rd-z-grain);
+  opacity: 0.035;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+}
+
+/* -- Vignette -- */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: var(--rd-z-vignette);
+  background: radial-gradient(ellipse at 50% 30%, transparent 50%, rgba(6, 6, 8, 0.72) 100%);
+}
+
+/* -- Scanlines -- */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: var(--rd-z-scanlines);
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 2px,
+    rgba(0, 0, 0, 0.45) 2px,
+    rgba(0, 0, 0, 0.45) 3px
+  );
+  opacity: 0.06;
+  mix-blend-mode: multiply;
+}
+
+/* -- Rose Wash -- */
+.roseWash {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: calc(var(--rd-z-panels) - 1);
+  background: radial-gradient(
+    ellipse at 50% 50%,
+    rgba(170, 112, 136, var(--rd-activity)) 0%,
+    transparent 60%
+  );
+  transition: opacity 2s ease-out;
+}

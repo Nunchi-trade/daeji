@@ -11,13 +11,16 @@ mod error;
 pub use error::ConfigError;
 
 mod execution;
-pub use execution::{DEFAULT_BLOCK_TIME, DEFAULT_GAS_LIMIT, ExecutionConfig};
+pub use execution::{DEFAULT_BLOCK_TIME_MS, DEFAULT_GAS_LIMIT, ExecutionConfig};
 
 mod network;
 pub use network::{DEFAULT_LISTEN_ADDR, NetworkConfig};
 
 mod node;
 pub use node::{DEFAULT_CHAIN_ID, DEFAULT_DATA_DIR, NodeConfig};
+
+mod hdc;
+pub use hdc::HdcConfig;
 
 mod rpc;
 pub use rpc::{DEFAULT_HTTP_ADDR, DEFAULT_WS_ADDR, RpcConfig};

@@ -70,6 +70,22 @@ pub enum RpcError {
     /// Method not implemented.
     #[error("method not implemented")]
     NotImplemented,
+
+    /// Vector has wrong length (expected 1280 bytes).
+    #[error("invalid vector length: expected 1280, got {0}")]
+    InvalidVectorLength(usize),
+
+    /// Insight not found on-chain.
+    #[error("insight not found: {0}")]
+    InsightNotFound(String),
+
+    /// Knowledge store is unavailable.
+    #[error("knowledge store unavailable: {0}")]
+    KnowledgeStoreUnavailable(String),
+
+    /// Unknown encoding method.
+    #[error("unknown encoding method: {0}")]
+    UnknownEncodingMethod(String),
 }
 
 impl From<RpcError> for ErrorObjectOwned {
@@ -84,6 +100,12 @@ impl From<RpcError> for ErrorObjectOwned {
             RpcError::StateError(_) => (codes::INTERNAL_ERROR, err.to_string()),
             RpcError::Internal(_) => (codes::INTERNAL_ERROR, err.to_string()),
             RpcError::NotImplemented => (codes::METHOD_NOT_SUPPORTED, err.to_string()),
+            RpcError::InvalidVectorLength(_) => (codes::INVALID_PARAMS, err.to_string()),
+            RpcError::InsightNotFound(_) => (codes::RESOURCE_NOT_FOUND, err.to_string()),
+            RpcError::KnowledgeStoreUnavailable(_) => {
+                (codes::RESOURCE_UNAVAILABLE, err.to_string())
+            }
+            RpcError::UnknownEncodingMethod(_) => (codes::INVALID_PARAMS, err.to_string()),
         };
         ErrorObjectOwned::owned(code, message, None::<()>)
     }

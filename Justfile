@@ -84,3 +84,15 @@ loadtest:
 # Stress test (10000 txs with 50 accounts)
 stresstest:
     cargo run --release -p loadgen --bin loadgen -- --total-txs 10000 --accounts 50 --broadcast-rpc-urls http://127.0.0.1:8546,http://127.0.0.1:8547,http://127.0.0.1:8548
+
+# Start fast devnet (3 validators, 50ms blocks, HDC enabled)
+fast-devnet:
+    cd docker && just fast-devnet
+
+# Stop fast devnet
+fast-devnet-down:
+    cd docker && just fast-devnet-down
+
+# Generate configs for Railway deployment
+railway-init:
+    cd docker && just railway-init

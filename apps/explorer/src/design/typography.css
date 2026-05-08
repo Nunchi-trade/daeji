@@ -1,0 +1,8 @@
+/* Fonts loaded via @fontsource-variable in main.tsx */
+
+body {
+  font-family: var(--rd-font-mono);
+  font-size: var(--rd-text-base);
+  color: var(--rd-text);
+  background: var(--rd-void);
+}

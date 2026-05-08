@@ -1,5 +1,5 @@
 [workspace]
-members = ["bin/*", "crates/e2e", "crates/kora-hdc", "crates/network/*", "crates/node/*", "crates/storage/*", "crates/utilities/*"]
+members = ["bin/*", "crates/e2e", "crates/hdc/*", "crates/network/*", "crates/node/*", "crates/storage/*", "crates/utilities/*"]
 default-members = ["bin/kora"]
 resolver = "2"
 
@@ -74,7 +74,8 @@ kora-runner = { path = "crates/node/runner" }
 kora-rpc = { path = "crates/node/rpc" }
 kora-txpool = { path = "crates/node/txpool" }
 kora-e2e = { path = "crates/e2e" }
-kora-hdc = { path = "crates/kora-hdc" }
+kora-hdc = { path = "crates/hdc/core" }
+kora-hdc-chain = { path = "crates/hdc/chain" }
 
 rand_chacha = "0.3"
 tiny-keccak = { version = "2", features = ["keccak"] }

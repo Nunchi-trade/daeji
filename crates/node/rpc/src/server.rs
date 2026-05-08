@@ -8,15 +8,22 @@ use tower::limit::ConcurrencyLimitLayer;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::{error, info};
 
+use tokio::sync::broadcast;
+
 use crate::{
     config::{CorsConfig, RpcServerConfig},
     eth::{
         EthApiImpl, EthApiServer, NetApiImpl, NetApiServer, TxSubmitCallback, Web3ApiImpl,
         Web3ApiServer,
     },
+    hdc::{HdcApiImpl, HdcRpcApiServer},
     kora::{KoraApiImpl, KoraApiServer},
     state::NodeState,
     state_provider::{NoopStateProvider, StateProvider},
+    subscription::{
+        ConsensusEvent, EthSubscriptionApiImpl, EthSubscriptionApiServer,
+        KoraSubscriptionApiImpl, KoraSubscriptionApiServer, SubscriptionEvent,
+    },
 };
 
 /// Error type for RPC server operations.
@@ -79,6 +86,11 @@ pub struct RpcServer<S: StateProvider = NoopStateProvider> {
     cors_config: CorsConfig,
     max_connections: u32,
     peer_count: u64,
+    hdc_api: Option<HdcApiImpl>,
+    /// Broadcast channel for block subscription events (newHeads, logs).
+    block_broadcast: Option<broadcast::Sender<SubscriptionEvent>>,
+    /// Broadcast channel for consensus subscription events.
+    consensus_broadcast: Option<broadcast::Sender<ConsensusEvent>>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for RpcServer<S> {
@@ -89,6 +101,8 @@ impl<S: StateProvider> std::fmt::Debug for RpcServer<S> {
             .field("jsonrpc_addr", &self.jsonrpc_addr)
             .field("chain_id", &self.chain_id)
             .field("tx_submit", &self.tx_submit.is_some())
+            .field("block_broadcast", &self.block_broadcast.is_some())
+            .field("consensus_broadcast", &self.consensus_broadcast.is_some())
             .finish()
     }
 }
@@ -113,6 +127,9 @@ impl RpcServer<NoopStateProvider> {
             cors_config: CorsConfig::default(),
             max_connections: 100,
             peer_count: 0,
+            hdc_api: None,
+            block_broadcast: None,
+            consensus_broadcast: None,
         }
     }
 
@@ -128,6 +145,9 @@ impl RpcServer<NoopStateProvider> {
             cors_config: CorsConfig::default(),
             max_connections: 100,
             peer_count: 0,
+            hdc_api: None,
+            block_broadcast: None,
+            consensus_broadcast: None,
         }
     }
 }
@@ -150,7 +170,17 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             cors_config: CorsConfig::default(),
             max_connections: 100,
             peer_count: 0,
+            hdc_api: None,
+            block_broadcast: None,
+            consensus_broadcast: None,
         }
+    }
+
+    /// Set the HDC API implementation.
+    #[must_use]
+    pub fn with_hdc_api(mut self, hdc: HdcApiImpl) -> Self {
+        self.hdc_api = Some(hdc);
+        self
     }
 
     /// Set the transaction submission callback.
@@ -181,6 +211,20 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         self
     }
 
+    /// Set the block broadcast sender for `eth_subscribe` (newHeads, logs).
+    #[must_use]
+    pub fn with_block_broadcast(mut self, tx: broadcast::Sender<SubscriptionEvent>) -> Self {
+        self.block_broadcast = Some(tx);
+        self
+    }
+
+    /// Set the consensus broadcast sender for `kora_subscribe`.
+    #[must_use]
+    pub fn with_consensus_broadcast(mut self, tx: broadcast::Sender<ConsensusEvent>) -> Self {
+        self.consensus_broadcast = Some(tx);
+        self
+    }
+
     /// Create from configuration.
     pub fn from_config(state: NodeState, config: RpcServerConfig, state_provider: S) -> Self {
         Self {
@@ -193,6 +237,9 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             cors_config: config.cors,
             max_connections: config.max_connections,
             peer_count: 0,
+            hdc_api: None,
+            block_broadcast: None,
+            consensus_broadcast: None,
         }
     }
 
@@ -202,6 +249,8 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
     pub fn start(self) -> RpcServerHandle {
         let http_addr = self.http_addr;
         let jsonrpc_addr = self.jsonrpc_addr;
+        let peer_count = self.peer_count;
+        self.state.set_peer_count(peer_count);
         let node_state = Arc::new(self.state);
         let node_state_for_jsonrpc = Arc::clone(&node_state);
         let chain_id = self.chain_id;
@@ -209,7 +258,9 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         let cors_layer = build_cors_layer(&self.cors_config);
         let max_connections = self.max_connections;
         let state_provider = self.state_provider;
-        let peer_count = self.peer_count;
+        let hdc_api = self.hdc_api;
+        let block_broadcast = self.block_broadcast;
+        let consensus_broadcast = self.consensus_broadcast;
 
         let http_handle = tokio::spawn(async move {
             let app = Router::new()
@@ -272,6 +323,32 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             if let Err(e) = module.merge(kora_api.into_rpc()) {
                 error!(error = %e, "Failed to merge kora API");
                 return None;
+            }
+
+            // ---- HDC namespace (optional) ----
+            if let Some(hdc_api) = hdc_api
+                && let Err(e) = module.merge(hdc_api.into_rpc())
+            {
+                error!(error = %e, "Failed to merge hdc API");
+                return None;
+            }
+
+            // ---- Subscription APIs (optional, requires WS transport) ----
+            if let Some(block_tx) = block_broadcast {
+                let eth_sub = EthSubscriptionApiImpl::new(block_tx);
+                if let Err(e) = module.merge(eth_sub.into_rpc()) {
+                    error!(error = %e, "Failed to merge eth subscription API");
+                    return None;
+                }
+                info!("eth_subscribe/eth_unsubscribe registered");
+            }
+            if let Some(consensus_tx) = consensus_broadcast {
+                let kora_sub = KoraSubscriptionApiImpl::new(consensus_tx);
+                if let Err(e) = module.merge(kora_sub.into_rpc()) {
+                    error!(error = %e, "Failed to merge kora subscription API");
+                    return None;
+                }
+                info!("kora_subscribe/kora_unsubscribe registered");
             }
 
             info!(addr = %jsonrpc_addr, "Starting JSON-RPC server");

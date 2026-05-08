@@ -7,12 +7,83 @@ BOOTSTRAP_PEERS=${BOOTSTRAP_PEERS:-""}
 CHAIN_ID=${CHAIN_ID:-1337}
 DATA_DIR=${DATA_DIR:-/data}
 SHARED_DIR=${SHARED_DIR:-/shared}
+BASE_P2P_PORT=${BASE_P2P_PORT:-30303}
+BASE_RPC_PORT=${BASE_RPC_PORT:-8545}
 
 MODE="${1:-validator}"
 shift || true
 
 log() { echo "[entrypoint] $*"; }
 error() { echo "[entrypoint] ERROR: $*" >&2; exit 1; }
+
+auto_config_needs_init() {
+    [[ "${RESET_AUTO_CONFIG:-false}" == "true" ]] && return 0
+    [[ -f "${SHARED_DIR}/genesis.json" && -f "${SHARED_DIR}/peers.json" ]] || return 0
+
+    local validators threshold chain_id
+    validators=$(jq -r '.validators // empty' "${SHARED_DIR}/peers.json" 2>/dev/null || true)
+    threshold=$(jq -r '.threshold // empty' "${SHARED_DIR}/peers.json" 2>/dev/null || true)
+    chain_id=$(jq -r '.chain_id // empty' "${SHARED_DIR}/genesis.json" 2>/dev/null || true)
+
+    if [[ "$validators" == "$NUM_VALIDATORS" && "$threshold" == "$THRESHOLD" && "$chain_id" == "$CHAIN_ID" ]]; then
+        return 1
+    fi
+
+    return 0
+}
+
+patch_auto_bootstrappers() {
+    for i in $(seq 0 $((NUM_VALIDATORS - 1))); do
+        local port=$((BASE_P2P_PORT + i))
+        sed -i "s/node${i}:30303/127.0.0.1:${port}/g" "${SHARED_DIR}/peers.json"
+    done
+}
+
+prepare_auto_node() {
+    local idx="$1"
+    local node_data="${DATA_DIR}/node${idx}"
+    local p2p_port=$((BASE_P2P_PORT + idx))
+    local rpc_port=$((BASE_RPC_PORT + idx))
+    local rpc_addr="127.0.0.1:${rpc_port}"
+    if [[ "$idx" == "0" ]]; then
+        rpc_addr="0.0.0.0:${PORT:-8545}"
+    fi
+
+    mkdir -p "${node_data}"
+    cp "${SHARED_DIR}/node${idx}/validator.key" "${node_data}/"
+    cp "${SHARED_DIR}/node${idx}/share.key" "${node_data}/"
+    cp "${SHARED_DIR}/node${idx}/output.json" "${node_data}/"
+    cp "${SHARED_DIR}/genesis.json" "${node_data}/"
+
+    cat > "${SHARED_DIR}/kora-node${idx}.toml" <<AUTOEOF
+chain_id = ${CHAIN_ID}
+data_dir = "${node_data}"
+
+[network]
+listen_addr = "127.0.0.1:${p2p_port}"
+dialable_addr = "127.0.0.1:${p2p_port}"
+
+[execution]
+gas_limit = ${GAS_LIMIT:-250000000}
+block_time_ms = ${BLOCK_TIME_MS:-50}
+
+[hdc]
+enabled = ${HDC_ENABLED:-true}
+
+[rpc]
+http_addr = "${rpc_addr}"
+AUTOEOF
+}
+
+stop_auto_validators() {
+    local status="${1:-0}"
+    shift || true
+    for pid in "$@"; do
+        kill "$pid" 2>/dev/null || true
+    done
+    wait "$@" 2>/dev/null || true
+    exit "$status"
+}
 
 case "$MODE" in
     setup)
@@ -52,9 +123,84 @@ case "$MODE" in
             "$@"
         ;;
         
+    auto)
+        log "Running auto-init mode..."
+
+        NUM_VALIDATORS=${NUM_VALIDATORS:-1}
+        THRESHOLD=${THRESHOLD:-1}
+
+        if auto_config_needs_init; then
+            log "Initializing key material (${NUM_VALIDATORS} validators, threshold ${THRESHOLD})..."
+            rm -rf "${SHARED_DIR}"/node* "${SHARED_DIR}"/secondary* \
+                "${SHARED_DIR}/genesis.json" "${SHARED_DIR}/peers.json" \
+                "${SHARED_DIR}"/kora*.toml "${DATA_DIR}"/node*
+
+            /usr/local/bin/keygen setup \
+                --validators="${NUM_VALIDATORS}" \
+                --threshold="${THRESHOLD}" \
+                --chain-id="${CHAIN_ID}" \
+                --output-dir="${SHARED_DIR}"
+
+            patch_auto_bootstrappers
+
+            log "Running trusted dealer DKG..."
+            /usr/local/bin/keygen dkg-deal \
+                --validators="${NUM_VALIDATORS}" \
+                --threshold="${THRESHOLD}" \
+                --output-dir="${SHARED_DIR}"
+
+            log "Auto-init keygen complete"
+        else
+            log "Existing auto-init key material matches requested validator set"
+        fi
+
+        for i in $(seq 0 $((NUM_VALIDATORS - 1))); do
+            prepare_auto_node "$i"
+        done
+
+        if [[ "$NUM_VALIDATORS" -le 1 ]]; then
+            CONFIG_FILE="${CONFIG_FILE:-${SHARED_DIR}/kora-node${VALIDATOR_INDEX}.toml}"
+            cp "${SHARED_DIR}/genesis.json" "${DATA_DIR}/" 2>/dev/null || true
+            cp "${SHARED_DIR}/node${VALIDATOR_INDEX}/validator.key" "${DATA_DIR}/" 2>/dev/null || true
+            cp "${SHARED_DIR}/node${VALIDATOR_INDEX}/share.key" "${DATA_DIR}/" 2>/dev/null || true
+            cp "${SHARED_DIR}/node${VALIDATOR_INDEX}/output.json" "${DATA_DIR}/" 2>/dev/null || true
+            touch "${DATA_DIR}/.ready"
+
+            log "Starting single validator..."
+            exec /usr/local/bin/kora --config "${CONFIG_FILE}" validator \
+                --data-dir "$DATA_DIR" \
+                --peers "${SHARED_DIR}/peers.json" \
+                --chain-id "$CHAIN_ID" \
+                "$@"
+        fi
+
+        log "Starting ${NUM_VALIDATORS} validators in this container..."
+        touch "${DATA_DIR}/.ready"
+
+        pids=()
+        trap 'stop_auto_validators 143 "${pids[@]}"' TERM INT
+        for i in $(seq 0 $((NUM_VALIDATORS - 1))); do
+            node_data="${DATA_DIR}/node${i}"
+            config_file="${SHARED_DIR}/kora-node${i}.toml"
+            log "Starting validator ${i} with ${config_file}"
+            /usr/local/bin/kora --config "${config_file}" validator \
+                --data-dir "${node_data}" \
+                --peers "${SHARED_DIR}/peers.json" \
+                --chain-id "$CHAIN_ID" \
+                "$@" &
+            pids+=("$!")
+            sleep 1
+        done
+
+        wait -n "${pids[@]}"
+        status=$?
+        log "A validator exited with status ${status}; stopping remaining validators"
+        stop_auto_validators "$status" "${pids[@]}"
+        ;;
+
     validator)
         log "Running validator mode..."
-        
+
         [[ -f "${SHARED_DIR}/genesis.json" ]] || error "genesis.json not found"
         [[ -f "${DATA_DIR}/validator.key" ]] || error "validator.key not found"
         [[ -f "${DATA_DIR}/share.key" ]] || error "share.key not found (run DKG first)"
@@ -76,7 +222,12 @@ case "$MODE" in
             done
         fi
         
-        exec /usr/local/bin/kora validator \
+        CONFIG_ARG=""
+        if [[ -n "${CONFIG_FILE:-}" ]]; then
+            CONFIG_ARG="--config $CONFIG_FILE"
+        fi
+
+        exec /usr/local/bin/kora $CONFIG_ARG validator \
             --data-dir "$DATA_DIR" \
             --peers "${SHARED_DIR}/peers.json" \
             --chain-id "$CHAIN_ID" \

@@ -2,4 +2,5 @@
 
 mod consensus;
 mod execution;
+mod hdc;
 mod resilience;

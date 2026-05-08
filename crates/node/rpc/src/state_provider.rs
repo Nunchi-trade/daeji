@@ -91,6 +91,14 @@ pub trait StateProvider: Send + Sync {
     async fn get_logs(&self, _filter: RpcLogFilter) -> Result<Vec<RpcLog>, RpcError> {
         Err(RpcError::NotImplemented)
     }
+
+    /// Get all receipts for a given block.
+    async fn block_receipts(
+        &self,
+        _block: BlockNumberOrTag,
+    ) -> Result<Option<Vec<RpcTransactionReceipt>>, RpcError> {
+        Ok(None)
+    }
 }
 
 /// A no-op state provider that returns empty/zero values.

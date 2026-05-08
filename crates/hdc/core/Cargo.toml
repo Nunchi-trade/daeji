@@ -1,0 +1,25 @@
+[package]
+name = "kora-hdc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Hyperdimensional Computing core algebra for Kora"
+
+[lints]
+workspace = true
+
+[dependencies]
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+tiny-keccak = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+rand.workspace = true
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "hdc_bench"
+harness = false

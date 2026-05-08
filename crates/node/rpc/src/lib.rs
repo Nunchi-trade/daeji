@@ -20,6 +20,9 @@ pub use eth::{
 mod kora;
 pub use kora::{KoraApiImpl, KoraApiServer};
 
+mod hdc;
+pub use hdc::{HdcApiImpl, HdcRpcApiServer, HdcSearchResult};
+
 mod server;
 pub use server::{JsonRpcServer, RpcServer, RpcServerHandle, ServerError};
 
@@ -31,6 +34,12 @@ pub use state_provider::{NoopStateProvider, StateProvider};
 
 mod indexed_provider;
 pub use indexed_provider::IndexedStateProvider;
+
+mod subscription;
+pub use subscription::{
+    ConsensusEvent, EthSubscriptionApiImpl, EthSubscriptionApiServer, KoraSubscriptionApiImpl,
+    KoraSubscriptionApiServer, SubscriptionEvent,
+};
 
 mod types;
 pub use types::{

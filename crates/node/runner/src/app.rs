@@ -1,6 +1,9 @@
 //! REVM-based consensus application implementation.
 
-use std::{collections::BTreeSet, time::Instant};
+use std::{
+    collections::BTreeSet,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 use alloy_consensus::Header;
 use alloy_primitives::{Address, B256, Bytes};
@@ -29,6 +32,7 @@ pub struct RevmApplication<S, E> {
     executor: E,
     max_txs: usize,
     gas_limit: u64,
+    block_time_ms: u64,
     node_state: Option<NodeState>,
     _scheme: std::marker::PhantomData<S>,
 }
@@ -38,6 +42,7 @@ impl<S, E> std::fmt::Debug for RevmApplication<S, E> {
         f.debug_struct("RevmApplication")
             .field("max_txs", &self.max_txs)
             .field("gas_limit", &self.gas_limit)
+            .field("block_time_ms", &self.block_time_ms)
             .finish_non_exhaustive()
     }
 }
@@ -47,12 +52,19 @@ where
     E: BlockExecutor<OverlayState<QmdbState>, Tx = Bytes> + Clone,
 {
     /// Create a new REVM application.
-    pub const fn new(ledger: LedgerService, executor: E, max_txs: usize, gas_limit: u64) -> Self {
+    pub const fn new(
+        ledger: LedgerService,
+        executor: E,
+        max_txs: usize,
+        gas_limit: u64,
+        block_time_ms: u64,
+    ) -> Self {
         Self {
             ledger,
             executor,
             max_txs,
             gas_limit,
+            block_time_ms,
             node_state: None,
             _scheme: std::marker::PhantomData,
         }
@@ -65,10 +77,10 @@ where
         self
     }
 
-    fn block_context(&self, height: u64, prevrandao: B256) -> BlockContext {
+    fn block_context(&self, height: u64, timestamp: u64, prevrandao: B256) -> BlockContext {
         let header = Header {
             number: height,
-            timestamp: height,
+            timestamp,
             gas_limit: self.gas_limit,
             beneficiary: Address::ZERO,
             base_fee_per_gas: Some(0),
@@ -81,7 +93,7 @@ where
         self.ledger.seed_for_parent(parent_digest).await.unwrap_or(B256::ZERO)
     }
 
-    async fn build_block(&self, parent: &Block) -> Option<Block> {
+    async fn build_block(&self, parent: &Block, timestamp: u64) -> Option<Block> {
         use kora_consensus::Mempool as _;
 
         let start = Instant::now();
@@ -118,7 +130,7 @@ where
 
         let prevrandao = self.get_prevrandao(parent_digest).await;
         let height = parent.height + 1;
-        let context = self.block_context(height, prevrandao);
+        let context = self.block_context(height, timestamp, prevrandao);
         let txs_bytes: Vec<Bytes> = txs.iter().map(|tx| tx.bytes.clone()).collect();
 
         let exec_start = Instant::now();
@@ -145,9 +157,22 @@ where
             .ok()?;
         let root_elapsed = root_start.elapsed();
 
-        let block = Block { parent: parent.id(), height, prevrandao, state_root, txs };
+        let block = Block { parent: parent.id(), height, timestamp, prevrandao, state_root, txs };
 
         let block_digest = block.commitment();
+        let merged_changes = parent_snapshot.state.merge_changes(outcome.changes.clone());
+        let next_state = OverlayState::new(parent_snapshot.state.base(), merged_changes);
+
+        self.ledger
+            .insert_snapshot(
+                block_digest,
+                parent_digest,
+                next_state,
+                state_root,
+                outcome.changes,
+                &block.txs,
+            )
+            .await;
 
         let total_elapsed = start.elapsed();
         info!(
@@ -179,7 +204,7 @@ where
         };
         let snapshot_elapsed = start.elapsed();
 
-        let context = self.block_context(block.height, block.prevrandao);
+        let context = self.block_context(block.height, block.timestamp, block.prevrandao);
         let exec_start = Instant::now();
         let execution =
             match BlockExecution::execute(&parent_snapshot, &self.executor, &context, &block.txs)
@@ -268,6 +293,10 @@ where
     }
 }
 
+fn unix_seconds(now: SystemTime) -> u64 {
+    now.duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_secs())
+}
+
 impl<Env, S, E> Application<Env> for RevmApplication<S, E>
 where
     Env: Rng + Spawner + Metrics + Clock,
@@ -284,20 +313,33 @@ where
 
     fn propose<A>(
         &mut self,
-        _context: (Env, Self::Context),
+        context: (Env, Self::Context),
         mut ancestry: AncestorStream<A, Self::Block>,
     ) -> impl std::future::Future<Output = Option<Self::Block>> + Send
     where
         A: BlockProvider<Block = Self::Block>,
     {
         let node_state = self.node_state.clone();
+        let block_time_ms = self.block_time_ms;
         async move {
             let start = Instant::now();
+            let (env, consensus_context) = context;
+            if let Some(ref state) = node_state {
+                state.set_view(consensus_context.round.view().get());
+                state.set_leader(true);
+            }
+
             let parent = ancestry.next().await?;
             let ancestry_elapsed = start.elapsed();
 
+            if block_time_ms > 0 {
+                env.sleep(Duration::from_millis(block_time_ms)).await;
+            }
+
+            let timestamp = unix_seconds(env.current()).max(parent.timestamp.saturating_add(1));
+
             let build_start = Instant::now();
-            let block = self.build_block(&parent).await;
+            let block = self.build_block(&parent, timestamp).await;
             let build_elapsed = build_start.elapsed();
 
             if let Some(ref b) = block {

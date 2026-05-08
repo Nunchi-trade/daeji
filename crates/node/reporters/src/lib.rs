@@ -6,9 +6,13 @@
 
 use std::{fmt, marker::PhantomData, sync::Arc};
 
+use kora_hdc_chain::OnChainHdcIndex;
+
+type HdcIndex = Arc<parking_lot::RwLock<OnChainHdcIndex>>;
+
 use alloy_consensus::{Transaction as _, TxEnvelope, transaction::SignerRecoverable as _};
 use alloy_eips::eip2718::Decodable2718 as _;
-use alloy_primitives::{B256, Bytes, keccak256};
+use alloy_primitives::{B256, Bytes, U256, U64, keccak256};
 use commonware_consensus::{
     Block as _, Reporter,
     marshal::Update,
@@ -27,7 +31,8 @@ use kora_indexer::{BlockIndex, IndexedBlock, IndexedLog, IndexedReceipt, Indexed
 use kora_ledger::LedgerService;
 use kora_overlay::OverlayState;
 use kora_qmdb_ledger::QmdbState;
-use kora_rpc::NodeState;
+use kora_rpc::{ConsensusEvent, NodeState, SubscriptionEvent};
+use tokio_crate::sync::broadcast;
 use tracing::{error, trace, warn};
 
 /// Provides block execution context for finalized block verification.
@@ -108,6 +113,8 @@ async fn handle_finalized_update<E, P>(
     executor: E,
     provider: P,
     block_index: Option<Arc<BlockIndex>>,
+    hdc_index: Option<HdcIndex>,
+    block_broadcast: Option<broadcast::Sender<SubscriptionEvent>>,
     update: Update<Block>,
 ) where
     E: BlockExecutor<OverlayState<QmdbState>, Tx = Bytes>,
@@ -223,6 +230,19 @@ async fn handle_finalized_update<E, P>(
             {
                 index_finalized_block(index, &block, block_context, outcome);
             }
+
+            // Broadcast block events to WebSocket subscribers.
+            if let (Some(tx), Some(outcome), Some(block_context)) =
+                (&block_broadcast, execution_outcome.as_ref(), execution_context.as_ref())
+            {
+                broadcast_block_events(tx, &block, block_context, outcome);
+            }
+
+            // Process HDC events from finalized receipt logs in canonical order.
+            if let (Some(hdc_idx), Some(outcome)) = (hdc_index.as_ref(), execution_outcome.as_ref())
+            {
+                process_hdc_events(hdc_idx, outcome);
+            }
             state.prune_mempool(&block.txs).await;
             // Marshal waits for the application to acknowledge processing before advancing the
             // delivery floor. Without this, the node can stall on finalized block delivery.
@@ -323,6 +343,95 @@ fn index_finalized_block(
     index.insert_block(indexed_block, indexed_txs, indexed_receipts);
 }
 
+/// Broadcast finalized block events to WebSocket subscribers.
+///
+/// Constructs an [`RpcBlock`] and [`RpcLog`] entries from the execution outcome
+/// and sends them over the broadcast channel.  Receivers that are too slow will
+/// miss messages (lagged), but sending never blocks or errors fatally.
+fn broadcast_block_events(
+    tx: &broadcast::Sender<SubscriptionEvent>,
+    block: &Block,
+    block_context: &BlockContext,
+    outcome: &ExecutionOutcome,
+) {
+    use kora_rpc::{BlockTransactions, RpcBlock, RpcLog};
+
+    let block_hash = block.id().0;
+    let transaction_hashes: Vec<B256> =
+        block.txs.iter().map(|t| keccak256(&t.bytes)).collect();
+
+    let rpc_block = RpcBlock {
+        hash: block_hash,
+        parent_hash: block.parent.0,
+        number: U64::from(block.height),
+        state_root: block.state_root.0,
+        timestamp: U64::from(block_context.header.timestamp),
+        gas_limit: U64::from(block_context.header.gas_limit),
+        gas_used: U64::from(outcome.gas_used),
+        base_fee_per_gas: block_context.header.base_fee_per_gas.map(U256::from),
+        transactions: BlockTransactions::Hashes(transaction_hashes),
+        ..Default::default()
+    };
+
+    // Best-effort: ignore send errors (no subscribers).
+    let _ = tx.send(SubscriptionEvent::NewHead(rpc_block));
+
+    // Broadcast individual log events.
+    let mut next_log_index = 0u64;
+    for (tx_idx, receipt) in outcome.receipts.iter().enumerate() {
+        let tx_hash = block
+            .txs
+            .get(tx_idx)
+            .map(|t| keccak256(&t.bytes))
+            .unwrap_or_default();
+        for log in receipt.logs() {
+            let (topics, data) = log.data.clone().split();
+            let rpc_log = RpcLog {
+                address: log.address,
+                topics,
+                data,
+                block_number: U64::from(block.height),
+                transaction_hash: tx_hash,
+                transaction_index: U64::from(tx_idx as u64),
+                block_hash,
+                log_index: U64::from(next_log_index),
+                removed: false,
+            };
+            let _ = tx.send(SubscriptionEvent::Log(rpc_log));
+            next_log_index += 1;
+        }
+    }
+}
+
+/// Process HDC events from a finalized block's receipt logs.
+///
+/// Iterates receipts and their logs in canonical order, calling
+/// [`kora_hdc_chain::event::process_log`] for each log entry. Errors from
+/// individual logs are logged and skipped -- they must not block finalization.
+fn process_hdc_events(hdc_index: &HdcIndex, outcome: &ExecutionOutcome) {
+    let mut index = hdc_index.write();
+    for receipt in &outcome.receipts {
+        for log in receipt.logs() {
+            let (topics, data) = log.data.clone().split();
+            if let Err(e) =
+                kora_hdc_chain::event::process_log(&mut index, &topics, &data, &log.address)
+            {
+                // UnknownTopic is expected for non-HDC logs; only warn on real errors.
+                match e {
+                    kora_hdc_chain::event::EventError::UnknownTopic(_) => {}
+                    _ => {
+                        warn!(
+                            error = %e,
+                            address = %log.address,
+                            "HDC event processing error"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn decode_tx_metadata(tx_bytes: &Bytes) -> Option<TxMetadata> {
     let envelope = match TxEnvelope::decode_2718(&mut tx_bytes.as_ref()) {
         Ok(envelope) => envelope,
@@ -373,6 +482,10 @@ pub struct FinalizedReporter<E, P> {
     provider: P,
     /// Optional RPC block index updated after finalized blocks are persisted.
     block_index: Option<Arc<BlockIndex>>,
+    /// Optional HDC on-chain index updated from finalized receipt logs.
+    hdc_index: Option<HdcIndex>,
+    /// Broadcast channel for WebSocket subscription events (newHeads, logs).
+    block_broadcast: Option<broadcast::Sender<SubscriptionEvent>>,
 }
 
 impl<E, P> fmt::Debug for FinalizedReporter<E, P> {
@@ -393,13 +506,38 @@ where
         executor: E,
         provider: P,
     ) -> Self {
-        Self { state, context, executor, provider, block_index: None }
+        Self {
+            state,
+            context,
+            executor,
+            provider,
+            block_index: None,
+            hdc_index: None,
+            block_broadcast: None,
+        }
     }
 
     /// Attach the RPC-visible block index to update when blocks finalize.
     #[must_use]
     pub fn with_block_index(mut self, block_index: Arc<BlockIndex>) -> Self {
         self.block_index = Some(block_index);
+        self
+    }
+
+    /// Attach the HDC on-chain index to update from finalized receipt logs.
+    #[must_use]
+    pub fn with_hdc_index(mut self, hdc_index: HdcIndex) -> Self {
+        self.hdc_index = Some(hdc_index);
+        self
+    }
+
+    /// Attach a broadcast sender for WebSocket subscription events.
+    #[must_use]
+    pub fn with_block_broadcast(
+        mut self,
+        tx: broadcast::Sender<SubscriptionEvent>,
+    ) -> Self {
+        self.block_broadcast = Some(tx);
         self
     }
 }
@@ -417,8 +555,20 @@ where
         let executor = self.executor.clone();
         let provider = self.provider.clone();
         let block_index = self.block_index.clone();
+        let hdc_index = self.hdc_index.clone();
+        let block_broadcast = self.block_broadcast.clone();
         async move {
-            handle_finalized_update(state, context, executor, provider, block_index, update).await;
+            handle_finalized_update(
+                state,
+                context,
+                executor,
+                provider,
+                block_index,
+                hdc_index,
+                block_broadcast,
+                update,
+            )
+            .await;
         }
     }
 }
@@ -429,10 +579,15 @@ where
 /// - Current view number (from notarizations)
 /// - Finalized block count
 /// - Nullified round count
+///
+/// When a consensus broadcast sender is attached, it also emits
+/// [`ConsensusEvent`] values for WebSocket subscribers.
 #[derive(Clone)]
 pub struct NodeStateReporter<S> {
     /// RPC node state to update.
     state: NodeState,
+    /// Optional broadcast for consensus events to WS subscribers.
+    consensus_broadcast: Option<broadcast::Sender<ConsensusEvent>>,
     /// Marker for the signing scheme.
     _scheme: PhantomData<S>,
 }
@@ -446,7 +601,17 @@ impl<S> fmt::Debug for NodeStateReporter<S> {
 impl<S> NodeStateReporter<S> {
     /// Create a new node state reporter.
     pub const fn new(state: NodeState) -> Self {
-        Self { state, _scheme: PhantomData }
+        Self { state, consensus_broadcast: None, _scheme: PhantomData }
+    }
+
+    /// Attach a broadcast sender for consensus events.
+    #[must_use]
+    pub fn with_consensus_broadcast(
+        mut self,
+        tx: broadcast::Sender<ConsensusEvent>,
+    ) -> Self {
+        self.consensus_broadcast = Some(tx);
+        self
     }
 }
 
@@ -459,14 +624,26 @@ where
     fn report(&mut self, activity: Self::Activity) -> impl std::future::Future<Output = ()> + Send {
         match &activity {
             Activity::Notarization(n) => {
-                self.state.set_view(n.proposal.round.view().get());
+                let view = n.proposal.round.view().get();
+                self.state.set_view(view);
+                if let Some(tx) = &self.consensus_broadcast {
+                    let _ = tx.send(ConsensusEvent::Notarization { view });
+                }
             }
             Activity::Finalization(f) => {
-                self.state.set_view(f.proposal.round.view().get());
+                let view = f.proposal.round.view().get();
+                self.state.set_view(view);
                 self.state.inc_finalized();
+                if let Some(tx) = &self.consensus_broadcast {
+                    let _ = tx.send(ConsensusEvent::Finalization { view });
+                }
             }
-            Activity::Nullification(_) => {
+            Activity::Nullification(n) => {
                 self.state.inc_nullified();
+                if let Some(tx) = &self.consensus_broadcast {
+                    let view = n.round.view().get();
+                    let _ = tx.send(ConsensusEvent::Nullification { view });
+                }
             }
             _ => {}
         }

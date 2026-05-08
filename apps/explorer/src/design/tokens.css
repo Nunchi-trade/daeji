@@ -1,0 +1,102 @@
+:root {
+  /* -- Void (backgrounds) -- */
+  --rd-void:            #060608;
+  --rd-void-light:      #0c0c10;
+  --rd-void-surface:    #12111a;
+
+  /* -- Rose (primary accent) -- */
+  --rd-rose-deep:       #3a2030;
+  --rd-rose-dim:        #6a4058;
+  --rd-rose:            #aa7088;
+  --rd-rose-bright:     #cc90a8;
+  --rd-rose-glow:       #dca5bd;
+
+  /* -- Bone (value, transactions) -- */
+  --rd-bone-dim:        #8a7860;
+  --rd-bone:            #b8a880;
+  --rd-bone-bright:     #d8c8a0;
+
+  /* -- Dream (pending, unresolved) -- */
+  --rd-dream-dim:       #5a5a78;
+  --rd-dream:           #7a7a98;
+  --rd-dream-bright:    #9494b4;
+
+  /* -- Semantic -- */
+  --rd-success:         #7a8a78;
+  --rd-warning:         #c89a68;
+  --rd-danger:          #cc5555;
+
+  /* -- Text -- */
+  --rd-text:            #c8b8c0;
+  --rd-text-dim:        #6a5a68;
+  --rd-text-ghost:      #3a303a;
+  --rd-text-bright:     #e8d8e0;
+
+  /* -- Borders -- */
+  --rd-border:          rgba(255, 255, 255, 0.07);
+  --rd-border-strong:   rgba(255, 255, 255, 0.14);
+  --rd-border-rose:     rgba(170, 112, 136, 0.3);
+
+  /* -- Glass surfaces -- */
+  --rd-glass-bg:        rgba(8, 8, 12, 0.45);
+  --rd-glass-bg-hover:  rgba(170, 112, 136, 0.08);
+  --rd-glass-highlight: rgba(255, 255, 255, 0.06);
+  --rd-glass-blur:      12px;
+  --rd-glass-saturate:  180%;
+
+  /* -- LED indicator -- */
+  --rd-led-size:        5px;
+  --rd-led-connected:   var(--rd-success);
+  --rd-led-warning:     var(--rd-warning);
+  --rd-led-error:       var(--rd-danger);
+  --rd-led-streaming:   var(--rd-rose-glow);
+
+  /* -- Spacing (8px base grid) -- */
+  --rd-space-xs:        4px;
+  --rd-space-sm:        8px;
+  --rd-space-md:        16px;
+  --rd-space-lg:        24px;
+  --rd-space-xl:        32px;
+  --rd-space-2xl:       48px;
+
+  /* -- Typography -- */
+  --rd-font-mono:       'JetBrains Mono Variable', 'JetBrains Mono', 'SF Mono', monospace;
+  --rd-font-display:    'Fraunces Variable', 'Fraunces', Georgia, serif;
+
+  --rd-text-xs:         10px;
+  --rd-text-sm:         11px;
+  --rd-text-base:       14px;
+  --rd-text-lg:         18px;
+  --rd-text-xl:         24px;
+  --rd-text-hero:       38px;
+
+  --rd-tracking-tight:  0.02em;
+  --rd-tracking-normal: 0.06em;
+  --rd-tracking-wide:   0.12em;
+  --rd-tracking-label:  0.28em;
+
+  /* -- Transitions -- */
+  --rd-ease-out:        cubic-bezier(0.16, 1, 0.3, 1);
+  --rd-ease-in-out:     cubic-bezier(0.65, 0, 0.35, 1);
+  --rd-duration-fast:   80ms;
+  --rd-duration-normal: 200ms;
+  --rd-duration-slow:   400ms;
+
+  /* -- Z-index layers -- */
+  --rd-z-scene:         1;
+  --rd-z-panels:        100;
+  --rd-z-overlay:       500;
+  --rd-z-search:        600;
+  --rd-z-detail:        700;
+  --rd-z-grain:         9997;
+  --rd-z-vignette:      9998;
+  --rd-z-scanlines:     9999;
+
+  /* -- Scene-specific -- */
+  --rd-activity:        0;
+  --rd-ambient-opacity: 1;
+
+  /* -- Interactions -- */
+  --rd-focus-ring:    0 0 0 2px rgba(170, 112, 136, 0.4);
+  --rd-click-scale:   0.97;
+}

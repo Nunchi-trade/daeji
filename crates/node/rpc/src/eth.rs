@@ -134,6 +134,13 @@ pub trait EthApi {
     /// Returns logs matching the given filter.
     #[method(name = "getLogs")]
     async fn get_logs(&self, filter: RpcLogFilter) -> RpcResult<Vec<RpcLog>>;
+
+    /// Returns all receipts for a given block.
+    #[method(name = "getBlockReceipts")]
+    async fn get_block_receipts(
+        &self,
+        block: BlockNumberOrTag,
+    ) -> RpcResult<Option<Vec<RpcTransactionReceipt>>>;
 }
 
 /// Net namespace API.
@@ -389,15 +396,47 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
         let requested = block_count.to::<u64>().min(1024);
         let count = requested.min(newest.saturating_add(1)) as usize;
         let oldest = newest.saturating_add(1).saturating_sub(count as u64);
-        let base_fee = U256::from(1_000_000_000u64);
+
+        // Read actual base fees and gas ratios from indexed blocks.
+        let mut base_fee_per_gas = Vec::with_capacity(count + 1);
+        let mut gas_used_ratio = Vec::with_capacity(count);
+
+        for i in 0..count {
+            let block_num = oldest + i as u64;
+            let block = provider
+                .block_by_number(BlockNumberOrTag::Number(U64::from(block_num)), false)
+                .await
+                .unwrap_or(None);
+            if let Some(block) = block {
+                base_fee_per_gas.push(block.base_fee_per_gas.unwrap_or(U256::ZERO));
+                let gas_limit = block.gas_limit.to::<u64>();
+                let gas_used = block.gas_used.to::<u64>();
+                gas_used_ratio.push(if gas_limit > 0 {
+                    gas_used as f64 / gas_limit as f64
+                } else {
+                    0.0
+                });
+            } else {
+                base_fee_per_gas.push(U256::ZERO);
+                gas_used_ratio.push(0.0);
+            }
+        }
+
+        // The predicted next block's base fee (the extra count+1 entry).
+        // Use the last block's fee as a simple prediction.
+        let next_base_fee = base_fee_per_gas.last().copied().unwrap_or(U256::ZERO);
+        base_fee_per_gas.push(next_base_fee);
+
+        // Rewards: on a chain with no transactions, all percentiles are zero.
+        let reward = reward_percentiles.map(|percentiles| {
+            vec![vec![U256::ZERO; percentiles.len()]; count]
+        });
 
         Ok(FeeHistory {
-            base_fee_per_gas: vec![base_fee; count + 1],
-            gas_used_ratio: vec![0.0; count],
+            base_fee_per_gas,
+            gas_used_ratio,
             oldest_block: U64::from(oldest),
-            reward: reward_percentiles.map(|percentiles| {
-                vec![vec![U256::from(1_000_000_000u64); percentiles.len()]; count]
-            }),
+            reward,
         })
     }
 
@@ -416,6 +455,14 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
     async fn get_logs(&self, filter: RpcLogFilter) -> RpcResult<Vec<RpcLog>> {
         let provider = self.state_provider.read().await;
         provider.get_logs(filter).await.map_err(Into::into)
+    }
+
+    async fn get_block_receipts(
+        &self,
+        block: BlockNumberOrTag,
+    ) -> RpcResult<Option<Vec<RpcTransactionReceipt>>> {
+        let provider = self.state_provider.read().await;
+        provider.block_receipts(block).await.map_err(Into::into)
     }
 }
 
@@ -716,5 +763,247 @@ mod tests {
             &tx_data[..],
             "callback receives the caller's tx bytes verbatim — no re-encoding, no truncation"
         );
+    }
+
+    // ---- fee_history tests ----
+
+    /// A mock state provider that holds a configurable list of blocks, keyed
+    /// by block number. Used to test `fee_history` against real block data.
+    struct MockBlockProvider {
+        blocks: HashMap<u64, RpcBlock>,
+        head: u64,
+    }
+
+    impl MockBlockProvider {
+        fn new(blocks: Vec<RpcBlock>) -> Self {
+            let head = blocks.iter().map(|b| b.number.to::<u64>()).max().unwrap_or(0);
+            let map = blocks.into_iter().map(|b| (b.number.to::<u64>(), b)).collect();
+            Self { blocks: map, head }
+        }
+
+        fn empty() -> Self {
+            Self { blocks: HashMap::new(), head: 0 }
+        }
+
+        fn make_block(
+            number: u64,
+            base_fee: Option<u64>,
+            gas_used: u64,
+            gas_limit: u64,
+        ) -> RpcBlock {
+            RpcBlock {
+                number: U64::from(number),
+                base_fee_per_gas: base_fee.map(U256::from),
+                gas_used: U64::from(gas_used),
+                gas_limit: U64::from(gas_limit),
+                ..Default::default()
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl StateProvider for MockBlockProvider {
+        async fn balance(
+            &self,
+            _: Address,
+            _: Option<BlockNumberOrTag>,
+        ) -> Result<U256, crate::error::RpcError> {
+            Ok(U256::ZERO)
+        }
+        async fn nonce(
+            &self,
+            _: Address,
+            _: Option<BlockNumberOrTag>,
+        ) -> Result<u64, crate::error::RpcError> {
+            Ok(0)
+        }
+        async fn code(
+            &self,
+            _: Address,
+            _: Option<BlockNumberOrTag>,
+        ) -> Result<Bytes, crate::error::RpcError> {
+            Ok(Bytes::new())
+        }
+        async fn storage(
+            &self,
+            _: Address,
+            _: U256,
+            _: Option<BlockNumberOrTag>,
+        ) -> Result<U256, crate::error::RpcError> {
+            Ok(U256::ZERO)
+        }
+        async fn block_by_number(
+            &self,
+            block: BlockNumberOrTag,
+            _full: bool,
+        ) -> Result<Option<RpcBlock>, crate::error::RpcError> {
+            let num = match block {
+                BlockNumberOrTag::Number(n) => n.to::<u64>(),
+                _ => self.head,
+            };
+            Ok(self.blocks.get(&num).cloned())
+        }
+        async fn block_by_hash(
+            &self,
+            _: B256,
+            _: bool,
+        ) -> Result<Option<RpcBlock>, crate::error::RpcError> {
+            Ok(None)
+        }
+        async fn transaction_by_hash(
+            &self,
+            _: B256,
+        ) -> Result<Option<RpcTransaction>, crate::error::RpcError> {
+            Ok(None)
+        }
+        async fn receipt_by_hash(
+            &self,
+            _: B256,
+        ) -> Result<Option<RpcTransactionReceipt>, crate::error::RpcError> {
+            Ok(None)
+        }
+        async fn block_number(&self) -> Result<u64, crate::error::RpcError> {
+            Ok(self.head)
+        }
+    }
+
+    /// fee_history returns actual base fees from indexed blocks.
+    #[tokio::test]
+    async fn fee_history_returns_real_block_base_fees() {
+        let blocks = vec![
+            MockBlockProvider::make_block(0, Some(1_000_000_000), 0, 30_000_000),
+            MockBlockProvider::make_block(1, Some(875_000_000), 0, 30_000_000),
+            MockBlockProvider::make_block(2, Some(765_625_000), 0, 30_000_000),
+            MockBlockProvider::make_block(3, Some(669_921_875), 0, 30_000_000),
+            MockBlockProvider::make_block(4, Some(586_181_640), 0, 30_000_000),
+        ];
+        let provider = MockBlockProvider::new(blocks);
+        let api = EthApiImpl::new(1, provider);
+
+        let history = EthApiServer::fee_history(
+            &api,
+            U64::from(5),
+            BlockNumberOrTag::Latest,
+            Some(vec![25.0, 75.0]),
+        )
+        .await
+        .unwrap();
+
+        // base_fee_per_gas has count+1 entries (5 blocks + 1 predicted).
+        assert_eq!(history.base_fee_per_gas.len(), 6);
+        assert_eq!(history.base_fee_per_gas[0], U256::from(1_000_000_000u64));
+        assert_eq!(history.base_fee_per_gas[1], U256::from(875_000_000u64));
+        assert_eq!(history.base_fee_per_gas[2], U256::from(765_625_000u64));
+        assert_eq!(history.base_fee_per_gas[3], U256::from(669_921_875u64));
+        assert_eq!(history.base_fee_per_gas[4], U256::from(586_181_640u64));
+        // The predicted next-block fee equals the last block's fee.
+        assert_eq!(history.base_fee_per_gas[5], U256::from(586_181_640u64));
+
+        assert_eq!(history.oldest_block, U64::from(0));
+        assert_eq!(history.gas_used_ratio.len(), 5);
+
+        // Rewards: all zeros for an empty-transaction chain.
+        let rewards = history.reward.unwrap();
+        assert_eq!(rewards.len(), 5);
+        for row in &rewards {
+            assert_eq!(row.len(), 2);
+            assert!(row.iter().all(|v| *v == U256::ZERO));
+        }
+    }
+
+    /// fee_history computes gas_used_ratio correctly from block data.
+    #[tokio::test]
+    async fn fee_history_computes_gas_used_ratio() {
+        let blocks = vec![
+            MockBlockProvider::make_block(0, Some(100), 0, 30_000_000),          // 0%
+            MockBlockProvider::make_block(1, Some(100), 15_000_000, 30_000_000), // 50%
+            MockBlockProvider::make_block(2, Some(100), 30_000_000, 30_000_000), // 100%
+        ];
+        let provider = MockBlockProvider::new(blocks);
+        let api = EthApiImpl::new(1, provider);
+
+        let history = EthApiServer::fee_history(
+            &api,
+            U64::from(3),
+            BlockNumberOrTag::Latest,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(history.gas_used_ratio.len(), 3);
+        assert!((history.gas_used_ratio[0] - 0.0).abs() < f64::EPSILON);
+        assert!((history.gas_used_ratio[1] - 0.5).abs() < f64::EPSILON);
+        assert!((history.gas_used_ratio[2] - 1.0).abs() < f64::EPSILON);
+    }
+
+    /// fee_history on an empty index returns a graceful empty response.
+    #[tokio::test]
+    async fn fee_history_empty_index() {
+        let provider = MockBlockProvider::empty();
+        let api = EthApiImpl::new(1, provider);
+
+        let history = EthApiServer::fee_history(
+            &api,
+            U64::from(10),
+            BlockNumberOrTag::Latest,
+            Some(vec![50.0]),
+        )
+        .await
+        .unwrap();
+
+        // With head=0 and no block at number 0, we still get a response.
+        // count = min(10, 0+1) = 1, so we request block 0 (which is missing).
+        assert_eq!(history.base_fee_per_gas.len(), 2); // 1 block + 1 predicted
+        assert_eq!(history.base_fee_per_gas[0], U256::ZERO);
+        assert_eq!(history.base_fee_per_gas[1], U256::ZERO);
+        assert_eq!(history.gas_used_ratio.len(), 1);
+        assert!((history.gas_used_ratio[0] - 0.0).abs() < f64::EPSILON);
+    }
+
+    /// fee_history with NoopStateProvider (block_number errors) falls back
+    /// to block_height and returns zeros for missing blocks.
+    #[tokio::test]
+    async fn fee_history_noop_provider_fallback() {
+        let api = EthApiImpl::new(1, NoopStateProvider);
+        api.set_block_height(5);
+
+        let history = EthApiServer::fee_history(
+            &api,
+            U64::from(3),
+            BlockNumberOrTag::Number(U64::from(5)),
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Noop returns None for all blocks, so all base fees are zero.
+        assert_eq!(history.base_fee_per_gas.len(), 4); // 3 blocks + 1 predicted
+        assert!(history.base_fee_per_gas.iter().all(|f| *f == U256::ZERO));
+        assert_eq!(history.gas_used_ratio.len(), 3);
+        assert_eq!(history.oldest_block, U64::from(3));
+    }
+
+    /// fee_history with base_fee_per_gas = None in block data falls back to zero.
+    #[tokio::test]
+    async fn fee_history_none_base_fee_treated_as_zero() {
+        let blocks = vec![
+            MockBlockProvider::make_block(0, None, 0, 30_000_000), // base_fee is None
+        ];
+        let provider = MockBlockProvider::new(blocks);
+        let api = EthApiImpl::new(1, provider);
+
+        let history = EthApiServer::fee_history(
+            &api,
+            U64::from(1),
+            BlockNumberOrTag::Latest,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(history.base_fee_per_gas.len(), 2);
+        assert_eq!(history.base_fee_per_gas[0], U256::ZERO);
+        assert_eq!(history.base_fee_per_gas[1], U256::ZERO);
     }
 }

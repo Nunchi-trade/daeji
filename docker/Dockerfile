@@ -78,8 +78,9 @@ WORKDIR /data
 # 9002  - Prometheus metrics
 EXPOSE 30303 8545 8546 9002
 
-# Default volumes
-VOLUME ["/data", "/shared"]
+# Health check for Railway and standalone Docker
+HEALTHCHECK --interval=10s --timeout=5s --retries=3 --start-period=30s \
+    CMD /scripts/healthcheck.sh
 
 # Default entrypoint - can be overridden for different modes
 ENTRYPOINT ["/scripts/entrypoint.sh"]

@@ -66,7 +66,11 @@ impl<S: StateDbRead + Send + Sync + 'static> StateProvider for IndexedStateProvi
         address: Address,
         _block: Option<BlockNumberOrTag>,
     ) -> Result<U256, RpcError> {
-        self.state.balance(&address).await.map_err(state_error_to_rpc)
+        match self.state.balance(&address).await {
+            Ok(b) => Ok(b),
+            Err(StateDbError::AccountNotFound(_)) => Ok(U256::ZERO),
+            Err(e) => Err(state_error_to_rpc(e)),
+        }
     }
 
     async fn nonce(
@@ -74,7 +78,11 @@ impl<S: StateDbRead + Send + Sync + 'static> StateProvider for IndexedStateProvi
         address: Address,
         _block: Option<BlockNumberOrTag>,
     ) -> Result<u64, RpcError> {
-        self.state.nonce(&address).await.map_err(state_error_to_rpc)
+        match self.state.nonce(&address).await {
+            Ok(n) => Ok(n),
+            Err(StateDbError::AccountNotFound(_)) => Ok(0),
+            Err(e) => Err(state_error_to_rpc(e)),
+        }
     }
 
     async fn code(
@@ -106,7 +114,11 @@ impl<S: StateDbRead + Send + Sync + 'static> StateProvider for IndexedStateProvi
         slot: U256,
         _block: Option<BlockNumberOrTag>,
     ) -> Result<U256, RpcError> {
-        self.state.storage(&address, &slot).await.map_err(state_error_to_rpc)
+        match self.state.storage(&address, &slot).await {
+            Ok(v) => Ok(v),
+            Err(StateDbError::AccountNotFound(_)) => Ok(U256::ZERO),
+            Err(e) => Err(state_error_to_rpc(e)),
+        }
     }
 
     async fn block_by_number(
@@ -160,6 +172,26 @@ impl<S: StateDbRead + Send + Sync + 'static> StateProvider for IndexedStateProvi
         let block_ctx = self.block_context_for(block)?;
         let params = call_request_to_params(request);
         self.executor.estimate_gas(&self.state, params, &block_ctx).map_err(execution_error_to_rpc)
+    }
+
+    async fn block_receipts(
+        &self,
+        block: BlockNumberOrTag,
+    ) -> Result<Option<Vec<RpcTransactionReceipt>>, RpcError> {
+        let block_num = self.resolve_block_number(&block)?;
+        let indexed_block = match self.index.get_block_by_number(block_num) {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+
+        let receipts: Vec<RpcTransactionReceipt> = indexed_block
+            .transaction_hashes
+            .iter()
+            .filter_map(|tx_hash| self.index.get_receipt(tx_hash))
+            .map(indexed_receipt_to_rpc)
+            .collect();
+
+        Ok(Some(receipts))
     }
 
     async fn get_logs(&self, filter: RpcLogFilter) -> Result<Vec<RpcLog>, RpcError> {
@@ -223,6 +255,7 @@ impl<S> IndexedStateProvider<S> {
         RpcBlock {
             hash: block.hash,
             parent_hash: block.parent_hash,
+            sha3_uncles: B256::ZERO,
             number: U64::from(block.number),
             state_root: block.state_root,
             transactions_root: B256::ZERO,
@@ -623,6 +656,19 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_block_tags() {
         let index = Arc::new(BlockIndex::new());
+        // Insert a genesis block at number 0 so Earliest resolves to it.
+        let genesis = IndexedBlock {
+            hash: B256::repeat_byte(0xAA),
+            number: 0,
+            parent_hash: B256::ZERO,
+            state_root: B256::repeat_byte(0x01),
+            timestamp: 0,
+            gas_limit: 30_000_000,
+            gas_used: 0,
+            base_fee_per_gas: Some(1_000_000_000),
+            transaction_hashes: vec![],
+        };
+        index.insert_block(genesis, vec![], vec![]);
         index.insert_block(create_test_block(10, B256::repeat_byte(10)), vec![], vec![]);
 
         let provider = IndexedStateProvider::with_chain_id(index, MockState, 1337);
@@ -636,6 +682,78 @@ mod tests {
             .block_by_number(BlockNumberOrTag::Tag(BlockTag::Earliest), false)
             .await
             .unwrap();
-        assert!(block.is_none());
+        assert!(block.is_some());
+        let block = block.unwrap();
+        assert_eq!(block.number, U64::ZERO);
+        assert_eq!(block.parent_hash, B256::ZERO);
+    }
+
+    #[tokio::test]
+    async fn test_genesis_block_retrievable() {
+        let index = Arc::new(BlockIndex::new());
+        let genesis = IndexedBlock {
+            hash: B256::repeat_byte(0xEE),
+            number: 0,
+            parent_hash: B256::ZERO,
+            state_root: B256::repeat_byte(0x01),
+            timestamp: 0,
+            gas_limit: 30_000_000,
+            gas_used: 0,
+            base_fee_per_gas: Some(1_000_000_000),
+            transaction_hashes: vec![],
+        };
+        index.insert_block(genesis, vec![], vec![]);
+        let provider = IndexedStateProvider::with_chain_id(index, MockState, 1337);
+        let block =
+            provider.block_by_number(BlockNumberOrTag::Number(U64::ZERO), false).await.unwrap();
+        assert!(block.is_some());
+        assert_eq!(block.unwrap().number, U64::ZERO);
+    }
+
+    #[tokio::test]
+    async fn test_block_receipts_with_transactions() {
+        let index = Arc::new(BlockIndex::new());
+        let block_hash = B256::repeat_byte(1);
+        let tx_hash = B256::repeat_byte(2);
+        let mut block = create_test_block(1, block_hash);
+        block.transaction_hashes = vec![tx_hash];
+        index.insert_block(
+            block,
+            vec![create_test_tx(tx_hash, block_hash, 1)],
+            vec![create_test_receipt(tx_hash, block_hash, 1)],
+        );
+        let provider = IndexedStateProvider::with_chain_id(index, MockState, 1337);
+        let receipts = provider
+            .block_receipts(BlockNumberOrTag::Number(U64::from(1)))
+            .await
+            .unwrap();
+        assert!(receipts.is_some());
+        let receipts = receipts.unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].transaction_hash, tx_hash);
+    }
+
+    #[tokio::test]
+    async fn test_block_receipts_nonexistent_block() {
+        let index = Arc::new(BlockIndex::new());
+        let provider = IndexedStateProvider::with_chain_id(index, MockState, 1337);
+        let receipts = provider
+            .block_receipts(BlockNumberOrTag::Number(U64::from(999)))
+            .await
+            .unwrap();
+        assert!(receipts.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_block_receipts_empty_block() {
+        let index = Arc::new(BlockIndex::new());
+        index.insert_block(create_test_block(1, B256::repeat_byte(1)), vec![], vec![]);
+        let provider = IndexedStateProvider::with_chain_id(index, MockState, 1337);
+        let receipts = provider
+            .block_receipts(BlockNumberOrTag::Number(U64::from(1)))
+            .await
+            .unwrap();
+        assert!(receipts.is_some());
+        assert!(receipts.unwrap().is_empty());
     }
 }

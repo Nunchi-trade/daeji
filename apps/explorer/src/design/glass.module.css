@@ -1,0 +1,264 @@
+.panel {
+  background: var(--rd-glass-bg);
+  backdrop-filter: blur(var(--rd-glass-blur)) saturate(var(--rd-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--rd-glass-blur)) saturate(var(--rd-glass-saturate));
+  border: 1px solid var(--rd-border);
+  box-shadow: inset 0 1px 0 var(--rd-glass-highlight);
+  border-radius: 0;
+  position: relative;
+  transition:
+    transform var(--rd-duration-fast) var(--rd-ease-out),
+    background var(--rd-duration-normal) var(--rd-ease-out);
+}
+
+.panel:hover {
+  transform: translateY(-2px);
+  background: var(--rd-glass-bg-hover);
+  transition-duration: var(--rd-duration-fast), var(--rd-duration-fast);
+}
+
+.panel:not(:hover) {
+  transition-duration: 120ms, var(--rd-duration-normal);
+}
+
+.panelActive {
+  border-left: 2px solid var(--rd-rose-dim);
+}
+
+.label {
+  font-family: var(--rd-font-mono);
+  font-size: var(--rd-text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--rd-tracking-label);
+  color: var(--rd-text-dim);
+}
+
+.led {
+  width: var(--rd-led-size);
+  height: var(--rd-led-size);
+  border-radius: 50%;
+  background: var(--rd-led-connected);
+  box-shadow: 0 0 6px var(--rd-led-connected);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+/* ── Panel content padding ── */
+.panelBody {
+  padding: var(--rd-space-md);
+}
+
+/* ── Panel header with title + controls ── */
+.panelHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--rd-space-sm);
+  padding: var(--rd-space-sm) var(--rd-space-md);
+  border-bottom: 1px solid var(--rd-border);
+  min-height: 32px;
+}
+
+/* ── Copy button (inline, appears on hash hover) ── */
+.copyBtn {
+  background: none;
+  border: none;
+  color: var(--rd-text-dim);
+  cursor: pointer;
+  font-family: var(--rd-font-mono);
+  font-size: var(--rd-text-xs);
+  padding: 2px 4px;
+  letter-spacing: var(--rd-tracking-normal);
+  opacity: 0;
+  transition: opacity var(--rd-duration-fast) var(--rd-ease-out);
+}
+
+.copyBtn:hover {
+  color: var(--rd-bone-bright);
+}
+
+/* Show copy button on parent hover */
+.hashRow:hover .copyBtn {
+  opacity: 1;
+}
+
+/* ── Hash row (hash value + copy action) ── */
+.hashRow {
+  display: flex;
+  align-items: center;
+  gap: var(--rd-space-xs);
+  font-family: var(--rd-font-mono);
+  font-size: var(--rd-text-sm);
+  color: var(--rd-text-dim);
+  letter-spacing: var(--rd-tracking-normal);
+  cursor: pointer;
+}
+
+/* Flash feedback on copy */
+.hashRow.copied {
+  color: var(--rd-bone-bright);
+  transition: color 0ms;
+}
+
+/* ── Stats grid (2-column metrics) ── */
+.statsGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--rd-border);
+}
+
+.statCell {
+  background: var(--rd-glass-bg);
+  padding: var(--rd-space-sm) var(--rd-space-md);
+}
+
+.statLabel {
+  font-family: var(--rd-font-mono);
+  font-size: var(--rd-text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--rd-tracking-label);
+  color: var(--rd-text-dim);
+  margin-bottom: var(--rd-space-xs);
+}
+
+.statValue {
+  font-family: var(--rd-font-mono);
+  font-size: var(--rd-text-base);
+  color: var(--rd-text);
+}
+
+/* ── Gas bar (inline usage bar) ── */
+.gasBar {
+  height: 4px;
+  background: var(--rd-void-light);
+  position: relative;
+  margin-top: var(--rd-space-xs);
+}
+
+.gasBarFill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  background: var(--rd-warning);
+  transition: width var(--rd-duration-normal) var(--rd-ease-out);
+}
+
+/* ── Scrollable list ── */
+.scrollList {
+  max-height: 300px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--rd-text-ghost) transparent;
+}
+
+.scrollList::-webkit-scrollbar {
+  width: 4px;
+}
+
+.scrollList::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollList::-webkit-scrollbar-thumb {
+  background: var(--rd-text-ghost);
+}
+
+/* ── List row (clickable) ── */
+.listRow {
+  display: flex;
+  align-items: center;
+  gap: var(--rd-space-sm);
+  padding: var(--rd-space-sm) var(--rd-space-md);
+  border-bottom: 1px solid var(--rd-border);
+  cursor: pointer;
+  transition:
+    background var(--rd-duration-fast) var(--rd-ease-out),
+    transform var(--rd-duration-fast) var(--rd-ease-out);
+}
+
+.listRow:hover {
+  background: var(--rd-glass-bg-hover);
+  transform: translateY(-1px);
+}
+
+.listRow:active {
+  transform: translateY(0);
+}
+
+/* ── Status badge (success / reverted) ── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rd-space-xs);
+  font-family: var(--rd-font-mono);
+  font-size: var(--rd-text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--rd-tracking-label);
+  padding: 2px 6px;
+  border: 1px solid var(--rd-border);
+}
+
+.badgeSuccess {
+  color: var(--rd-success);
+  border-color: var(--rd-success);
+}
+
+.badgeReverted {
+  color: var(--rd-danger);
+  border-color: var(--rd-danger);
+}
+
+.badgeContract {
+  color: var(--rd-rose);
+  border-color: var(--rd-border-rose);
+}
+
+.badgeEoa {
+  color: var(--rd-dream);
+  border-color: var(--rd-dream-dim);
+}
+
+/* ── Navigation arrows ── */
+.navArrow {
+  background: none;
+  border: 1px solid var(--rd-border);
+  color: var(--rd-text-dim);
+  cursor: pointer;
+  font-family: var(--rd-font-mono);
+  font-size: var(--rd-text-base);
+  padding: var(--rd-space-xs) var(--rd-space-sm);
+  transition:
+    color var(--rd-duration-fast) var(--rd-ease-out),
+    border-color var(--rd-duration-fast) var(--rd-ease-out);
+}
+
+.navArrow:hover {
+  color: var(--rd-text);
+  border-color: var(--rd-border-strong);
+}
+
+.navArrow:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* ── Block pulse animation ── */
+@keyframes blockPulse {
+  0% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+/* ── Metric cell hover ── */
+.metricHover {
+  transition: background var(--rd-duration-fast) var(--rd-ease-out);
+}
+
+.metricHover:hover {
+  background: rgba(170, 112, 136, 0.06);
+}

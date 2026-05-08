@@ -30,6 +30,7 @@ async-trait.workspace = true
 
 # Serialization
 serde.workspace = true
+serde_json.workspace = true
 
 # Error handling
 thiserror.workspace = true
@@ -42,6 +43,7 @@ parking_lot = "0.12"
 
 # Kora crates
 kora-executor = { path = "../executor" }
+kora-hdc-chain.workspace = true
 kora-indexer = { path = "../../storage/indexer" }
 kora-traits = { path = "../../storage/traits" }
 
@@ -50,3 +52,4 @@ tokio = { workspace = true, features = ["rt", "macros"] }
 serde_json.workspace = true
 k256.workspace = true
 sha3.workspace = true
+kora-hdc.workspace = true

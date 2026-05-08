@@ -1,0 +1,21 @@
+[package]
+name = "kora-hdc-chain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "On-chain HDC integration: precompile, InsightBoard, event sync"
+
+[lints]
+workspace = true
+
+[dependencies]
+kora-hdc.workspace = true
+alloy-primitives.workspace = true
+serde = { workspace = true }
+thiserror.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]

@@ -227,6 +227,33 @@ impl NodeRunner for ProductionRunner {
 
         let block_index =
             self.rpc_config.as_ref().map(|_| Arc::new(kora_indexer::BlockIndex::new()));
+
+        // Index the genesis block so eth_getBlockByNumber("0x0") returns a valid
+        // response instead of null. This must happen before the RPC server starts
+        // and before FinalizedReporter begins indexing block 1+.
+        if let Some(ref index) = block_index {
+            let genesis = state.genesis_block();
+            let genesis_block = kora_indexer::IndexedBlock {
+                hash: genesis.id().0,
+                number: 0,
+                parent_hash: B256::ZERO,
+                state_root: genesis.state_root.0,
+                timestamp: 0,
+                gas_limit: self.gas_limit,
+                gas_used: 0,
+                base_fee_per_gas: Some(1_000_000_000),
+                transaction_hashes: vec![],
+            };
+            index.insert_block(genesis_block, vec![], vec![]);
+            info!(hash = %genesis.id().0, "indexed genesis block");
+        }
+
+        // Broadcast channels for WebSocket subscriptions.
+        let (block_broadcast_tx, _) =
+            tokio_crate::sync::broadcast::channel::<kora_rpc::SubscriptionEvent>(1024);
+        let (consensus_broadcast_tx, _) =
+            tokio_crate::sync::broadcast::channel::<kora_rpc::ConsensusEvent>(256);
+
         let ledger = LedgerService::new(state.clone());
         spawn_ledger_observers(ledger.clone(), context.clone());
 
@@ -274,7 +301,19 @@ impl NodeRunner for ProductionRunner {
                 indexed_provider,
             )
             .with_tx_submit(tx_submit)
-            .with_peer_count(self.scheme.participants().len().saturating_sub(1) as u64);
+            .with_peer_count(self.scheme.participants().len().saturating_sub(1) as u64)
+            .with_block_broadcast(block_broadcast_tx.clone())
+            .with_consensus_broadcast(consensus_broadcast_tx.clone());
+
+            // Wire up HDC RPC namespace.
+            let hdc_index = Arc::new(parking_lot::RwLock::new(
+                kora_hdc_chain::OnChainHdcIndex::new(),
+            ));
+            let hdc_api = kora_rpc::HdcApiImpl::new(
+                kora_hdc_chain::rpc::HdcApi::new(hdc_index),
+            );
+            let rpc = rpc.with_hdc_api(hdc_api);
+
             drop(rpc.start());
             info!(addr = %addr, "RPC server started with live state provider");
         }
@@ -287,7 +326,8 @@ impl NodeRunner for ProductionRunner {
         let executor = RevmExecutor::new(self.chain_id);
         let context_provider = RevmContextProvider { gas_limit: self.gas_limit };
         let mut finalized_reporter =
-            FinalizedReporter::new(ledger.clone(), context.clone(), executor, context_provider);
+            FinalizedReporter::new(ledger.clone(), context.clone(), executor, context_provider)
+                .with_block_broadcast(block_broadcast_tx);
         if let Some(block_index) = block_index {
             finalized_reporter = finalized_reporter.with_block_index(block_index);
         }
@@ -347,6 +387,7 @@ impl NodeRunner for ProductionRunner {
             executor,
             block_cfg.max_txs,
             self.gas_limit,
+            0, // block_time_ms: no artificial delay
         );
         if let Some((state, _)) = &self.rpc_config {
             app = app.with_node_state(state.clone());
@@ -355,10 +396,10 @@ impl NodeRunner for ProductionRunner {
             Inline::new(context.with_label("marshaled"), app, marshal_mailbox.clone(), epocher);
 
         let seed_reporter = SeedReporter::<MinSig>::new(ledger.clone());
-        let node_state_reporter = self
-            .rpc_config
-            .as_ref()
-            .map(|(state, _)| NodeStateReporter::<ThresholdScheme>::new(state.clone()));
+        let node_state_reporter = self.rpc_config.as_ref().map(|(state, _)| {
+            NodeStateReporter::<ThresholdScheme>::new(state.clone())
+                .with_consensus_broadcast(consensus_broadcast_tx)
+        });
         let inner_reporters: Reporters<_, MarshalMailbox, Option<NodeStateRptr>> =
             Reporters::from((marshal_mailbox.clone(), node_state_reporter));
         let reporter = Reporters::from((seed_reporter, inner_reporters));
