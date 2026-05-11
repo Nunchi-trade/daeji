@@ -10,25 +10,20 @@ use std::{collections::BTreeSet, fmt};
 use crate::TransportError;
 
 /// ALPN for validator-network traffic over Iroh.
-pub const DEFAULT_VALIDATOR_ALPN: &[u8] = b"daeji-validator-v1";
+pub const DEFAULT_VALIDATOR_ALPN: &[u8] = b"nunchi-validator-v1";
 
 const CHANNEL_FRAME_HEADER_LEN: usize = 12;
 
 /// Relay policy for an Iroh-backed validator endpoint.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum IrohRelayMode {
     /// Use Iroh's default relay behavior.
+    #[default]
     Default,
     /// Disable relays. Useful for local tests and direct-connect smoke tests.
     Disabled,
     /// Use an operator-provided relay endpoint.
     Custom(String),
-}
-
-impl Default for IrohRelayMode {
-    fn default() -> Self {
-        Self::Default
-    }
 }
 
 /// Binding from Kora validator identity to Iroh node identity.
