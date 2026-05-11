@@ -10,6 +10,11 @@ description = "Symphony-class agent-coordination protocol primitives + service e
 [lints]
 workspace = true
 
+[features]
+default = ["transport-commonware"]
+transport-commonware = []
+transport-iroh = []
+
 [dependencies]
 # commonware (workspace deps)
 commonware-codec.workspace = true

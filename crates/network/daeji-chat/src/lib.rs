@@ -13,3 +13,4 @@ pub mod registry;
 pub mod room;
 pub mod service;
 pub mod supervisor;
+pub mod transport;
