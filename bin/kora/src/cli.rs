@@ -260,7 +260,9 @@ impl Cli {
             );
             svc = svc.with_chat(chat_cfg);
         } else if self.disable_chat {
-            tracing::debug!("--disable-chat / DAEJI_CHAT_DISABLED set but no --chat-config provided; nothing to disable");
+            tracing::debug!(
+                "--disable-chat / DAEJI_CHAT_DISABLED set but no --chat-config provided; nothing to disable"
+            );
         }
 
         svc.run()
@@ -343,16 +345,13 @@ fn parse_public_keys(
 fn load_chat_config(path: &std::path::Path) -> eyre::Result<daeji_chat::service::ChatConfig> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| eyre::eyre!("read chat config {}: {}", path.display(), e))?;
-    let ext = path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("toml")
-        .to_ascii_lowercase();
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("toml").to_ascii_lowercase();
     let cfg: daeji_chat::service::ChatConfig = match ext.as_str() {
         "json" => serde_json::from_str(&content)
             .map_err(|e| eyre::eyre!("parse chat config (json): {}", e))?,
-        _ => toml::from_str(&content)
-            .map_err(|e| eyre::eyre!("parse chat config (toml): {}", e))?,
+        _ => {
+            toml::from_str(&content).map_err(|e| eyre::eyre!("parse chat config (toml): {}", e))?
+        }
     };
     Ok(cfg)
 }

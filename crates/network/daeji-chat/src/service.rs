@@ -25,10 +25,10 @@ use std::{
     time::Duration,
 };
 
-use commonware_cryptography::{ed25519, Signer as _};
+use commonware_cryptography::{Signer as _, ed25519};
 use commonware_p2p::{
-    authenticated::discovery::{self, Config as DiscoveryConfig},
     Manager as _, Receiver, Recipients, Sender,
+    authenticated::discovery::{self, Config as DiscoveryConfig},
 };
 use commonware_runtime::{Clock, Metrics, Quota, Spawner};
 use commonware_utils::NZU32;
@@ -294,36 +294,33 @@ where
     let mut watcher_oracle = oracle.clone();
     let watcher_path = config.registry_path.clone();
     let mut last_epoch = initial.epoch;
-    context
-        .with_label("chat-registry-watcher")
-        .spawn(move |_| async move {
-            loop {
-                watcher_ctx.sleep(REGISTRY_POLL_INTERVAL).await;
-                match Registry::load(&watcher_path) {
-                    Ok(reg) if reg.epoch != last_epoch => {
-                        info!(
-                            old_epoch = last_epoch,
-                            new_epoch = reg.epoch,
-                            "chat: registry epoch advanced — refreshing oracle peer-set"
-                        );
-                        watcher_oracle.track(reg.epoch, reg.pubkey_set()).await;
-                        last_epoch = reg.epoch;
-                    }
-                    Ok(_) => {}
-                    Err(err) => {
-                        debug!(?err, "chat: registry poll error (transient?)");
-                    }
+    context.with_label("chat-registry-watcher").spawn(move |_| async move {
+        loop {
+            watcher_ctx.sleep(REGISTRY_POLL_INTERVAL).await;
+            match Registry::load(&watcher_path) {
+                Ok(reg) if reg.epoch != last_epoch => {
+                    info!(
+                        old_epoch = last_epoch,
+                        new_epoch = reg.epoch,
+                        "chat: registry epoch advanced — refreshing oracle peer-set"
+                    );
+                    watcher_oracle.track(reg.epoch, reg.pubkey_set()).await;
+                    last_epoch = reg.epoch;
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    debug!(?err, "chat: registry poll error (transient?)");
                 }
             }
-        });
+        }
+    });
 
     // Optional chain-event watcher.
     if let Some(chain_cfg) = config.chain.clone() {
         let chain_registry_path = config.registry_path.clone();
         info!(rpc_ws = %chain_cfg.rpc_ws, "chat: spawning chain-event watcher");
         tokio::spawn(async move {
-            if let Err(err) =
-                crate::chain::run_chain_watcher(chain_cfg, chain_registry_path).await
+            if let Err(err) = crate::chain::run_chain_watcher(chain_cfg, chain_registry_path).await
             {
                 tracing::error!(?err, "chat: chain watcher exited with error");
             }
@@ -369,11 +366,7 @@ where
 
 /// Read a `LobbyMessage` stream off the lobby channel. Mutates `ActiveJobs` on
 /// `JobAnnounce` (activate) and `JobConcluded` (deactivate).
-async fn run_lobby_loop<R: Receiver>(
-    mut receiver: R,
-    active: ActiveJobs,
-    me_pubkey_hex: String,
-) {
+async fn run_lobby_loop<R: Receiver>(mut receiver: R, active: ActiveJobs, me_pubkey_hex: String) {
     info!("chat: lobby listener started");
     let me_lower = me_pubkey_hex.to_ascii_lowercase();
 
@@ -421,10 +414,10 @@ async fn run_lobby_loop<R: Receiver>(
                     continue;
                 }
 
-                let my_wrap = room_key_wraps
-                    .iter()
-                    .find(|w| w.recipient_pubkey_hex.eq_ignore_ascii_case(&me_pubkey_hex)
-                        || w.recipient_pubkey_hex.eq_ignore_ascii_case(&me_lower));
+                let my_wrap = room_key_wraps.iter().find(|w| {
+                    w.recipient_pubkey_hex.eq_ignore_ascii_case(&me_pubkey_hex)
+                        || w.recipient_pubkey_hex.eq_ignore_ascii_case(&me_lower)
+                });
                 let Some(my_wrap) = my_wrap else {
                     debug!(
                         job_id_u64,
@@ -443,12 +436,7 @@ async fn run_lobby_loop<R: Receiver>(
                     }
                 };
                 let room_id = room::room_id_for_chain_job(job_id_u64);
-                let entry = ActiveJob {
-                    job_id: job_id_u64,
-                    room_id,
-                    slot_index,
-                    room_key,
-                };
+                let entry = ActiveJob { job_id: job_id_u64, room_id, slot_index, room_key };
 
                 let mut map = active.lock().expect("active poisoned");
                 let was_new = map.insert(job_id_u64, entry).is_none();
@@ -471,17 +459,10 @@ async fn run_lobby_loop<R: Receiver>(
                 let removed = map.remove(&job_id_u64).is_some();
                 drop(map);
                 if removed {
-                    info!(
-                        job_id_u64,
-                        slot_index, "chat: ActiveJobs -= JobConcluded"
-                    );
+                    info!(job_id_u64, slot_index, "chat: ActiveJobs -= JobConcluded");
                 }
             }
-            LobbyMessage::RoomJoined {
-                job_id,
-                passport_id,
-                signature_over_room_id: _,
-            } => {
+            LobbyMessage::RoomJoined { job_id, passport_id, signature_over_room_id: _ } => {
                 debug!(job_id, passport_id, "chat: lobby RoomJoined");
             }
             LobbyMessage::MiningClaim {
@@ -528,10 +509,7 @@ async fn run_slot_loop<R: Receiver>(
         // it across the AEAD decrypt loop.
         let candidates: Vec<ActiveJob> = {
             let map = active.lock().expect("active poisoned");
-            map.values()
-                .filter(|j| j.slot_index == slot)
-                .cloned()
-                .collect()
+            map.values().filter(|j| j.slot_index == slot).cloned().collect()
         };
         if candidates.is_empty() {
             debug!(
@@ -592,10 +570,7 @@ async fn drive_sequence<S: Sender>(
         sender,
         room_key,
         room,
-        &RoomMessage::Hello {
-            from_pubkey_hex: me_hex.to_string(),
-            wall_clock_ms: now_ms(),
-        },
+        &RoomMessage::Hello { from_pubkey_hex: me_hex.to_string(), wall_clock_ms: now_ms() },
     )
     .await;
     spin_yield(50).await;
@@ -658,22 +633,13 @@ fn seed_active_jobs(active: &ActiveJobs, seeds: &[SeedJob]) -> Result<(), ChatSe
         let room_key = parse_room_key(&seed.room_key_hex)?;
         let room_id = room::room_id_for_chain_job(job_id);
         let slot_index = room::slot_for_chain_job(job_id);
-        map.insert(
-            job_id,
-            ActiveJob {
-                job_id,
-                room_id,
-                slot_index,
-                room_key,
-            },
-        );
+        map.insert(job_id, ActiveJob { job_id, room_id, slot_index, room_key });
     }
     Ok(())
 }
 
 fn parse_job_id_u64(s: &str) -> Result<u64, ChatServiceError> {
-    s.parse::<u64>()
-        .map_err(|_| ChatServiceError::InvalidSeedJobId(s.to_string()))
+    s.parse::<u64>().map_err(|_| ChatServiceError::InvalidSeedJobId(s.to_string()))
 }
 
 fn parse_bootstrappers(
@@ -684,9 +650,8 @@ fn parse_bootstrappers(
             let (seed_str, addr_str) = s
                 .split_once('@')
                 .ok_or_else(|| ChatServiceError::InvalidBootstrapper(s.clone()))?;
-            let seed: u64 = seed_str
-                .parse()
-                .map_err(|_| ChatServiceError::InvalidBootstrapper(s.clone()))?;
+            let seed: u64 =
+                seed_str.parse().map_err(|_| ChatServiceError::InvalidBootstrapper(s.clone()))?;
             let addr = SocketAddr::from_str(addr_str)
                 .map_err(|_| ChatServiceError::InvalidBootstrapper(s.clone()))?;
             Ok((ed25519::PrivateKey::from_seed(seed).public_key(), addr.into()))
@@ -767,10 +732,7 @@ mod tests {
             bind_port: 4101,
             bootstrappers: vec!["1@127.0.0.1:4101".into()],
             registry_path: PathBuf::from("/tmp/registry.json"),
-            seed_jobs: vec![SeedJob {
-                job_id: "42".into(),
-                room_key_hex: "00".repeat(32),
-            }],
+            seed_jobs: vec![SeedJob { job_id: "42".into(), room_key_hex: "00".repeat(32) }],
             drive: false,
             drive_after_secs: 3,
             chain: None,
@@ -834,19 +796,13 @@ mod tests {
 
     #[test]
     fn parse_room_key_rejects_wrong_length() {
-        assert!(matches!(
-            parse_room_key("abcd"),
-            Err(ChatServiceError::InvalidRoomKey)
-        ));
+        assert!(matches!(parse_room_key("abcd"), Err(ChatServiceError::InvalidRoomKey)));
     }
 
     #[test]
     fn parse_bootstrappers_ok() {
-        let pks = parse_bootstrappers(&[
-            "1@127.0.0.1:4001".into(),
-            "2@10.0.0.5:4002".into(),
-        ])
-        .unwrap();
+        let pks =
+            parse_bootstrappers(&["1@127.0.0.1:4001".into(), "2@10.0.0.5:4002".into()]).unwrap();
         assert_eq!(pks.len(), 2);
         assert_eq!(pks[0].1.port(), 4001);
         assert_eq!(pks[1].1.port(), 4002);
@@ -867,28 +823,16 @@ mod tests {
 
     #[test]
     fn parse_job_id_u64_rejects_non_decimal() {
-        assert!(matches!(
-            parse_job_id_u64("0x42"),
-            Err(ChatServiceError::InvalidSeedJobId(_))
-        ));
-        assert!(matches!(
-            parse_job_id_u64(""),
-            Err(ChatServiceError::InvalidSeedJobId(_))
-        ));
+        assert!(matches!(parse_job_id_u64("0x42"), Err(ChatServiceError::InvalidSeedJobId(_))));
+        assert!(matches!(parse_job_id_u64(""), Err(ChatServiceError::InvalidSeedJobId(_))));
     }
 
     #[test]
     fn seed_active_jobs_populates_map_with_correct_slot_index() {
         let active: ActiveJobs = Arc::new(Mutex::new(HashMap::new()));
         let seeds = vec![
-            SeedJob {
-                job_id: "7".into(),
-                room_key_hex: "11".repeat(32),
-            },
-            SeedJob {
-                job_id: "42".into(),
-                room_key_hex: "22".repeat(32),
-            },
+            SeedJob { job_id: "7".into(), room_key_hex: "11".repeat(32) },
+            SeedJob { job_id: "42".into(), room_key_hex: "22".repeat(32) },
         ];
         seed_active_jobs(&active, &seeds).unwrap();
 
@@ -907,10 +851,7 @@ mod tests {
     #[test]
     fn seed_active_jobs_propagates_invalid_id() {
         let active: ActiveJobs = Arc::new(Mutex::new(HashMap::new()));
-        let bad = vec![SeedJob {
-            job_id: "not_a_number".into(),
-            room_key_hex: "00".repeat(32),
-        }];
+        let bad = vec![SeedJob { job_id: "not_a_number".into(), room_key_hex: "00".repeat(32) }];
         assert!(matches!(
             seed_active_jobs(&active, &bad),
             Err(ChatServiceError::InvalidSeedJobId(_))

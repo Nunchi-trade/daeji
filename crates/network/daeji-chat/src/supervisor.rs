@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use tracing::{error, info, warn};
 
-use crate::service::{run_chat, ChatConfig, ChatServiceError};
+use crate::service::{ChatConfig, ChatServiceError, run_chat};
 
 /// Environment variable that disables the chat service at runtime.
 /// When set to a truthy value (`1`, `true`, `yes`, case-insensitive),
@@ -73,11 +73,7 @@ pub fn next_backoff(previous: Duration) -> Duration {
         return INITIAL_BACKOFF;
     }
     let doubled = previous.saturating_mul(2);
-    if doubled > MAX_BACKOFF {
-        MAX_BACKOFF
-    } else {
-        doubled
-    }
+    if doubled > MAX_BACKOFF { MAX_BACKOFF } else { doubled }
 }
 
 /// Sliding window over recent failure timestamps. The supervisor pushes a
@@ -139,10 +135,7 @@ impl PanicTracker {
 /// require the caller's runtime context. The chat service itself uses
 /// commonware-runtime sleep internally; this is just for the wait between
 /// supervised attempts.
-pub async fn run_chat_supervised<C>(
-    context: C,
-    config: ChatConfig,
-) -> Result<(), ChatServiceError>
+pub async fn run_chat_supervised<C>(context: C, config: ChatConfig) -> Result<(), ChatServiceError>
 where
     C: crate::service::SupervisedContext + Clone,
 {
@@ -164,10 +157,7 @@ where
                 return Ok(());
             }
             Err(ChatServiceError::Disabled) => {
-                info!(
-                    attempt,
-                    "chat-supervisor: chat disabled by config/env; stopping"
-                );
+                info!(attempt, "chat-supervisor: chat disabled by config/env; stopping");
                 return Ok(());
             }
             Err(err) => {

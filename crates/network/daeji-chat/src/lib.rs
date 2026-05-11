@@ -5,6 +5,8 @@
 //! process. See `crates/network/daeji-chat/README.md` for the architecture
 //! rationale (canonical-plan §13).
 
+#![allow(missing_docs)]
+
 pub mod card;
 pub mod chain;
 pub mod lobby;

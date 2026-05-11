@@ -8,14 +8,14 @@
 //!   `~/contracts-core/packages/agents/src/AgentRegistry.sol`, with the off-chain status.json
 //!   resolved + verified via `card.rs`.
 
-use commonware_cryptography::{ed25519, Signer as _};
-use commonware_utils::ordered::Set;
-use serde::{Deserialize, Serialize};
 use std::{
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
 };
+
+use commonware_cryptography::{Signer as _, ed25519};
+use commonware_utils::ordered::Set;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
@@ -39,12 +39,10 @@ impl AgentRecord {
     /// Derive (Seed) or parse (Chain) the commonware ed25519 pubkey for this agent.
     pub fn pubkey(&self) -> Result<ed25519::PublicKey, RegistryError> {
         match self {
-            AgentRecord::Seed { seed } => Ok(ed25519::PrivateKey::from_seed(*seed).public_key()),
-            AgentRecord::Chain { transport_pubkey, .. } => {
-                let stripped = transport_pubkey
-                    .trim()
-                    .strip_prefix("0x")
-                    .unwrap_or(transport_pubkey);
+            Self::Seed { seed } => Ok(ed25519::PrivateKey::from_seed(*seed).public_key()),
+            Self::Chain { transport_pubkey, .. } => {
+                let stripped =
+                    transport_pubkey.trim().strip_prefix("0x").unwrap_or(transport_pubkey);
                 let raw = hex::decode(stripped).map_err(|_| RegistryError::BadPubkey)?;
                 if raw.len() != 32 {
                     return Err(RegistryError::BadPubkey);
@@ -60,8 +58,8 @@ impl AgentRecord {
     /// Stable identity key for change detection / dedup.
     pub fn ident(&self) -> String {
         match self {
-            AgentRecord::Seed { seed } => format!("seed:{seed}"),
-            AgentRecord::Chain { controller, .. } => format!("chain:{controller}"),
+            Self::Seed { seed } => format!("seed:{seed}"),
+            Self::Chain { controller, .. } => format!("chain:{controller}"),
         }
     }
 }
@@ -73,11 +71,8 @@ pub struct Registry {
 }
 
 impl Registry {
-    pub fn empty() -> Self {
-        Self {
-            epoch: 0,
-            agents: Vec::new(),
-        }
+    pub const fn empty() -> Self {
+        Self { epoch: 0, agents: Vec::new() }
     }
 
     pub fn load(path: &Path) -> io::Result<Self> {
@@ -151,11 +146,8 @@ impl Registry {
     /// Materialize the authorized pubkey set as commonware expects it. Mixed seed + chain
     /// records both work; commonware just sees the union of public keys.
     pub fn pubkey_set(&self) -> Set<ed25519::PublicKey> {
-        let pubs: Vec<ed25519::PublicKey> = self
-            .agents
-            .iter()
-            .filter_map(|a| a.pubkey().ok())
-            .collect();
+        let pubs: Vec<ed25519::PublicKey> =
+            self.agents.iter().filter_map(|a| a.pubkey().ok()).collect();
         Set::try_from(pubs).expect("registry pubkeys are unique")
     }
 
@@ -274,10 +266,8 @@ mod tests {
 
     fn tempdir() -> PathBuf {
         let pid = std::process::id();
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let nanos =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         let dir = std::env::temp_dir().join(format!("daeji-poc-{pid}-{nanos}"));
         std::fs::create_dir_all(&dir).unwrap();
         dir

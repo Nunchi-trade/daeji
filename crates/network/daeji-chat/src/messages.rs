@@ -33,13 +33,13 @@ pub enum RoomMessage {
 }
 
 impl RoomMessage {
-    pub fn label(&self) -> &'static str {
+    pub const fn label(&self) -> &'static str {
         match self {
-            RoomMessage::Hello { .. } => "hello",
-            RoomMessage::Status { .. } => "status",
-            RoomMessage::PartialResult { .. } => "partial_result",
-            RoomMessage::Vote { .. } => "vote",
-            RoomMessage::Final { .. } => "final",
+            Self::Hello { .. } => "hello",
+            Self::Status { .. } => "status",
+            Self::PartialResult { .. } => "partial_result",
+            Self::Vote { .. } => "vote",
+            Self::Final { .. } => "final",
         }
     }
 }
