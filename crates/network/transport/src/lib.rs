@@ -24,6 +24,14 @@ pub use config::{
 mod error;
 pub use error::TransportError;
 
+#[cfg(feature = "transport-iroh")]
+mod iroh_validator;
+#[cfg(feature = "transport-iroh")]
+pub use iroh_validator::{
+    DEFAULT_VALIDATOR_ALPN, IrohChannelFrame, IrohRelayMode, IrohValidatorBinding,
+    IrohValidatorConfig,
+};
+
 mod ext;
 pub use ext::NetworkConfigExt;
 
