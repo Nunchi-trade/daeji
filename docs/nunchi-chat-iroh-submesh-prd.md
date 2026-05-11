@@ -1,14 +1,14 @@
-# PRD: Daeji Chat Iroh Sub-Mesh Shim
+# PRD: Nunchi Chat Iroh Sub-Mesh Shim
 
 ## Summary
 
-Daeji chat should run as a dedicated peer-to-peer client swarm that is separate
+Nunchi Chat should run as a dedicated peer-to-peer client swarm that is separate
 from the validator consensus network. Chat clients gossip job coordination data
 among themselves, then submit finalized chat-related transactions to the
 validator network through RPC. Validators stay isolated from chat traffic, peer
 churn, and client-side bandwidth spikes.
 
-This PRD specifies an Iroh-native transport for the Daeji chat P2P stack. Each
+This PRD specifies an Iroh-native transport for the Nunchi Chat P2P stack. Each
 active job room becomes its own Iroh gossip topic and therefore its own
 sub-mesh. Chat does not need to preserve or reimplement the existing Commonware
 P2P path; Commonware remains relevant to validator networking, not chat-room
@@ -61,7 +61,7 @@ The target architecture is:
 
 ## Users
 
-- Agent operators running Daeji chat clients.
+- Agent operators running Nunchi Chat clients.
 - Validators that should remain insulated from chat-client traffic.
 - Requesters and agents coordinating per-job execution rooms.
 - Chain engineers reviewing the boundary between chat networking and validator
@@ -135,7 +135,7 @@ This creates a clear identity split:
 
 The Iroh implementation owns one endpoint and one gossip instance:
 
-- Lobby topic: `keccak256("DAEJI_LOBBY_V1")`
+- Lobby topic: `keccak256("NUNCHI_LOBBY_V1")`
 - Room topic: the 32-byte `room_id`
 - Endpoint identity: derived from the same transport identity material used by
   the chat client
