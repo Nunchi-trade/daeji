@@ -42,6 +42,9 @@ The target architecture is:
   gossip topic.
 - Support NAT traversal through Iroh's QUIC and magicsock relay path for
   client-to-client discovery.
+- Bind chat participant identity to the existing `contracts-core` ERC-8004
+  agent identity model instead of treating transport public keys as standalone
+  identities.
 - Keep room confidentiality and access proof at the application layer using the
   existing room key AEAD.
 - Keep validator consensus networking out of the chat-client swarm.
@@ -101,6 +104,40 @@ Required operations:
 - Send and receive encrypted room messages through a room handle.
 - Leave a room when the job concludes.
 
+### Agent Identity Binding
+
+Chat participant identity should be chain-derived from `contracts-core`, not
+invented by the chat transport. The canonical participant id is:
+
+- agent EVM address from `AgentRegistry`
+- `passportId` from ERC-8004 `IdentityRegistry.ownerToPassportId(agent)`
+- `passportHash` from `AgentRegistry.getAgent(agent)`
+- liveness from `AgentRegistry.isActive(agent)`
+
+The transport public key is an authenticated routing key under that agent
+identity. It is not the top-level identity.
+
+The chat registry should therefore be derived from `contracts-core` state:
+
+1. Watch `AgentRegistry.AgentRegistered(agent, passportHash, capabilities)`.
+2. Resolve the agent card or capability payload referenced by `capabilities`.
+3. Extract the chat transport public key, supported transports, relay hints, and
+   RPC endpoint hints from that metadata.
+4. Verify the metadata against `passportHash`.
+5. Confirm the agent owns a passport through `IdentityRegistry`.
+6. Include the `(agent address, passportId, transport pubkey)` tuple in the chat
+   allowlist only while `AgentRegistry.isActive(agent)` is true.
+
+Room membership should be expressed in terms of agent addresses or passport ids.
+The transport layer receives the corresponding transport pubkeys only after the
+identity resolver has checked the on-chain identity and liveness constraints.
+
+This creates a clear identity split:
+
+- contracts-core identity: who the participant is
+- chat registry: which transport key that identity currently uses
+- Iroh/Commonware transport: how bytes are routed
+
 ### Commonware Transport
 
 The Commonware implementation should be a pure extraction of today's behavior:
@@ -133,9 +170,11 @@ for unrelated jobs.
 Iroh gossip topics are discoverable by topic id, so transport membership is not
 the sole security boundary. Access control is enforced in two layers:
 
-- Peer allowlist: only current registry peers should be accepted or tracked.
+- Peer allowlist: only current registry peers derived from active
+  `contracts-core` agent identities should be accepted or tracked.
 - Room allowlist: room receivers drop messages from senders outside
-  `expected_members`.
+  `expected_members`, where expected members are resolved from agent
+  address/passport identity into transport pubkeys.
 
 Message confidentiality and access proof remain application-layer concerns.
 Room messages continue to be serialized, encrypted with ChaCha20-Poly1305, and
@@ -162,6 +201,8 @@ Add transport selection to chat configuration:
 ```toml
 transport = "commonware" # default
 iroh_relay = "https://relay.example.com" # optional
+agent_registry = "0x..." # contracts-core AgentRegistry
+identity_registry = "0x..." # contracts-core IdentityRegistry
 ```
 
 Expected cargo features:
@@ -188,6 +229,23 @@ Acceptance:
 
 - Existing Commonware chat tests pass.
 - Existing default build does not pull Iroh dependencies.
+
+### Milestone 1.5: Contracts-Core Identity Resolver
+
+- Add a chain-backed identity resolver for `contracts-core` agent identities.
+- Resolve chat participants from `AgentRegistry` plus `IdentityRegistry`.
+- Treat transport pubkeys as routing keys bound to an agent address and
+  passport id.
+- Filter inactive agents using `AgentRegistry.isActive`.
+
+Acceptance:
+
+- A registered active agent with a valid passport resolves to one chat
+  participant record.
+- An inactive, unregistered, or passportless agent is excluded from the chat
+  allowlist.
+- Room expected members are expressed as agent identities before being lowered
+  to transport pubkeys.
 
 ### Milestone 2: Commonware Extraction
 
@@ -249,6 +307,8 @@ Acceptance:
 - Local three-node Iroh smoke test for one room topic.
 - Membership rejection test with a third uninvited node.
 - Cross-transport isolation test.
+- Identity resolver test where a `contracts-core` registered active agent is
+  accepted and an inactive or passportless agent is rejected.
 - Latency baseline comparing local Commonware and local Iroh Hello-to-Final
   time.
 
@@ -267,6 +327,8 @@ Acceptance:
 - Iroh API churn before a stable release may require updates in the shim.
 - Iroh identity material may not map exactly to the existing chat transport key
   without a conversion layer.
+- Agent metadata can drift from on-chain identity state if clients cache
+  resolved transport keys too long.
 - Relay defaults are acceptable for a spike but not for production operations.
 - Runtime transport selection can be awkward in Rust if the trait uses
   associated room-handle types; an enum adapter may be required.
@@ -277,6 +339,10 @@ Acceptance:
 - Which Iroh crate version should be pinned at implementation time?
 - Should production relay URLs live in chat config, agent registry
   capabilities, or both?
+- Should the chat transport pubkey live in `AgentRegistry.capabilities`, the
+  hashed agent card referenced by `passportHash`, or both?
+- Should room membership use agent EVM address or ERC-8004 `passportId` as the
+  canonical room member id?
 - What RPC endpoint selection policy should chat clients use after the
   transport spike?
 - Should lobby traffic eventually shard by network, market, or job class?
