@@ -10,11 +10,6 @@ description = "P2P transport layer for Kora nodes"
 [lints]
 workspace = true
 
-[features]
-default = ["transport-commonware"]
-transport-commonware = []
-transport-iroh = []
-
 [dependencies]
 # Kora
 kora-config.workspace = true
