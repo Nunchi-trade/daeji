@@ -8,10 +8,11 @@ among themselves, then submit finalized chat-related transactions to the
 validator network through RPC. Validators stay isolated from chat traffic, peer
 churn, and client-side bandwidth spikes.
 
-This PRD specifies a feature-flagged Iroh transport shim for the Daeji chat P2P
-stack. The shim lets each active job room become its own Iroh gossip topic and
-therefore its own sub-mesh. The existing Commonware transport remains the
-default path while the Iroh transport is validated.
+This PRD specifies an Iroh-native transport for the Daeji chat P2P stack. Each
+active job room becomes its own Iroh gossip topic and therefore its own
+sub-mesh. Chat does not need to preserve or reimplement the existing Commonware
+P2P path; Commonware remains relevant to validator networking, not chat-room
+coordination.
 
 ## Problem
 
@@ -35,11 +36,8 @@ The target architecture is:
 
 ## Goals
 
-- Add a transport abstraction that can run the current Commonware chat transport
-  or an Iroh-based transport.
-- Preserve Commonware as the default transport for pre-testnet safety.
-- Add an Iroh transport behind a cargo feature so each room maps to one Iroh
-  gossip topic.
+- Make the chat P2P stack Iroh-native instead of reimplementing Commonware P2P.
+- Map each room to one Iroh gossip topic.
 - Support NAT traversal through Iroh's QUIC and magicsock relay path for
   client-to-client discovery.
 - Bind chat participant identity to the existing `contracts-core` ERC-8004
@@ -58,8 +56,8 @@ The target architecture is:
 - Do not add the chain-side `ChatTx` or channel primitive in this PR.
 - Do not add a multi-validator RPC fanout abstraction in this PR.
 - Do not implement room-key ECDH wrapping in this PR.
-- Do not bridge Commonware and Iroh wire formats.
-- Do not make Iroh the default transport until the spike is validated.
+- Do not bridge Commonware and Iroh wire formats for chat.
+- Do not preserve a Commonware chat-transport fallback in this workstream.
 
 ## Users
 
@@ -85,16 +83,11 @@ affect chain state, the chat client submits a transaction through an RPC
 endpoint. The RPC node is the boundary between chat coordination and validator
 execution.
 
-### Transport Abstraction
+### Iroh-Native Chat Transport
 
-Introduce a `ChatTransport` interface with two implementations:
-
-- `CommonwareTransport`: current chat behavior, preserved as the default.
-- `IrohTransport`: new feature-flagged transport where each room is an Iroh
-  gossip topic.
-
-The service layer should depend on transport operations instead of direct
-Commonware channel registration.
+Introduce a chat transport boundary backed by Iroh. The service layer should
+depend on transport operations instead of direct Commonware channel
+registration. The chat path does not need a Commonware implementation.
 
 Required operations:
 
@@ -136,19 +129,7 @@ This creates a clear identity split:
 
 - contracts-core identity: who the participant is
 - chat registry: which transport key that identity currently uses
-- Iroh/Commonware transport: how bytes are routed
-
-### Commonware Transport
-
-The Commonware implementation should be a pure extraction of today's behavior:
-
-- one well-known lobby channel
-- fixed slot pool for active jobs
-- hash-routed job slots
-- AEAD decrypt attempt against active jobs in the slot
-- registry-driven peer tracking
-
-This implementation is the compatibility and rollback path.
+- Iroh transport: how bytes are routed
 
 ### Iroh Transport
 
@@ -196,10 +177,9 @@ This preserves the isolation boundary:
 
 ## Configuration
 
-Add transport selection to chat configuration:
+Add Iroh chat transport configuration:
 
 ```toml
-transport = "commonware" # default
 iroh_relay = "https://relay.example.com" # optional
 agent_registry = "0x..." # contracts-core AgentRegistry
 identity_registry = "0x..." # contracts-core IdentityRegistry
@@ -208,27 +188,25 @@ identity_registry = "0x..." # contracts-core IdentityRegistry
 Expected cargo features:
 
 ```toml
-default = ["transport-commonware"]
-transport-commonware = []
+default = ["transport-iroh"]
 transport-iroh = ["dep:iroh", "dep:iroh-gossip"]
 ```
 
-The default build path should remain Commonware-only unless the Iroh feature is
-explicitly enabled.
+The chat crate should compile with Iroh chat transport as the default direction.
 
 ## Implementation Plan
 
-### Milestone 1: Transport Interface
+### Milestone 1: Iroh Chat Transport Boundary
 
 - Add `transport/mod.rs`.
-- Define transport and room-handle traits or enum adapters.
-- Add transport selection config.
-- Keep default behavior unchanged.
+- Define transport and room-handle traits backed by Iroh.
+- Add Iroh relay and identity resolver config.
+- Remove the requirement to mirror Commonware's fixed slot-pool model for chat.
 
 Acceptance:
 
-- Existing Commonware chat tests pass.
-- Existing default build does not pull Iroh dependencies.
+- Existing chat message, room, lobby, and registry tests pass.
+- Rooms map to one Iroh topic per 32-byte room id.
 
 ### Milestone 1.5: Contracts-Core Identity Resolver
 
@@ -247,21 +225,23 @@ Acceptance:
 - Room expected members are expressed as agent identities before being lowered
   to transport pubkeys.
 
-### Milestone 2: Commonware Extraction
+### Milestone 2: Iroh Lobby And Room Topics
 
-- Move direct Commonware network setup out of the chat service.
-- Preserve lobby behavior and fixed slot pool behavior.
-- Keep registry polling and peer tracking behavior unchanged.
+- Replace direct Commonware channel setup in the chat service.
+- Subscribe to the well-known Iroh lobby topic at startup.
+- Subscribe to one Iroh room topic per active job.
+- Keep registry polling and peer tracking behavior as the source of the
+  transport allowlist.
 
 Acceptance:
 
-- Diff is behavior-preserving.
+- Chat no longer depends on the fixed 64-slot chat channel pool.
 - Demo driver still emits the same Hello, Status, and Final flow.
-- No transport selection is required for existing operators.
+- No chat transport selection is required for existing operators; chat uses Iroh.
 
 ### Milestone 3: Iroh Transport
 
-- Add feature-flagged Iroh dependencies.
+- Add Iroh dependencies for the chat transport path.
 - Create endpoint and gossip instance.
 - Subscribe to the well-known lobby topic at startup.
 - Subscribe to one room topic per active job.
@@ -271,32 +251,28 @@ Acceptance:
 
 - Two local Iroh chat clients can exchange one encrypted room message.
 - One local Iroh lobby message can be sent and received.
-- Commonware remains the default transport.
+- Iroh is the chat transport path.
 
 ### Milestone 4: Isolation And Membership Tests
 
-- Verify a Commonware peer and Iroh peer with the same room id do not see each
-  other.
 - Verify an uninvited Iroh node cannot produce accepted room messages.
 - Verify a leaving room handle stops room traffic for a concluded job.
 
 Acceptance:
 
-- Cross-transport isolation is fail-closed.
 - Room allowlist drops messages from unexpected senders.
 - AEAD rejects wrong room keys and wrong room ids.
 
 ### Milestone 5: Operator Documentation
 
-- Document how to enable `transport-iroh`.
+- Document how to run the Iroh chat transport.
 - Document default relay behavior.
 - Document validator isolation and RPC transaction submission.
-- Document that the spike does not bridge transports.
+- Document that chat no longer preserves the fixed Commonware slot-pool model.
 
 Acceptance:
 
-- Operators can run Commonware by default.
-- Operators can opt into Iroh for devnet smoke tests.
+- Operators can run Iroh chat devnet smoke tests.
 - The validator network boundary is explicit.
 
 ## Verification Plan
@@ -306,17 +282,15 @@ Acceptance:
   API.
 - Local three-node Iroh smoke test for one room topic.
 - Membership rejection test with a third uninvited node.
-- Cross-transport isolation test.
 - Identity resolver test where a `contracts-core` registered active agent is
   accepted and an inactive or passportless agent is rejected.
-- Latency baseline comparing local Commonware and local Iroh Hello-to-Final
-  time.
+- Latency baseline for local Iroh Hello-to-Final time.
 
 ## Rollout
 
 1. Merge the PRD.
-2. Implement the transport abstraction in a behavior-preserving PR.
-3. Add Iroh behind `transport-iroh`.
+2. Implement the Iroh chat transport boundary.
+3. Wire the chat service to the Iroh lobby and per-room topics.
 4. Run local and devnet smoke tests.
 5. Schedule a design review with chain engineering before enabling Iroh beyond
    controlled devnet runs.
@@ -330,8 +304,6 @@ Acceptance:
 - Agent metadata can drift from on-chain identity state if clients cache
   resolved transport keys too long.
 - Relay defaults are acceptable for a spike but not for production operations.
-- Runtime transport selection can be awkward in Rust if the trait uses
-  associated room-handle types; an enum adapter may be required.
 - NAT traversal behavior must be validated outside single-machine tests.
 
 ## Open Questions
