@@ -5,14 +5,14 @@ use chacha20poly1305::{
 use rand::RngCore;
 use sha3::{Digest, Keccak256};
 
-/// Domain-separation tag matching `keccak256("DAEJI_ROOM_V1" || job_id)` in the spec (D2).
-const ROOM_DOMAIN: &[u8] = b"DAEJI_ROOM_V1";
+/// Domain-separation tag matching `keccak256("NUNCHI_ROOM_V1" || job_id)` in the spec (D2).
+const ROOM_DOMAIN: &[u8] = b"NUNCHI_ROOM_V1";
 
 /// Domain-separation tag for the well-known lobby channel id (per canonical-plan §14).
-const LOBBY_DOMAIN: &[u8] = b"DAEJI_LOBBY_V1";
+const LOBBY_DOMAIN: &[u8] = b"NUNCHI_LOBBY_V1";
 
 /// Domain-separation tag for the slot pool base (per canonical-plan §14).
-const JOB_SLOT_DOMAIN: &[u8] = b"DAEJI_JOB_SLOT_V1";
+const JOB_SLOT_DOMAIN: &[u8] = b"NUNCHI_JOB_SLOT_V1";
 
 /// Number of pre-registered slot channels per agent (canonical-plan §14).
 /// Locked at 64 — birthday-paradox math: ~50% collision probability at ~8 concurrent
@@ -65,7 +65,7 @@ pub fn room_id(job_id: &[u8]) -> [u8; 32] {
 }
 
 /// 32-byte room id matching the on-chain `MultiAgentMarket.computeRoomId(uint256)` derivation.
-/// Encoded as `keccak256(abi.encodePacked(bytes("DAEJI_ROOM_V1"), uint256(jobId)))`.
+/// Encoded as `keccak256(abi.encodePacked(bytes("NUNCHI_ROOM_V1"), uint256(jobId)))`.
 pub fn room_id_for_chain_job(job_id: u64) -> [u8; 32] {
     let mut hasher = Keccak256::new();
     hasher.update(ROOM_DOMAIN);
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn room_id_for_chain_job_matches_solidity() {
         let r = room_id_for_chain_job(7);
-        let expected_hex = "349edc281e8962dc4cdcb608f603ff0947711607f3d3412cea0b7e07e2899a90";
+        let expected_hex = "893074710278d32ed80a54d72a2def6f25b72729a4aeaf64e33a943274a0a833";
         assert_eq!(hex::encode(r), expected_hex);
     }
 

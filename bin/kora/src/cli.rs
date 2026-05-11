@@ -26,7 +26,7 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub data_dir: Option<PathBuf>,
 
-    /// Optional path to a `daeji_chat::service::ChatConfig` TOML/JSON file.
+    /// Optional path to a `nunchi_chat::service::ChatConfig` TOML/JSON file.
     /// When set with `enabled = true` in the config, the kora binary spawns
     /// the chat service as a supervised task alongside consensus. Off by default.
     #[arg(long, global = true)]
@@ -34,7 +34,7 @@ pub(crate) struct Cli {
 
     /// Disable the chat service at runtime regardless of `--chat-config`.
     /// Per canonical-plan §19 B2.3 — operator kill switch for production.
-    /// Honored before any chat sockets open. The `DAEJI_CHAT_DISABLED` env var
+    /// Honored before any chat sockets open. The `NUNCHI_CHAT_DISABLED` env var
     /// (truthy values: 1 / true / yes) achieves the same effect at the chat
     /// service layer; this flag is the equivalent at the CLI layer.
     #[arg(long, global = true)]
@@ -249,7 +249,7 @@ impl Cli {
             if self.disable_chat && chat_cfg.enabled {
                 tracing::info!(
                     path = %chat_path.display(),
-                    "chat config loaded but --disable-chat / DAEJI_CHAT_DISABLED set; forcing enabled=false"
+                    "chat config loaded but --disable-chat / NUNCHI_CHAT_DISABLED set; forcing enabled=false"
                 );
                 chat_cfg.enabled = false;
             }
@@ -261,7 +261,7 @@ impl Cli {
             svc = svc.with_chat(chat_cfg);
         } else if self.disable_chat {
             tracing::debug!(
-                "--disable-chat / DAEJI_CHAT_DISABLED set but no --chat-config provided; nothing to disable"
+                "--disable-chat / NUNCHI_CHAT_DISABLED set but no --chat-config provided; nothing to disable"
             );
         }
 
@@ -342,11 +342,11 @@ fn parse_public_keys(
 }
 
 /// Load a chat config from TOML or JSON. Format is auto-detected from extension.
-fn load_chat_config(path: &std::path::Path) -> eyre::Result<daeji_chat::service::ChatConfig> {
+fn load_chat_config(path: &std::path::Path) -> eyre::Result<nunchi_chat::service::ChatConfig> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| eyre::eyre!("read chat config {}: {}", path.display(), e))?;
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("toml").to_ascii_lowercase();
-    let cfg: daeji_chat::service::ChatConfig = match ext.as_str() {
+    let cfg: nunchi_chat::service::ChatConfig = match ext.as_str() {
         "json" => serde_json::from_str(&content)
             .map_err(|e| eyre::eyre!("parse chat config (json): {}", e))?,
         _ => {

@@ -1,7 +1,7 @@
 //! Supervisor primitives for the chat service per canonical-plan §19 (B2).
 //!
 //! Splits the validator-isolation hardening into reusable helpers:
-//! - [`disabled_via_env`] — runtime kill switch (DAEJI_CHAT_DISABLED env var).
+//! - [`disabled_via_env`] — runtime kill switch (NUNCHI_CHAT_DISABLED env var).
 //!   Per §19 B2.3: an operator can disable chat without restarting kora by
 //!   setting the env var, sending SIGUSR1, and letting the kora signal
 //!   handler re-check the var. This decouples the disable mechanism from
@@ -30,7 +30,7 @@ use crate::service::{ChatConfig, ChatServiceError, run_chat};
 /// When set to a truthy value (`1`, `true`, `yes`, case-insensitive),
 /// [`run_chat`](crate::service::run_chat) returns early before opening any
 /// network sockets.
-pub const DISABLE_ENV_VAR: &str = "DAEJI_CHAT_DISABLED";
+pub const DISABLE_ENV_VAR: &str = "NUNCHI_CHAT_DISABLED";
 
 /// Initial backoff between supervised restarts. After a chat panic, the
 /// supervisor sleeps this long before re-spawning, then doubles per attempt
@@ -177,7 +177,7 @@ where
                         threshold = PANIC_THRESHOLD,
                         window_secs = PANIC_WINDOW.as_secs(),
                         "chat-supervisor: panic threshold exceeded; not respawning. \
-                         Operator intervention required (restart kora, set DAEJI_CHAT_DISABLED, \
+                         Operator intervention required (restart kora, set NUNCHI_CHAT_DISABLED, \
                          or fix the underlying issue)."
                     );
                     return Err(err);

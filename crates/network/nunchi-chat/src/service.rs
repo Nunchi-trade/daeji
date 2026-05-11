@@ -46,7 +46,7 @@ use crate::{
 /// Application namespace for replay protection. Distinct from kora's consensus
 /// namespace so chat traffic can never collide with consensus traffic at the
 /// signature-verification layer.
-const APPLICATION_NAMESPACE: &[u8] = b"_DAEJI_CHAT_V1";
+const APPLICATION_NAMESPACE: &[u8] = b"_NUNCHI_CHAT_V1";
 
 /// Maximum size of a single chat message in bytes (8 KiB).
 const MAX_MESSAGE_SIZE: u32 = 8 * 1024;
@@ -113,7 +113,7 @@ pub struct ChatConfig {
 pub struct SeedJob {
     /// Decimal string for u64 portability with on-chain ids.
     pub job_id: String,
-    /// 32-byte hex room key (pre-shared in v1; replaced by ECDH in PR-Daeji-F).
+    /// 32-byte hex room key (pre-shared in v1; replaced by ECDH in PR-Nunchi-F).
     pub room_key_hex: String,
 }
 
@@ -194,9 +194,9 @@ where
     }
 
     // Runtime kill switch (canonical-plan §19 B2.3): an operator can disable
-    // chat without touching config or recompiling by setting DAEJI_CHAT_DISABLED
+    // chat without touching config or recompiling by setting NUNCHI_CHAT_DISABLED
     // to a truthy value. The check here gates startup; the supervisor wrapper
-    // (PR-Daeji-G follow-up) will re-check on each respawn so SIGUSR1 + env-var
+    // (PR-Nunchi-G follow-up) will re-check on each respawn so SIGUSR1 + env-var
     // flip can disable a running chat without restarting kora.
     if crate::supervisor::disabled_via_env() {
         info!(
@@ -676,7 +676,7 @@ fn parse_room_key(hex_str: &str) -> Result<[u8; 32], ChatServiceError> {
 
 fn unwrap_room_key(wrap: &RoomKeyWrap) -> Result<[u8; 32], ChatServiceError> {
     // v1: ciphertext field is the plaintext 32-byte room key as hex (PRE-handshake
-    // per canonical-plan §14). PR-Daeji-F replaces this with X25519 ECDH-derived
+    // per canonical-plan §14). PR-Nunchi-F replaces this with X25519 ECDH-derived
     // AEAD ciphertext + nonce decode + decrypt against my x25519 secret.
     parse_room_key(&wrap.ciphertext_hex)
 }

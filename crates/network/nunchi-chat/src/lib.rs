@@ -2,7 +2,7 @@
 //!
 //! Library-only crate. Bolted into the `kora` chain binary via
 //! [`service::run_chat`] when `--enable-chat` is set; not run as a separate
-//! process. See `crates/network/daeji-chat/README.md` for the architecture
+//! process. See `crates/network/nunchi-chat/README.md` for the architecture
 //! rationale (canonical-plan §13).
 
 #![allow(missing_docs)]

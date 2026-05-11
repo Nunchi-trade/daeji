@@ -12,7 +12,7 @@ use sha3::{Digest, Keccak256};
 
 use crate::{messages::RoomMessage, room};
 
-const IROH_LOBBY_DOMAIN: &[u8] = b"DAEJI_LOBBY_V1";
+const IROH_LOBBY_DOMAIN: &[u8] = b"NUNCHI_LOBBY_V1";
 
 /// Chat transport backend.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

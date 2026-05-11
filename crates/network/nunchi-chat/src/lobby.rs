@@ -39,7 +39,7 @@ pub enum LobbyMessage {
         coordinator: String,
         /// Awarded winners' transport pubkey hexes (matches
         /// `MultiAgentMarket.JobAwarded.winners` mapped through
-        /// `daeji_chat::registry::Registry`).
+        /// `nunchi_chat::registry::Registry`).
         participants: Vec<String>,
         /// One wrap per participant. Wrap order does NOT have to match `participants`
         /// order; recipients identify their own wrap by `recipient_pubkey_hex`.
@@ -53,7 +53,7 @@ pub enum LobbyMessage {
     RoomJoined {
         job_id: String,
         passport_id: String,
-        /// ed25519 signature over `keccak256("DAEJI_ROOM_JOINED_V1" || room_id)`.
+        /// ed25519 signature over `keccak256("NUNCHI_ROOM_JOINED_V1" || room_id)`.
         signature_over_room_id: String,
     },
     /// Coordinator (or any winner, with retry/dedup) signals job done.
@@ -101,7 +101,7 @@ impl LobbyMessage {
 /// Per-recipient wrap of a 32-byte symmetric room key. Wrapped via X25519 ECDH
 /// from the recipient's ed25519 transport pubkey (converted to x25519 via the
 /// standard birational map). v1 ships with **plaintext** wraps (PRE-handshake)
-/// for the demo path — full ECDH wrap lands in a follow-up PR (PR-Daeji-F).
+/// for the demo path — full ECDH wrap lands in a follow-up PR (PR-Nunchi-F).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RoomKeyWrap {
     /// Recipient's transport pubkey as 0x-prefixed hex.

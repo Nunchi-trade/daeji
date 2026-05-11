@@ -56,7 +56,7 @@ kora-consensus = { path = "crates/node/consensus" }
 kora-executor = { path = "crates/node/executor" }
 kora-ledger = { path = "crates/node/ledger" }
 kora-marshal = { path = "crates/network/marshal" }
-daeji-chat = { path = "crates/network/daeji-chat" }
+nunchi-chat = { path = "crates/network/nunchi-chat" }
 kora-reporters = { path = "crates/node/reporters" }
 kora-service = { path = "crates/node/service" }
 kora-simplex = { path = "crates/node/simplex" }

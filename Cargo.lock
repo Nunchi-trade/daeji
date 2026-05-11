@@ -2394,32 +2394,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "daeji-chat"
-version = "0.1.0"
-dependencies = [
- "alloy",
- "base64",
- "chacha20poly1305",
- "commonware-codec",
- "commonware-cryptography",
- "commonware-macros",
- "commonware-p2p",
- "commonware-runtime",
- "commonware-utils",
- "futures",
- "hex",
- "rand 0.8.6",
- "rand_core 0.6.4",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha3",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "darling"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3772,7 +3746,6 @@ dependencies = [
  "commonware-p2p",
  "commonware-runtime",
  "commonware-utils",
- "daeji-chat",
  "eyre",
  "futures",
  "hex",
@@ -3784,6 +3757,7 @@ dependencies = [
  "kora-runner",
  "kora-service",
  "kora-transport",
+ "nunchi-chat",
  "serde_json",
  "tokio",
  "toml 0.8.23",
@@ -4159,11 +4133,11 @@ dependencies = [
  "commonware-p2p",
  "commonware-runtime",
  "commonware-utils",
- "daeji-chat",
  "eyre",
  "futures",
  "kora-config",
  "kora-transport",
+ "nunchi-chat",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -4538,6 +4512,32 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "nunchi-chat"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "base64",
+ "chacha20poly1305",
+ "commonware-codec",
+ "commonware-cryptography",
+ "commonware-macros",
+ "commonware-p2p",
+ "commonware-runtime",
+ "commonware-utils",
+ "futures",
+ "hex",
+ "rand 0.8.6",
+ "rand_core 0.6.4",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha3",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
