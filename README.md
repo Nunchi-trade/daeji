@@ -56,6 +56,35 @@ for how a secondary peer joins the network.
 
 https://github.com/user-attachments/assets/8ea05477-039d-4dd2-a7f3-660f179299f7
 
+## Commonware Chat (released example)
+
+Kora uses the released [`commonware-chat`](https://crates.io/crates/commonware-chat)
+crate directly (`v2026.4.0`). The `commonware-chat` binary is installed from
+crates.io and baked into the `kora:local` docker image, so the devnet ships with
+chat available out of the box without vendoring the upstream example source.
+
+`just devnet` starts four background chat services alongside the validators.
+For interactive chat, open four terminals and run a chat node in each. The
+interactive containers share `validator-node0`'s Docker network namespace so the
+upstream localhost-based peer addresses form one mesh on the live devnet:
+
+```sh
+just devnet           # in terminal 1, start the chain devnet
+just devnet-chat-1    # in terminal 2 - friend 1 (bootstrapper)
+just devnet-chat-2    # in terminal 3
+just devnet-chat-3    # in terminal 4
+just devnet-chat-4    # in terminal 5
+```
+
+Standalone chat, without Docker or the devnet, is also available:
+
+```sh
+just chat-1
+just chat-2
+just chat-3
+just chat-4
+```
+
 ## Architecture
 
 The devnet runs in three phases. Phase 0 generates ed25519 identity keys for each validator node and the built-in secondary peer. Phase 1 is the DKG ceremony, an interactive threshold key generation process using Ed25519 simplex consensus where validators collaborate to generate a shared BLS12-381 threshold key. Phase 2 launches full validator nodes running BLS12-381 threshold consensus, the REVM execution engine, and QMDB state storage, then starts the secondary peer as a non-voting P2P follower.

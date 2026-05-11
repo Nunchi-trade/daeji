@@ -282,6 +282,73 @@ services:
     ports:
       - "30500:30303"
 
+  chat-node1:
+    image: kora:local
+    network_mode: "service:validator-node0"
+    stdin_open: true
+    tty: true
+    depends_on:
+      validator-node0:
+        condition: service_healthy
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - CHAIN_ID=${CHAIN_ID:-1337}
+    command:
+      - commonware-chat
+      - --me=1@3001
+      - --friends=1,2,3,4
+
+  chat-node2:
+    image: kora:local
+    network_mode: "service:validator-node0"
+    stdin_open: true
+    tty: true
+    depends_on:
+      chat-node1:
+        condition: service_started
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - CHAIN_ID=${CHAIN_ID:-1337}
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - |
+        until nc -z 127.0.0.1 3001; do sleep 1; done
+        exec commonware-chat --me=2@3002 --friends=1,2,3,4 --bootstrappers=1@127.0.0.1:3001
+
+  chat-node3:
+    image: kora:local
+    network_mode: "service:validator-node0"
+    stdin_open: true
+    tty: true
+    depends_on:
+      chat-node1:
+        condition: service_started
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - CHAIN_ID=${CHAIN_ID:-1337}
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - |
+        until nc -z 127.0.0.1 3001; do sleep 1; done
+        exec commonware-chat --me=3@3003 --friends=1,2,3,4 --bootstrappers=1@127.0.0.1:3001
+
+  chat-node4:
+    image: kora:local
+    network_mode: "service:validator-node0"
+    stdin_open: true
+    tty: true
+    depends_on:
+      chat-node1:
+        condition: service_started
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - CHAIN_ID=${CHAIN_ID:-1337}
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - |
+        until nc -z 127.0.0.1 3001; do sleep 1; done
+        exec commonware-chat --me=4@3004 --friends=1,2,3,4 --bootstrappers=1@127.0.0.1:3001
+
   prometheus:
     image: prom/prometheus:latest
     profiles: ["observability"]

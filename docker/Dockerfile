@@ -34,6 +34,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
+# Install the released Commonware chat binary from crates.io.
+RUN cargo install --locked commonware-chat --version 2026.4.0 --root /opt/commonware-chat
+
 # Copy source and build application
 COPY . .
 
@@ -62,6 +65,7 @@ RUN useradd -m -u 1000 -s /bin/bash kora && \
 # Copy binaries from builder
 COPY --from=builder /app/target/release/kora /usr/local/bin/
 COPY --from=builder /app/target/release/keygen /usr/local/bin/
+COPY --from=builder /opt/commonware-chat/bin/commonware-chat /usr/local/bin/
 
 # Copy entrypoint scripts
 COPY docker/scripts/ /scripts/

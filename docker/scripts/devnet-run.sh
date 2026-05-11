@@ -110,6 +110,7 @@ print_endpoints() {
     echo -e "${BOLD}Endpoints${NC}"
     echo -e "  ${DIM}P2P:${NC}        localhost:30400-30403"
     echo -e "  ${DIM}Secondary:${NC}  localhost:30500"
+    echo -e "  ${DIM}Chat:${NC}       just devnet-chat-1 .. just devnet-chat-4"
     echo -e "  ${DIM}Prometheus:${NC} http://localhost:9090"
     echo -e "  ${DIM}Grafana:${NC}    http://localhost:3000"
     echo ""
@@ -172,7 +173,78 @@ clear_runtime_state() {
     done
 }
 
+container_id_for_service() {
+    docker compose -f compose/devnet.yaml ps -q "$1" 2>/dev/null || true
+}
+
+container_health() {
+    local service=$1
+    local id
+    id=$(container_id_for_service "$service")
+
+    if [[ -z "$id" ]]; then
+        echo "missing"
+        return 0
+    fi
+
+    docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$id" 2>/dev/null || echo "unknown"
+}
+
+count_healthy_services() {
+    local count=0
+    local service
+
+    for service in "$@"; do
+        if [[ "$(container_health "$service")" == "healthy" ]]; then
+            count=$((count + 1))
+        fi
+    done
+
+    echo "$count"
+}
+
+count_exited_services() {
+    local expected_exit_code=$1
+    shift
+
+    local count=0
+    local service id state exit_code
+
+    for service in "$@"; do
+        id=$(container_id_for_service "$service")
+        [[ -z "$id" ]] && continue
+
+        read -r state exit_code < <(docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' "$id" 2>/dev/null || echo "unknown -1")
+        if [[ "$state" == "exited" && "$exit_code" == "$expected_exit_code" ]]; then
+            count=$((count + 1))
+        fi
+    done
+
+    echo "$count"
+}
+
+count_failed_exited_services() {
+    local count=0
+    local service id state exit_code
+
+    for service in "$@"; do
+        id=$(container_id_for_service "$service")
+        [[ -z "$id" ]] && continue
+
+        read -r state exit_code < <(docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' "$id" 2>/dev/null || echo "unknown -1")
+        if [[ "$state" == "exited" && "$exit_code" != "0" ]]; then
+            count=$((count + 1))
+        fi
+    done
+
+    echo "$count"
+}
+
 cd "$(dirname "$0")/.."
+
+VALIDATOR_SERVICES=(validator-node0 validator-node1 validator-node2 validator-node3)
+DKG_SERVICES=(dkg-node0 dkg-node1 dkg-node2 dkg-node3)
+CHAT_SERVICES=(chat-node1 chat-node2 chat-node3 chat-node4)
 
 print_header
 
@@ -246,12 +318,9 @@ if [[ "$INTERACTIVE_DKG" == "true" ]]; then
         timeout=300  # 5 minutes for DKG
         
         while true; do
-            # Check if all DKG containers have exited successfully (use -a to include stopped containers)
-            EXITED=$(docker compose -f compose/devnet.yaml ps -a --format json 2>/dev/null | \
-                jq -r 'select(.Service | startswith("dkg-")) | select(.State == "exited") | select(.ExitCode == 0) | .Service' 2>/dev/null | wc -l | tr -d ' ')
-            
-            FAILED=$(docker compose -f compose/devnet.yaml ps -a --format json 2>/dev/null | \
-                jq -r 'select(.Service | startswith("dkg-")) | select(.State == "exited") | select(.ExitCode != 0) | .Service' 2>/dev/null | wc -l | tr -d ' ')
+            # Check if all DKG containers have exited successfully.
+            EXITED=$(count_exited_services 0 "${DKG_SERVICES[@]}")
+            FAILED=$(count_failed_exited_services "${DKG_SERVICES[@]}")
             
             elapsed=$(($(date +%s) - start_time))
             
@@ -303,15 +372,17 @@ fi
 
 echo ""
 
-# Phase 2: Validators and secondary peers
-print_phase "2/3" "Starting validators and secondary peers"
+# Phase 2: Validators, secondary peer, and chat
+print_phase "2/3" "Starting validators, secondary peer, and chat"
 
 docker compose -f compose/devnet.yaml stop \
-    validator-node0 validator-node1 validator-node2 validator-node3 secondary-node0 >/dev/null 2>&1 || true
+    validator-node0 validator-node1 validator-node2 validator-node3 secondary-node0 \
+    chat-node1 chat-node2 chat-node3 chat-node4 >/dev/null 2>&1 || true
 clear_runtime_state
 
-run_with_spinner "Launching validator and secondary containers..." docker compose -f compose/devnet.yaml ${COMPOSE_PROFILES:+--profile observability} up -d \
+run_with_spinner "Launching validator, secondary, and chat containers..." docker compose -f compose/devnet.yaml ${COMPOSE_PROFILES:+--profile observability} up -d \
     validator-node0 validator-node1 validator-node2 validator-node3 secondary-node0 \
+    chat-node1 chat-node2 chat-node3 chat-node4 \
     ${COMPOSE_PROFILES:+prometheus grafana}
 
 # Wait for validators with spinner
@@ -319,8 +390,7 @@ start_time=$(date +%s)
 timeout=120
 
 while true; do
-    HEALTHY=$(docker compose -f compose/devnet.yaml ps --format json 2>/dev/null | \
-        jq -r 'select(.Service | startswith("validator-")) | select(.Health == "healthy") | .Service' 2>/dev/null | wc -l | tr -d ' ')
+    HEALTHY=$(count_healthy_services "${VALIDATOR_SERVICES[@]}")
     
     elapsed=$(($(date +%s) - start_time))
     
@@ -344,8 +414,7 @@ start_time=$(date +%s)
 timeout=120
 
 while true; do
-    SECONDARY_HEALTH=$(docker compose -f compose/devnet.yaml ps --format json 2>/dev/null | \
-        jq -r 'select(.Service == "secondary-node0") | .Health' 2>/dev/null || echo "unknown")
+    SECONDARY_HEALTH=$(container_health secondary-node0)
 
     elapsed=$(($(date +%s) - start_time))
 
@@ -365,6 +434,36 @@ while true; do
     sleep 0.15
 done
 
+start_time=$(date +%s)
+timeout=120
+
+while true; do
+    RUNNING_CHAT=0
+    for service in "${CHAT_SERVICES[@]}"; do
+        if [[ "$(container_health "$service")" == "running" ]]; then
+            RUNNING_CHAT=$((RUNNING_CHAT + 1))
+        fi
+    done
+
+    elapsed=$(($(date +%s) - start_time))
+
+    if [[ "$RUNNING_CHAT" -ge 4 ]]; then
+        clear_line
+        print_success "All 4 chat nodes running"
+        break
+    fi
+
+    if [[ "$elapsed" -ge "$timeout" ]]; then
+        clear_line
+        print_error "Timeout waiting for chat nodes"
+        docker compose -f compose/devnet.yaml logs chat-node1 chat-node2 chat-node3 chat-node4 --tail=50
+        exit 1
+    fi
+
+    spinner "Waiting for chat nodes... (${RUNNING_CHAT}/4 running, ${elapsed}s)"
+    sleep 0.15
+done
+
 echo ""
 
 # Phase 3: Ready
@@ -376,8 +475,7 @@ echo -e "  ${GREEN}│${NC} ${BOLD}Node${NC}       ${GREEN}│${NC} ${BOLD}Statu
 echo -e "  ${GREEN}├────────────┼────────────┼─────────┤${NC}"
 
 for i in 0 1 2 3; do
-    status=$(docker compose -f compose/devnet.yaml ps --format json 2>/dev/null | \
-        jq -r "select(.Service == \"validator-node$i\") | .Health" 2>/dev/null || echo "unknown")
+    status=$(container_health "validator-node$i")
     
     if [[ "$status" == "healthy" ]]; then
         status_str="${GREEN}healthy${NC}    "
@@ -388,8 +486,7 @@ for i in 0 1 2 3; do
     printf "  ${GREEN}│${NC} node%-6s ${GREEN}│${NC} %b ${GREEN}│${NC} 3040%-3s ${GREEN}│${NC}\n" "$i" "$status_str" "$i"
 done
 
-secondary_status=$(docker compose -f compose/devnet.yaml ps --format json 2>/dev/null | \
-    jq -r 'select(.Service == "secondary-node0") | .Health' 2>/dev/null || echo "unknown")
+secondary_status=$(container_health secondary-node0)
 
 if [[ "$secondary_status" == "healthy" ]]; then
     secondary_status_str="${GREEN}healthy${NC}    "
@@ -398,6 +495,7 @@ else
 fi
 
 printf "  ${GREEN}│${NC} secondary0 ${GREEN}│${NC} %b ${GREEN}│${NC} 30500   ${GREEN}│${NC}\n" "$secondary_status_str"
+printf "  ${GREEN}│${NC} chat       ${GREEN}│${NC} %b ${GREEN}│${NC} attach  ${GREEN}│${NC}\n" "${GREEN}running${NC}    "
 
 echo -e "  ${GREEN}└────────────┴────────────┴─────────┘${NC}"
 

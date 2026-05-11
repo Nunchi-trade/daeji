@@ -84,3 +84,42 @@ loadtest:
 # Stress test (10000 txs with 50 accounts)
 stresstest:
     cargo run --release -p loadgen --bin loadgen -- --total-txs 10000 --accounts 50 --broadcast-rpc-urls http://127.0.0.1:8546,http://127.0.0.1:8547,http://127.0.0.1:8548
+
+# Install the released commonware-chat binary from crates.io.
+chat-build:
+    cargo install --locked commonware-chat --version 2026.4.0 --root ./target/commonware-chat
+
+# Released commonware-chat example - friend 1 (bootstrapper).
+# Open four terminals and run chat-1 .. chat-4 to spin up the 4-node demo.
+chat-1: chat-build
+    ./target/commonware-chat/bin/commonware-chat \
+        --me=1@3001 --friends=1,2,3,4
+
+# Released commonware-chat example - friend 2.
+chat-2: chat-build
+    ./target/commonware-chat/bin/commonware-chat \
+        --me=2@3002 --friends=1,2,3,4 --bootstrappers=1@127.0.0.1:3001
+
+# Released commonware-chat example - friend 3.
+chat-3: chat-build
+    ./target/commonware-chat/bin/commonware-chat \
+        --me=3@3003 --friends=1,2,3,4 --bootstrappers=1@127.0.0.1:3001
+
+# Released commonware-chat example - friend 4.
+chat-4: chat-build
+    ./target/commonware-chat/bin/commonware-chat \
+        --me=4@3004 --friends=1,2,3,4 --bootstrappers=3@127.0.0.1:3003
+
+# Run chat node N attached to the live devnet. Requires `just devnet`
+# to be running. Open four terminals and run devnet-chat-1 .. devnet-chat-4.
+devnet-chat-1:
+    cd docker && just chat 1
+
+devnet-chat-2:
+    cd docker && just chat 2 1
+
+devnet-chat-3:
+    cd docker && just chat 3 1
+
+devnet-chat-4:
+    cd docker && just chat 4 1
