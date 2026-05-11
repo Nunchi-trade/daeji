@@ -4529,6 +4529,7 @@ dependencies = [
  "commonware-utils",
  "futures",
  "hex",
+ "k256",
  "rand 0.8.6",
  "rand_core 0.6.4",
  "reqwest 0.12.28",

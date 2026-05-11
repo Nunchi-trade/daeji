@@ -106,6 +106,15 @@ impl IrohRoomMembership {
         self.members.iter().any(|member| member.transport_pubkey_hex == key)
     }
 
+    /// True when the contracts-core identity and routing key match an expected member.
+    pub fn contains_identity(&self, identity: &ChatParticipantIdentity) -> bool {
+        self.members.iter().any(|member| {
+            member.agent_address == identity.agent_address
+                && member.passport_id == identity.passport_id
+                && member.transport_pubkey_hex == identity.transport_pubkey_hex
+        })
+    }
+
     /// Expected transport pubkeys for the room.
     pub fn transport_pubkeys(&self) -> Vec<&str> {
         self.members.iter().map(|member| member.transport_pubkey_hex.as_str()).collect()
@@ -234,6 +243,18 @@ mod tests {
         assert!(membership.contains_transport_pubkey("0x02"));
         assert!(!membership.contains_transport_pubkey("0x03"));
         assert_eq!(membership.transport_pubkeys(), vec!["01", "02"]);
+    }
+
+    #[test]
+    fn membership_checks_full_contract_identity() {
+        let room_id = room::room_id_for_chain_job(7);
+        let expected = ChatParticipantIdentity::new("0xabc", "7", "0x01");
+        let membership = IrohRoomMembership::new(room_id, vec![expected.clone()]).unwrap();
+
+        assert!(membership.contains_identity(&expected));
+        assert!(!membership.contains_identity(&ChatParticipantIdentity::new("0xdef", "7", "0x01")));
+        assert!(!membership.contains_identity(&ChatParticipantIdentity::new("0xabc", "8", "0x01")));
+        assert!(!membership.contains_identity(&ChatParticipantIdentity::new("0xabc", "7", "0x02")));
     }
 
     #[test]

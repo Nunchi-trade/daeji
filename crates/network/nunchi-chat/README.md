@@ -16,6 +16,7 @@ This crate is just the protocol surface for Nunchi Chat. Runtime integration sho
 - **`messages`** — typed room messages: `Hello`, `Status`, `PartialResult`, `Vote`, `Final`. JSON-encoded over the channel.
 - **`registry`** — authorized peer registry. `AgentRecord` is an `#[serde(untagged)]` enum: `Seed { seed }` (POC shortcut) or `Chain { controller, transport_pubkey, capabilities, endpoint }` (production shape, sourced from on-chain `AgentRegistry.AgentRegistered` events).
 - **`card`** — off-chain status.json schema + `keccak256(body) == passportHash` verifier. Decodes ed25519 transport pubkeys (hex or base64).
+- **`identity`** — verifies `nunchi-chat.join` EVM signed-message envelopes from contracts-core agent identities before admitting a room member.
 
 ## Build + test
 

@@ -9,6 +9,7 @@
 
 pub mod card;
 pub mod chain;
+pub mod identity;
 pub mod lobby;
 pub mod messages;
 pub mod registry;
