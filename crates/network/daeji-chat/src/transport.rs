@@ -1,9 +1,9 @@
 //! Chat transport selection and Iroh sub-mesh primitives.
 //!
 //! This module is the first implementation slice for the Iroh chat sub-mesh.
-//! It keeps the existing Commonware runtime path as the default while defining
-//! the topic, membership, and encrypted wire-frame semantics an Iroh transport
-//! implementation will use.
+//! Chat networking is Iroh-native: the module defines the topic, membership,
+//! and encrypted wire-frame semantics the Iroh transport implementation will
+//! use.
 
 use std::collections::BTreeSet;
 
@@ -14,14 +14,12 @@ use crate::{messages::RoomMessage, room};
 
 const IROH_LOBBY_DOMAIN: &[u8] = b"DAEJI_LOBBY_V1";
 
-/// Config-selected chat transport.
+/// Chat transport backend.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TransportKind {
-    /// Existing authenticated Commonware P2P path.
-    #[default]
-    Commonware,
     /// Iroh-backed lobby and per-room topic path.
+    #[default]
     Iroh,
 }
 
@@ -189,14 +187,14 @@ mod tests {
     }
 
     #[test]
-    fn transport_kind_defaults_to_commonware() {
-        assert_eq!(TransportKind::default(), TransportKind::Commonware);
+    fn transport_kind_defaults_to_iroh() {
+        assert_eq!(TransportKind::default(), TransportKind::Iroh);
         let parsed: TransportKind = serde_json::from_str(r#""iroh""#).unwrap();
         assert_eq!(parsed, TransportKind::Iroh);
     }
 
     #[test]
-    fn lobby_topic_matches_commonware_lobby_projection() {
+    fn lobby_topic_preserves_existing_lobby_projection() {
         let topic = IrohTopicId::lobby();
         let mut projected = [0u8; 8];
         projected.copy_from_slice(&topic.as_bytes()[..8]);

@@ -11,8 +11,7 @@ description = "Symphony-class agent-coordination protocol primitives + service e
 workspace = true
 
 [features]
-default = ["transport-commonware"]
-transport-commonware = []
+default = ["transport-iroh"]
 transport-iroh = []
 
 [dependencies]
