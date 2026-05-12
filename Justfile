@@ -69,6 +69,12 @@ devnet-status:
 devnet-stats:
     cd docker && just stats
 
+# Deploy the full contracts-core stack onto the devnet (clones + builds + deploys).
+# Requires DEPLOYER_PRIVATE_KEY env var. Optional: NUNCHI_DEVNET_RPC_URL,
+# CONTRACTS_REPO, CONTRACTS_BRANCH, CONTRACTS_REF.
+devnet-deploy-contracts:
+    ./scripts/deploy-contracts.sh
+
 # Build docker images
 docker-build:
     cd docker && just build
