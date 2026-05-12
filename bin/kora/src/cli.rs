@@ -343,15 +343,6 @@ fn parse_public_keys(
 
 /// Load a chat config from TOML or JSON. Format is auto-detected from extension.
 fn load_chat_config(path: &std::path::Path) -> eyre::Result<nunchi_chat::service::ChatConfig> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| eyre::eyre!("read chat config {}: {}", path.display(), e))?;
-    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("toml").to_ascii_lowercase();
-    let cfg: nunchi_chat::service::ChatConfig = match ext.as_str() {
-        "json" => serde_json::from_str(&content)
-            .map_err(|e| eyre::eyre!("parse chat config (json): {}", e))?,
-        _ => {
-            toml::from_str(&content).map_err(|e| eyre::eyre!("parse chat config (toml): {}", e))?
-        }
-    };
-    Ok(cfg)
+    nunchi_chat::service::ChatConfig::load_from_path(path)
+        .map_err(|e| eyre::eyre!("load chat config {}: {}", path.display(), e))
 }

@@ -19,7 +19,7 @@
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    path::PathBuf,
+    path::{Path, PathBuf},
     str::FromStr,
     sync::{Arc, Mutex},
     time::Duration,
@@ -30,7 +30,7 @@ use commonware_p2p::{
     Manager as _, Receiver, Recipients, Sender,
     authenticated::discovery::{self, Config as DiscoveryConfig},
 };
-use commonware_runtime::{Clock, Metrics, Quota, Spawner};
+use commonware_runtime::{Clock, Metrics, Quota, Runner as _, Spawner};
 use commonware_utils::NZU32;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
@@ -111,6 +111,34 @@ pub struct ChatConfig {
     /// `required`; `local-testnet-disabled` is only for private v0 smoke tests.
     #[serde(default)]
     pub message_signature_policy: MessageSignaturePolicy,
+}
+
+impl ChatConfig {
+    /// Load a chat config from TOML or JSON. Format is detected from extension;
+    /// non-JSON files are parsed as TOML for operator convenience.
+    pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self, ChatConfigLoadError> {
+        let path = path.as_ref();
+        let content = std::fs::read_to_string(path).map_err(ChatConfigLoadError::Read)?;
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("toml").to_ascii_lowercase();
+        match ext.as_str() {
+            "json" => serde_json::from_str(&content).map_err(ChatConfigLoadError::Json),
+            _ => toml::from_str(&content).map_err(ChatConfigLoadError::Toml),
+        }
+    }
+}
+
+/// Errors while loading a [`ChatConfig`] from disk.
+#[derive(Debug, thiserror::Error)]
+pub enum ChatConfigLoadError {
+    /// Failed to read the config file.
+    #[error("failed to read chat config: {0}")]
+    Read(std::io::Error),
+    /// Failed to parse JSON config.
+    #[error("failed to parse chat config as JSON: {0}")]
+    Json(serde_json::Error),
+    /// Failed to parse TOML config.
+    #[error("failed to parse chat config as TOML: {0}")]
+    Toml(toml::de::Error),
 }
 
 /// One pre-seeded active job. Used for demos / smoke tests; production agents
@@ -368,6 +396,16 @@ where
     // we just await the handler.
     let _ = network_handler.await;
     Ok(())
+}
+
+/// Run chat as a standalone process using the default commonware tokio runner.
+///
+/// This is the library entrypoint used by the `nunchi-chat` binary. Embedded
+/// callers that already own a commonware runtime should call [`run_chat`]
+/// directly instead.
+pub fn run_chat_standalone(config: ChatConfig) -> Result<(), ChatServiceError> {
+    let executor = commonware_runtime::tokio::Runner::default();
+    executor.start(|context| async move { run_chat(context, config).await })
 }
 
 /// Read a `LobbyMessage` stream off the lobby channel. Mutates `ActiveJobs` on
@@ -730,6 +768,14 @@ fn compute_driver_target(config: &ChatConfig) -> Result<Option<DriverTarget>, Ch
 mod tests {
     use super::*;
 
+    fn temp_config_path(ext: &str, body: &str) -> PathBuf {
+        let nanos =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("nunchi-chat-service-{nanos}.{ext}"));
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
     #[test]
     fn config_serde_round_trip() {
         let cfg = ChatConfig {
@@ -751,6 +797,46 @@ mod tests {
         assert_eq!(parsed.seed_jobs.len(), 1);
         assert!(parsed.chain.is_none());
         assert_eq!(parsed.message_signature_policy, MessageSignaturePolicy::Required);
+    }
+
+    #[test]
+    fn config_load_from_json_path() {
+        let path = temp_config_path(
+            "json",
+            r#"{
+                "enabled": true,
+                "me_seed": 11,
+                "bind_port": 4111,
+                "registry_path": "/tmp/r.json"
+            }"#,
+        );
+
+        let parsed = ChatConfig::load_from_path(&path).unwrap();
+
+        assert!(parsed.enabled);
+        assert_eq!(parsed.me_seed, 11);
+        assert_eq!(parsed.message_signature_policy, MessageSignaturePolicy::Required);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn config_load_from_toml_path() {
+        let path = temp_config_path(
+            "toml",
+            r#"
+enabled = true
+me_seed = 12
+bind_port = 4112
+registry_path = "/tmp/r.json"
+message_signature_policy = "local-testnet-disabled"
+"#,
+        );
+
+        let parsed = ChatConfig::load_from_path(&path).unwrap();
+
+        assert_eq!(parsed.bind_port, 4112);
+        assert_eq!(parsed.message_signature_policy, MessageSignaturePolicy::LocalTestnetDisabled);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

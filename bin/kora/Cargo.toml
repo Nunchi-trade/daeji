@@ -16,7 +16,6 @@ kora-domain.workspace = true
 kora-rpc.workspace = true
 kora-transport.workspace = true
 nunchi-chat.workspace = true
-toml.workspace = true
 
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true

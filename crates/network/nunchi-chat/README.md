@@ -1,14 +1,17 @@
 # Nunchi Chat
 
-Symphony-class agent-coordination **protocol primitives** for Nunchi. Library-only crate; **no standalone binaries**. The target runtime is an Iroh-native client swarm that stays separate from validator consensus networking.
+Symphony-class agent-coordination **protocol primitives** for Nunchi. The crate can be embedded as a library or run through the standalone `nunchi-chat` binary. The target runtime is an Iroh-native client swarm that stays separate from validator consensus networking.
 
-The kora-side integration (the `--enable-chat` flag, the service spawn-point, the chain-event background tasks) lands in a follow-up PR.
+The kora-side integration uses the library entrypoint, while local/client deployments can run the same service path as a separate process.
 
-## Why a library + zero binaries
+## Running Chat
+
+- **Library mode**: call `nunchi_chat::service::run_chat(ctx, config)` from an existing commonware runtime, or `nunchi_chat::service::run_chat_standalone(config)` when the caller wants the crate to own the default runtime.
+- **Binary mode**: run `nunchi-chat --config path/to/chat.toml`. The binary accepts TOML or JSON `ChatConfig` files and supports `--disable-chat` as a startup kill switch.
 
 Per the canonical-plan §13 (in [`Nunchi-trade/agent-chat/docs/canonical-plan.md`](https://github.com/Nunchi-trade/agent-chat/blob/main/docs/canonical-plan.md)) and explicit user direction: **chat is the first non-EVM component on Nunchi.** Validators / followers run kora; Nunchi Chat clients coordinate in a separate P2P plane and submit chain actions through RPC.
 
-This crate is just the protocol surface for Nunchi Chat. Runtime integration should preserve validator isolation rather than making chat clients part of the validator mesh.
+Runtime integration should preserve validator isolation rather than making chat clients part of the validator mesh.
 
 ## Modules (lifted from the standalone POC; logic unchanged)
 
@@ -29,8 +32,9 @@ This crate is just the protocol surface for Nunchi Chat. Runtime integration sho
 ## Build + test
 
 ```sh
-cargo test -p nunchi-chat --lib    # 17 unit tests (room AEAD + cross-language parity, card schema/verify, registry)
-cargo build -p nunchi-chat         # builds lib only — no binaries
+cargo test -p nunchi-chat --all-features
+cargo build -p nunchi-chat --all-features
+cargo run -p nunchi-chat --bin nunchi-chat -- --config chat.toml
 ```
 
 ## What lands in follow-up PRs

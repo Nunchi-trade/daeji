@@ -1,9 +1,7 @@
 //! Symphony-class agent-coordination protocol primitives + service entry point.
 //!
-//! Library-only crate. Bolted into the `kora` chain binary via
-//! [`service::run_chat`] when `--enable-chat` is set; not run as a separate
-//! process. See `crates/network/nunchi-chat/README.md` for the architecture
-//! rationale (canonical-plan §13).
+//! Can be embedded as a library via [`service::run_chat`] or run as the
+//! standalone `nunchi-chat` binary for local/client deployments.
 
 #![allow(missing_docs)]
 

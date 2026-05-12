@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Symphony-class agent-coordination protocol primitives + service entry point — bolted into the kora chain binary, not run as a separate process."
+description = "Symphony-class agent-coordination protocol primitives and standalone Nunchi Chat client."
 
 [lints]
 workspace = true
@@ -34,7 +34,11 @@ sha3.workspace = true
 k256.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+toml.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+eyre.workspace = true
 
 # crypto (local deps — not in workspace)
 chacha20poly1305 = "0.10.1"

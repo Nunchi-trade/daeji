@@ -3760,7 +3760,6 @@ dependencies = [
  "nunchi-chat",
  "serde_json",
  "tokio",
- "toml 0.8.23",
  "tracing",
  "tracing-subscriber 0.3.23",
 ]
@@ -4521,12 +4520,14 @@ dependencies = [
  "alloy",
  "base64",
  "chacha20poly1305",
+ "clap",
  "commonware-codec",
  "commonware-cryptography",
  "commonware-macros",
  "commonware-p2p",
  "commonware-runtime",
  "commonware-utils",
+ "eyre",
  "futures",
  "hex",
  "k256",
@@ -4538,7 +4539,9 @@ dependencies = [
  "sha3",
  "thiserror 2.0.18",
  "tokio",
+ "toml 0.8.23",
  "tracing",
+ "tracing-subscriber 0.3.23",
 ]
 
 [[package]]
