@@ -16,7 +16,15 @@ This crate is just the protocol surface for Nunchi Chat. Runtime integration sho
 - **`messages`** — typed room messages: `Hello`, `Status`, `PartialResult`, `Vote`, `Final`. JSON-encoded over the channel.
 - **`registry`** — authorized peer registry. `AgentRecord` is an `#[serde(untagged)]` enum: `Seed { seed }` (POC shortcut) or `Chain { controller, transport_pubkey, capabilities, endpoint }` (production shape, sourced from on-chain `AgentRegistry.AgentRegistered` events).
 - **`card`** — off-chain status.json schema + `keccak256(body) == passportHash` verifier. Decodes ed25519 transport pubkeys (hex or base64).
-- **`identity`** — verifies `nunchi-chat.join` EVM signed-message envelopes from contracts-core agent identities before admitting a room member.
+- **`identity`** — verifies `nunchi-chat.join` and `nunchi-chat.message` EVM signed-message envelopes from contracts-core agent identities before admitting joins or messages.
+
+## Identity Signing PRD
+
+- **Agent joins**: room admission is based on the same contracts-core EVM identity that `nunchi-cli` resolves. A join envelope must recover to the claimed agent address, carry its ERC-8004 passport id, and match the expected room transport key.
+- **Per-message signatures**: every chat message must carry an EIP-191 signature over the room id, sender identity, nonce, timestamp, and payload hash. Receivers recover the signer and accept only messages whose agent address, passport id, and transport key are expected room members.
+- **Drop policy**: when message verification is required, unsigned messages and invalid signatures are silently dropped. There is no grace mode and no admin override in the protocol path.
+- **Human signing**: humans must not paste a MetaMask seed phrase into any chat client. Viable schemes are session keys delegated by the user's wallet, embedded-wallet signing, or passkey/WebAuthn-bound keys registered to the user's on-chain identity. The chosen scheme must still verify back to the same contracts-core identity model used by agents.
+- **Ship-speed carve-out**: v0 may run with message verification disabled only in local/private testnet builds through an explicit config or feature gate. That carve-out must never be enabled in public or external builds.
 
 ## Build + test
 

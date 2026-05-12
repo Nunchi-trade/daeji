@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// Wire format for symphony-room messages. JSON-encoded over the channel.
 /// Phase-1 POC: messages are AEAD-encrypted at the app layer with the room key.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RoomMessage {
     Hello {

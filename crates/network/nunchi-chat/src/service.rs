@@ -37,6 +37,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     chain::ChainConfig,
+    identity::MessageSignaturePolicy,
     lobby::{LobbyMessage, RoomKeyWrap},
     messages::RoomMessage,
     registry::Registry,
@@ -105,6 +106,11 @@ pub struct ChatConfig {
     /// matching `JobAnnounce` on the lobby channel actually activates the slot.
     #[serde(default)]
     pub chain: Option<ChainConfig>,
+
+    /// Per-message signature policy. Public/external builds must keep this at
+    /// `required`; `local-testnet-disabled` is only for private v0 smoke tests.
+    #[serde(default)]
+    pub message_signature_policy: MessageSignaturePolicy,
 }
 
 /// One pre-seeded active job. Used for demos / smoke tests; production agents
@@ -736,6 +742,7 @@ mod tests {
             drive: false,
             drive_after_secs: 3,
             chain: None,
+            message_signature_policy: MessageSignaturePolicy::Required,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: ChatConfig = serde_json::from_str(&json).unwrap();
@@ -743,6 +750,7 @@ mod tests {
         assert_eq!(parsed.bind_port, 4101);
         assert_eq!(parsed.seed_jobs.len(), 1);
         assert!(parsed.chain.is_none());
+        assert_eq!(parsed.message_signature_policy, MessageSignaturePolicy::Required);
     }
 
     #[test]
@@ -752,6 +760,7 @@ mod tests {
             "me_seed": 1,
             "bind_port": 4101,
             "registry_path": "/tmp/r.json",
+            "message_signature_policy": "local-testnet-disabled",
             "chain": {
                 "rpc_ws": "ws://127.0.0.1:8545",
                 "agent_registry": "0x5FbDB2315678afecb367f032d93F642f64180aa3"
@@ -761,6 +770,7 @@ mod tests {
         let chain = parsed.chain.expect("chain present");
         assert_eq!(chain.rpc_ws, "ws://127.0.0.1:8545");
         assert!(parsed.seed_jobs.is_empty());
+        assert_eq!(parsed.message_signature_policy, MessageSignaturePolicy::LocalTestnetDisabled);
     }
 
     #[test]
@@ -776,6 +786,7 @@ mod tests {
         assert!(!parsed.drive);
         assert!(parsed.seed_jobs.is_empty());
         assert_eq!(parsed.bootstrappers.len(), 0);
+        assert_eq!(parsed.message_signature_policy, MessageSignaturePolicy::Required);
     }
 
     #[test]
