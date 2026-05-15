@@ -158,8 +158,20 @@ impl Cli {
             .map_err(|e| eyre::eyre!("Failed to load genesis: {}", e))?;
         tracing::info!(allocations = bootstrap.genesis_alloc.len(), "Loaded genesis configuration");
 
-        let rpc_addr: std::net::SocketAddr = "0.0.0.0:8545".parse()?;
-        let node_state = NodeState::new(config.chain_id, dkg_output.share_index);
+        let rpc_addr: std::net::SocketAddr = config.rpc.http_addr.parse().map_err(|err| {
+            eyre::eyre!("invalid rpc.http_addr '{}': {}", config.rpc.http_addr, err)
+        })?;
+        let validator_count = u32::try_from(dkg_output.participants).map_err(|_| {
+            eyre::eyre!("DKG participant count {} exceeds u32::MAX", dkg_output.participants)
+        })?;
+        if validator_count == 0 {
+            return Err(eyre::eyre!("DKG participant count must be non-zero"));
+        }
+        let node_state = NodeState::with_validator_count(
+            config.chain_id,
+            dkg_output.share_index,
+            validator_count,
+        );
 
         let runner =
             ProductionRunner::new(scheme, config.chain_id, config.execution.gas_limit, bootstrap)

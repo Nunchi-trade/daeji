@@ -24,7 +24,7 @@ mod server;
 pub use server::{JsonRpcServer, RpcServer, RpcServerHandle, ServerError};
 
 mod state;
-pub use state::{NodeState, NodeStatus};
+pub use state::{DEFAULT_VALIDATOR_COUNT, NodeState, NodeStatus};
 
 mod state_provider;
 pub use state_provider::{NoopStateProvider, StateProvider};

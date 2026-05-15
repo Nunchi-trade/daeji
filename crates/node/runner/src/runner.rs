@@ -16,7 +16,7 @@ use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519};
 use commonware_p2p::{Manager, TrackedPeers};
 use commonware_parallel::Sequential;
 use commonware_runtime::{Metrics as _, Spawner, buffer::paged::CacheRef, tokio};
-use commonware_utils::{NZU64, NZUsize, acknowledgement::Exact, ordered::Set};
+use commonware_utils::{NZU64, acknowledgement::Exact, ordered::Set};
 use futures::StreamExt;
 use kora_domain::{Block, BlockCfg, BootstrapConfig, ConsensusDigest, LedgerEvent, Tx, TxCfg};
 use kora_executor::{BlockContext, RevmExecutor};
@@ -31,10 +31,6 @@ use tracing::{debug, info, trace, warn};
 
 use crate::{RevmApplication, RunnerError, scheme::ThresholdScheme};
 
-const BLOCK_CODEC_MAX_TXS: usize = 10_000;
-// Large enough for a devnet stress batch of 10k signed transfers while still
-// preserving the per-transaction 128 KiB admission limit in the tx validator.
-const BLOCK_CODEC_MAX_TX_BYTES: usize = 8 * 1024 * 1024;
 const EPOCH_LENGTH: u64 = u64::MAX;
 const PARTITION_PREFIX: &str = "kora";
 
@@ -47,8 +43,11 @@ fn default_page_cache(context: &tokio::Context) -> CacheRef {
     DefaultPool::init(context)
 }
 
-const fn block_codec_cfg() -> BlockCfg {
-    BlockCfg { max_txs: BLOCK_CODEC_MAX_TXS, tx: TxCfg { max_tx_bytes: BLOCK_CODEC_MAX_TX_BYTES } }
+fn block_codec_cfg(config: &kora_config::ConsensusBlockCodecConfig) -> BlockCfg {
+    BlockCfg {
+        max_txs: config.max_txs.get(),
+        tx: TxCfg { max_tx_bytes: config.max_tx_bytes.get() },
+    }
 }
 
 #[derive(Clone)]
@@ -201,6 +200,8 @@ impl NodeRunner for ProductionRunner {
 
     async fn run(&self, ctx: NodeRunContext<Self::Transport>) -> Result<Self::Handle, Self::Error> {
         let (context, config, mut transport) = ctx.into_parts();
+        let gas_limit = config.execution.gas_limit;
+        let simplex_config = config.consensus.simplex;
 
         info!(chain_id = self.chain_id, "Starting production validator");
 
@@ -215,7 +216,7 @@ impl NodeRunner for ProductionRunner {
         );
 
         let page_cache = default_page_cache(&context);
-        let block_cfg = block_codec_cfg();
+        let block_cfg = block_codec_cfg(&config.consensus.block_codec);
 
         let state = LedgerView::init(
             context.with_label("state"),
@@ -285,7 +286,7 @@ impl NodeRunner for ProductionRunner {
         let my_pk = commonware_cryptography::Signer::public_key(&validator_key);
 
         let executor = RevmExecutor::new(self.chain_id);
-        let context_provider = RevmContextProvider { gas_limit: self.gas_limit };
+        let context_provider = RevmContextProvider { gas_limit };
         let mut finalized_reporter =
             FinalizedReporter::new(ledger.clone(), context.clone(), executor, context_provider);
         if let Some(block_index) = block_index {
@@ -346,7 +347,7 @@ impl NodeRunner for ProductionRunner {
             ledger.clone(),
             executor,
             block_cfg.max_txs,
-            self.gas_limit,
+            gas_limit,
         );
         if let Some((state, _)) = &self.rpc_config {
             app = app.with_node_state(state.clone());
@@ -380,15 +381,17 @@ impl NodeRunner for ProductionRunner {
                 partition: self.partition_prefix.clone(),
                 mailbox_size: MAILBOX_SIZE,
                 epoch: Epoch::zero(),
-                replay_buffer: NZUsize!(16 * 1024 * 1024),
-                write_buffer: NZUsize!(16 * 1024 * 1024),
-                leader_timeout: Duration::from_secs(5),
-                certification_timeout: Duration::from_secs(10),
-                timeout_retry: Duration::from_secs(2),
-                fetch_timeout: Duration::from_secs(5),
-                activity_timeout: ViewDelta::new(20),
-                skip_timeout: ViewDelta::new(10),
-                fetch_concurrent: 8,
+                replay_buffer: simplex_config.replay_buffer_bytes,
+                write_buffer: simplex_config.write_buffer_bytes,
+                leader_timeout: Duration::from_secs(simplex_config.leader_timeout_secs.get()),
+                certification_timeout: Duration::from_secs(
+                    simplex_config.certification_timeout_secs.get(),
+                ),
+                timeout_retry: Duration::from_secs(simplex_config.timeout_retry_secs.get()),
+                fetch_timeout: Duration::from_secs(simplex_config.fetch_timeout_secs.get()),
+                activity_timeout: ViewDelta::new(simplex_config.activity_timeout_views.get()),
+                skip_timeout: ViewDelta::new(simplex_config.skip_timeout_views.get()),
+                fetch_concurrent: simplex_config.fetch_concurrent.get(),
                 page_cache,
                 forwarding: simplex::ForwardingPolicy::Disabled,
             },
@@ -397,5 +400,27 @@ impl NodeRunner for ProductionRunner {
 
         info!("Validator started successfully");
         Ok(ledger)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroUsize;
+
+    use kora_config::ConsensusBlockCodecConfig;
+
+    use super::*;
+
+    #[test]
+    fn block_codec_cfg_uses_consensus_config() {
+        let config = ConsensusBlockCodecConfig {
+            max_txs: NonZeroUsize::new(512).unwrap(),
+            max_tx_bytes: NonZeroUsize::new(4096).unwrap(),
+        };
+
+        let block_cfg = block_codec_cfg(&config);
+
+        assert_eq!(block_cfg.max_txs, 512);
+        assert_eq!(block_cfg.tx.max_tx_bytes, 4096);
     }
 }

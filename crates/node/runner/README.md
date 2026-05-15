@@ -28,17 +28,20 @@ let scheme = load_threshold_scheme("/path/to/dkg/output")?;
 // Create bootstrap configuration with genesis allocations
 let bootstrap = BootstrapConfig::default();
 
+// Load node configuration
+let config = NodeConfig::load("/path/to/config.toml")?;
+let rpc_addr = config.rpc.http_addr.parse()?;
+
 // Create the runner
 let runner = ProductionRunner::new(
     scheme,
-    1337,           // chain ID
-    30_000_000,     // gas limit
+    config.chain_id,
+    config.execution.gas_limit,
     bootstrap,
 )
-.with_rpc(node_state, "0.0.0.0:8545".parse().unwrap());
+.with_rpc(node_state, rpc_addr);
 
 // Run as standalone process (blocks until shutdown)
-let config = NodeConfig::load("/path/to/config.toml")?;
 runner.run_standalone(config)?;
 ```
 
