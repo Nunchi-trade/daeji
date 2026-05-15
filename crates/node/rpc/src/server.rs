@@ -17,6 +17,7 @@ use crate::{
     kora::{KoraApiImpl, KoraApiServer},
     state::NodeState,
     state_provider::{NoopStateProvider, StateProvider},
+    subscription::{MempoolEventSender, PendingTxEventSender, subscription_module},
 };
 
 /// Error type for RPC server operations.
@@ -79,6 +80,8 @@ pub struct RpcServer<S: StateProvider = NoopStateProvider> {
     cors_config: CorsConfig,
     max_connections: u32,
     peer_count: u64,
+    pending_tx_broadcast: Option<PendingTxEventSender>,
+    mempool_broadcast: Option<MempoolEventSender>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for RpcServer<S> {
@@ -89,6 +92,8 @@ impl<S: StateProvider> std::fmt::Debug for RpcServer<S> {
             .field("jsonrpc_addr", &self.jsonrpc_addr)
             .field("chain_id", &self.chain_id)
             .field("tx_submit", &self.tx_submit.is_some())
+            .field("pending_tx_broadcast", &self.pending_tx_broadcast.is_some())
+            .field("mempool_broadcast", &self.mempool_broadcast.is_some())
             .finish()
     }
 }
@@ -113,6 +118,8 @@ impl RpcServer<NoopStateProvider> {
             cors_config: CorsConfig::default(),
             max_connections: 100,
             peer_count: 0,
+            pending_tx_broadcast: None,
+            mempool_broadcast: None,
         }
     }
 
@@ -128,6 +135,8 @@ impl RpcServer<NoopStateProvider> {
             cors_config: CorsConfig::default(),
             max_connections: 100,
             peer_count: 0,
+            pending_tx_broadcast: None,
+            mempool_broadcast: None,
         }
     }
 }
@@ -150,6 +159,8 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             cors_config: CorsConfig::default(),
             max_connections: 100,
             peer_count: 0,
+            pending_tx_broadcast: None,
+            mempool_broadcast: None,
         }
     }
 
@@ -157,6 +168,20 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
     #[must_use]
     pub fn with_tx_submit(mut self, tx_submit: TxSubmitCallback) -> Self {
         self.tx_submit = Some(tx_submit);
+        self
+    }
+
+    /// Set the pending transaction broadcast channel used by subscriptions.
+    #[must_use]
+    pub fn with_pending_tx_broadcast(mut self, pending_tx_broadcast: PendingTxEventSender) -> Self {
+        self.pending_tx_broadcast = Some(pending_tx_broadcast);
+        self
+    }
+
+    /// Set the Kora mempool lifecycle broadcast channel used by subscriptions.
+    #[must_use]
+    pub fn with_mempool_broadcast(mut self, mempool_broadcast: MempoolEventSender) -> Self {
+        self.mempool_broadcast = Some(mempool_broadcast);
         self
     }
 
@@ -193,6 +218,8 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             cors_config: config.cors,
             max_connections: config.max_connections,
             peer_count: 0,
+            pending_tx_broadcast: None,
+            mempool_broadcast: None,
         }
     }
 
@@ -210,6 +237,8 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         let max_connections = self.max_connections;
         let state_provider = self.state_provider;
         let peer_count = self.peer_count;
+        let pending_tx_broadcast = self.pending_tx_broadcast;
+        let mempool_broadcast = self.mempool_broadcast;
 
         let http_handle = tokio::spawn(async move {
             let app = Router::new()
@@ -247,14 +276,30 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
                 }
             };
 
-            let eth_api = tx_submit.map_or_else(
+            let mut eth_api = tx_submit.map_or_else(
                 || EthApiImpl::new(chain_id, state_provider.clone()),
                 |submit| EthApiImpl::with_tx_submit(chain_id, state_provider.clone(), submit),
             );
+            if let Some(sender) = pending_tx_broadcast.clone() {
+                eth_api = eth_api.with_pending_tx_broadcast(sender);
+            }
+            if let Some(sender) = mempool_broadcast.clone() {
+                eth_api = eth_api.with_mempool_broadcast(sender);
+            }
             let net_api = NetApiImpl::new(chain_id);
             net_api.set_peer_count(peer_count);
             let web3_api = Web3ApiImpl::new();
             let kora_api = KoraApiImpl::new(node_state_for_jsonrpc);
+            let subscription_api = match subscription_module(
+                pending_tx_broadcast.clone(),
+                mempool_broadcast.clone(),
+            ) {
+                Ok(api) => api,
+                Err(e) => {
+                    error!(error = %e, "Failed to build subscription API");
+                    return None;
+                }
+            };
 
             let mut module = jsonrpsee::RpcModule::new(());
             if let Err(e) = module.merge(eth_api.into_rpc()) {
@@ -271,6 +316,10 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             }
             if let Err(e) = module.merge(kora_api.into_rpc()) {
                 error!(error = %e, "Failed to merge kora API");
+                return None;
+            }
+            if let Err(e) = module.merge(subscription_api) {
+                error!(error = %e, "Failed to merge subscription API");
                 return None;
             }
 
@@ -327,6 +376,8 @@ pub struct JsonRpcServer<S: StateProvider = NoopStateProvider> {
     state_provider: S,
     max_connections: u32,
     peer_count: u64,
+    pending_tx_broadcast: Option<PendingTxEventSender>,
+    mempool_broadcast: Option<MempoolEventSender>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for JsonRpcServer<S> {
@@ -335,6 +386,8 @@ impl<S: StateProvider> std::fmt::Debug for JsonRpcServer<S> {
             .field("addr", &self.addr)
             .field("chain_id", &self.chain_id)
             .field("tx_submit", &self.tx_submit.is_some())
+            .field("pending_tx_broadcast", &self.pending_tx_broadcast.is_some())
+            .field("mempool_broadcast", &self.mempool_broadcast.is_some())
             .finish()
     }
 }
@@ -349,6 +402,8 @@ impl JsonRpcServer<NoopStateProvider> {
             state_provider: NoopStateProvider,
             max_connections: 100,
             peer_count: 0,
+            pending_tx_broadcast: None,
+            mempool_broadcast: None,
         }
     }
 }
@@ -363,6 +418,8 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
             state_provider,
             max_connections: 100,
             peer_count: 0,
+            pending_tx_broadcast: None,
+            mempool_broadcast: None,
         }
     }
 
@@ -370,6 +427,20 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
     #[must_use]
     pub fn with_tx_submit(mut self, tx_submit: TxSubmitCallback) -> Self {
         self.tx_submit = Some(tx_submit);
+        self
+    }
+
+    /// Set the pending transaction broadcast channel used by subscriptions.
+    #[must_use]
+    pub fn with_pending_tx_broadcast(mut self, pending_tx_broadcast: PendingTxEventSender) -> Self {
+        self.pending_tx_broadcast = Some(pending_tx_broadcast);
+        self
+    }
+
+    /// Set the Kora mempool lifecycle broadcast channel used by subscriptions.
+    #[must_use]
+    pub fn with_mempool_broadcast(mut self, mempool_broadcast: MempoolEventSender) -> Self {
+        self.mempool_broadcast = Some(mempool_broadcast);
         self
     }
 
@@ -395,18 +466,27 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
             .await
             .map_err(|e| ServerError::Build(e.to_string()))?;
 
-        let eth_api = self.tx_submit.map_or_else(
+        let mut eth_api = self.tx_submit.map_or_else(
             || EthApiImpl::new(self.chain_id, self.state_provider.clone()),
             |submit| EthApiImpl::with_tx_submit(self.chain_id, self.state_provider.clone(), submit),
         );
+        if let Some(sender) = self.pending_tx_broadcast.clone() {
+            eth_api = eth_api.with_pending_tx_broadcast(sender);
+        }
+        if let Some(sender) = self.mempool_broadcast.clone() {
+            eth_api = eth_api.with_mempool_broadcast(sender);
+        }
         let net_api = NetApiImpl::new(self.chain_id);
         net_api.set_peer_count(self.peer_count);
         let web3_api = Web3ApiImpl::new();
+        let subscription_api =
+            subscription_module(self.pending_tx_broadcast, self.mempool_broadcast)?;
 
         let mut module = jsonrpsee::RpcModule::new(());
         module.merge(eth_api.into_rpc())?;
         module.merge(net_api.into_rpc())?;
         module.merge(web3_api.into_rpc())?;
+        module.merge(subscription_api)?;
 
         info!(addr = %self.addr, "Starting JSON-RPC server");
 
