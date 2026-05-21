@@ -186,24 +186,39 @@ impl TransactionPool {
         self.inner.read().by_hash.get(hash).cloned()
     }
 
-    /// Removes a transaction by its hash.
-    pub fn remove(&self, hash: &B256) -> Option<OrderedTransaction> {
-        let mut inner = self.inner.write();
+    /// Removes a transaction by its hash, emitting a `TxEvicted` event with the
+    /// provided `reason`.
+    pub fn remove_with_reason(&self, hash: &B256, reason: &str) -> Option<OrderedTransaction> {
+        let tx = {
+            let mut inner = self.inner.write();
 
-        let tx = inner.by_hash.remove(hash)?;
-        let sender = tx.sender;
+            let tx = inner.by_hash.remove(hash)?;
+            let sender = tx.sender;
 
-        if let Some(queue) = inner.by_sender.get_mut(&sender) {
-            queue.pending.retain(|t| t.hash != *hash);
-            queue.queued.retain(|t| t.hash != *hash);
+            if let Some(queue) = inner.by_sender.get_mut(&sender) {
+                queue.pending.retain(|t| t.hash != *hash);
+                queue.queued.retain(|t| t.hash != *hash);
 
-            if queue.is_empty() {
-                inner.by_sender.remove(&sender);
+                if queue.is_empty() {
+                    inner.by_sender.remove(&sender);
+                }
             }
+
+            inner.update_counts();
+            tx
+        };
+
+        if let Some(events) = &self.events {
+            let _ =
+                events.send(MempoolEvent::TxEvicted { hash: *hash, reason: reason.to_string() });
         }
 
-        inner.update_counts();
         Some(tx)
+    }
+
+    /// Removes a transaction by its hash.
+    pub fn remove(&self, hash: &B256) -> Option<OrderedTransaction> {
+        self.remove_with_reason(hash, "removed")
     }
 
     /// Removes confirmed transactions for a sender up to the given nonce.
@@ -643,6 +658,46 @@ mod tests {
         assert_eq!(txs.len(), 2);
         assert_eq!(tx_nonce(&txs[0]), tx1.nonce);
         assert_eq!(tx_nonce(&txs[1]), tx2.nonce);
+    }
+
+    #[test]
+    fn pool_remove_broadcasts_tx_evicted() {
+        let (events, mut receiver) = broadcast::channel(16);
+        let pool = TransactionPool::new_with_events(PoolConfig::default(), events);
+        let sender = random_address();
+        let tx = make_ordered_tx(sender, 0, 100);
+        let hash = tx.hash;
+
+        pool.add(tx).unwrap();
+        // drain the TxAdded event
+        let _ = receiver.try_recv().unwrap();
+
+        pool.remove(&hash);
+
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            MempoolEvent::TxEvicted { hash, reason: "removed".to_string() }
+        );
+    }
+
+    #[test]
+    fn pool_remove_with_reason_broadcasts_custom_reason() {
+        let (events, mut receiver) = broadcast::channel(16);
+        let pool = TransactionPool::new_with_events(PoolConfig::default(), events);
+        let sender = random_address();
+        let tx = make_ordered_tx(sender, 0, 100);
+        let hash = tx.hash;
+
+        pool.add(tx).unwrap();
+        // drain the TxAdded event
+        let _ = receiver.try_recv().unwrap();
+
+        pool.remove_with_reason(&hash, "expired");
+
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            MempoolEvent::TxEvicted { hash, reason: "expired".to_string() }
+        );
     }
 
     #[test]
