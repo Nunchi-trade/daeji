@@ -188,56 +188,56 @@ const fn default_threshold() -> u32 {
     DEFAULT_THRESHOLD
 }
 
-fn default_block_codec_max_txs() -> NonZeroUsize {
+const fn default_block_codec_max_txs() -> NonZeroUsize {
     NonZeroUsize::new(DEFAULT_BLOCK_CODEC_MAX_TXS).expect("default block codec max txs is non-zero")
 }
 
-fn default_block_codec_max_tx_bytes() -> NonZeroUsize {
+const fn default_block_codec_max_tx_bytes() -> NonZeroUsize {
     NonZeroUsize::new(DEFAULT_BLOCK_CODEC_MAX_TX_BYTES)
         .expect("default block codec max tx bytes is non-zero")
 }
 
-fn default_simplex_replay_buffer_bytes() -> NonZeroUsize {
+const fn default_simplex_replay_buffer_bytes() -> NonZeroUsize {
     NonZeroUsize::new(DEFAULT_SIMPLEX_REPLAY_BUFFER_BYTES)
         .expect("default simplex replay buffer is non-zero")
 }
 
-fn default_simplex_write_buffer_bytes() -> NonZeroUsize {
+const fn default_simplex_write_buffer_bytes() -> NonZeroUsize {
     NonZeroUsize::new(DEFAULT_SIMPLEX_WRITE_BUFFER_BYTES)
         .expect("default simplex write buffer is non-zero")
 }
 
-fn default_simplex_leader_timeout_secs() -> NonZeroU64 {
+const fn default_simplex_leader_timeout_secs() -> NonZeroU64 {
     NonZeroU64::new(DEFAULT_SIMPLEX_LEADER_TIMEOUT_SECS)
         .expect("default simplex leader timeout is non-zero")
 }
 
-fn default_simplex_certification_timeout_secs() -> NonZeroU64 {
+const fn default_simplex_certification_timeout_secs() -> NonZeroU64 {
     NonZeroU64::new(DEFAULT_SIMPLEX_CERTIFICATION_TIMEOUT_SECS)
         .expect("default simplex certification timeout is non-zero")
 }
 
-fn default_simplex_timeout_retry_secs() -> NonZeroU64 {
+const fn default_simplex_timeout_retry_secs() -> NonZeroU64 {
     NonZeroU64::new(DEFAULT_SIMPLEX_TIMEOUT_RETRY_SECS)
         .expect("default simplex retry timeout is non-zero")
 }
 
-fn default_simplex_fetch_timeout_secs() -> NonZeroU64 {
+const fn default_simplex_fetch_timeout_secs() -> NonZeroU64 {
     NonZeroU64::new(DEFAULT_SIMPLEX_FETCH_TIMEOUT_SECS)
         .expect("default simplex fetch timeout is non-zero")
 }
 
-fn default_simplex_activity_timeout_views() -> NonZeroU64 {
+const fn default_simplex_activity_timeout_views() -> NonZeroU64 {
     NonZeroU64::new(DEFAULT_SIMPLEX_ACTIVITY_TIMEOUT_VIEWS)
         .expect("default simplex activity timeout is non-zero")
 }
 
-fn default_simplex_skip_timeout_views() -> NonZeroU64 {
+const fn default_simplex_skip_timeout_views() -> NonZeroU64 {
     NonZeroU64::new(DEFAULT_SIMPLEX_SKIP_TIMEOUT_VIEWS)
         .expect("default simplex skip timeout is non-zero")
 }
 
-fn default_simplex_fetch_concurrent() -> NonZeroUsize {
+const fn default_simplex_fetch_concurrent() -> NonZeroUsize {
     NonZeroUsize::new(DEFAULT_SIMPLEX_FETCH_CONCURRENT)
         .expect("default simplex fetch concurrency is non-zero")
 }

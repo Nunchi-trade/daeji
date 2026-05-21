@@ -13,7 +13,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 /// Default validator count used by tests and legacy callers.
-pub const DEFAULT_VALIDATOR_COUNT: u32 = 4;
+pub(crate) const DEFAULT_VALIDATOR_COUNT: u32 = 4;
 
 /// Shared node state that can be updated by the consensus engine.
 #[derive(Debug, Clone)]
@@ -49,11 +49,16 @@ impl NodeState {
     ///
     /// # Panics
     ///
-    /// Panics if `validator_count` is zero.
+    /// Panics if `validator_count` is zero or if `validator_index >= validator_count`.
     #[must_use]
     pub fn with_validator_count(chain_id: u64, validator_index: u32, validator_count: u32) -> Self {
         let validator_count =
             NonZeroU32::new(validator_count).expect("validator count must be non-zero");
+
+        assert!(
+            validator_index < validator_count.get(),
+            "validator_index ({validator_index}) must be less than validator_count ({validator_count})",
+        );
 
         Self {
             inner: Arc::new(NodeStateInner {
@@ -247,6 +252,12 @@ mod tests {
     #[should_panic(expected = "validator count must be non-zero")]
     fn node_state_validator_count_must_be_nonzero() {
         let _ = NodeState::with_validator_count(1, 0, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "validator_index (5) must be less than validator_count (4)")]
+    fn node_state_validator_index_must_be_in_range() {
+        let _ = NodeState::with_validator_count(1, 5, 4);
     }
 
     #[test]

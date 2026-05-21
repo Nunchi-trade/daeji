@@ -43,7 +43,7 @@ fn default_page_cache(context: &tokio::Context) -> CacheRef {
     DefaultPool::init(context)
 }
 
-fn block_codec_cfg(config: &kora_config::ConsensusBlockCodecConfig) -> BlockCfg {
+const fn block_codec_cfg(config: &kora_config::ConsensusBlockCodecConfig) -> BlockCfg {
     BlockCfg {
         max_txs: config.max_txs.get(),
         tx: TxCfg { max_tx_bytes: config.max_tx_bytes.get() },
@@ -117,8 +117,6 @@ pub struct ProductionRunner {
     pub scheme: ThresholdScheme,
     /// Chain ID.
     pub chain_id: u64,
-    /// Gas limit per block.
-    pub gas_limit: u64,
     /// Bootstrap configuration.
     pub bootstrap: BootstrapConfig,
     /// Storage partition prefix.
@@ -131,16 +129,13 @@ pub struct ProductionRunner {
 
 impl ProductionRunner {
     /// Create a new production runner.
-    pub fn new(
-        scheme: ThresholdScheme,
-        chain_id: u64,
-        gas_limit: u64,
-        bootstrap: BootstrapConfig,
-    ) -> Self {
+    ///
+    /// The gas limit is sourced exclusively from `config.execution.gas_limit`
+    /// at runtime, so it is not accepted here.
+    pub fn new(scheme: ThresholdScheme, chain_id: u64, bootstrap: BootstrapConfig) -> Self {
         Self {
             scheme,
             chain_id,
-            gas_limit,
             bootstrap,
             partition_prefix: PARTITION_PREFIX.to_string(),
             rpc_config: None,

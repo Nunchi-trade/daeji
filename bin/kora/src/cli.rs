@@ -167,16 +167,17 @@ impl Cli {
         if validator_count == 0 {
             return Err(eyre::eyre!("DKG participant count must be non-zero"));
         }
-        let node_state = NodeState::with_validator_count(
-            config.chain_id,
-            dkg_output.share_index,
-            validator_count,
-        );
+        // share_index from DKG is 1-indexed; convert to 0-based for leader election.
+        let validator_index = dkg_output
+            .share_index
+            .checked_sub(1)
+            .ok_or_else(|| eyre::eyre!("DKG share_index is 0 but must be >= 1 (1-indexed)"))?;
+        let node_state =
+            NodeState::with_validator_count(config.chain_id, validator_index, validator_count);
 
-        let runner =
-            ProductionRunner::new(scheme, config.chain_id, config.execution.gas_limit, bootstrap)
-                .with_rpc(node_state, rpc_addr)
-                .with_secondary_peers(secondary_participants);
+        let runner = ProductionRunner::new(scheme, config.chain_id, bootstrap)
+            .with_rpc(node_state, rpc_addr)
+            .with_secondary_peers(secondary_participants);
 
         runner.run_standalone(config).map_err(|e| eyre::eyre!("Runner failed: {}", e.0))
     }
