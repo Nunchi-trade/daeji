@@ -1,0 +1,23 @@
+[package]
+name = "chat-transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Chat-transport abstraction — pluggable trait so lobby/marketplace code is independent of the concrete chat implementation"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util", "macros"] }
