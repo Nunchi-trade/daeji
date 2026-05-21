@@ -1,0 +1,35 @@
+[package]
+name = "daeji-indexer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Off-chain event indexer for the daeji agent-coordination layer (canonical-plan §D3 + §H)."
+
+[lints]
+workspace = true
+
+[dependencies]
+# core
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+tracing.workspace = true
+hex.workspace = true
+eyre.workspace = true
+clap = { version = "4.5", features = ["derive", "env"] }
+
+tracing-subscriber.workspace = true
+
+# HTTP server
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# chain client (alloy WS subscriptions for AgentRegistered + JobAwarded)
+alloy = { version = "2.0.4", features = ["full", "providers", "rpc-types-eth", "sol-types", "contract", "network"] }
+futures = "0.3"
+
+[[bin]]
+name = "daeji-indexer"
+path = "src/main.rs"
