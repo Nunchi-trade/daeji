@@ -8,7 +8,9 @@ use kora_domain::Tx;
 use kora_traits::StateDbRead;
 use sha3::{Digest, Keccak256};
 
-use crate::{config::PoolConfig, error::TxPoolError, ordering::OrderedTransaction, pool::TransactionPool};
+use crate::{
+    config::PoolConfig, error::TxPoolError, ordering::OrderedTransaction, pool::TransactionPool,
+};
 
 const TX_BASE_GAS: u64 = 21000;
 const TX_DATA_ZERO_GAS: u64 = 4;
@@ -49,7 +51,7 @@ pub struct TransactionValidator<S> {
 
 impl<S: StateDbRead> TransactionValidator<S> {
     /// Creates a new transaction validator.
-    pub fn new(chain_id: u64, state: S, config: PoolConfig) -> Self {
+    pub const fn new(chain_id: u64, state: S, config: PoolConfig) -> Self {
         Self { chain_id, state, config, pool: None }
     }
 
@@ -111,10 +113,10 @@ impl<S: StateDbRead> TransactionValidator<S> {
         // Reject if the pool already contains a transaction from this sender
         // with the same nonce.  This prevents same-nonce conflicts from
         // passing validation when only finalized state is checked.
-        if let Some(pool) = &self.pool {
-            if pool.has_nonce(&sender, nonce) {
-                return Err(TxPoolError::NonceAlreadyInPool { sender, nonce });
-            }
+        if let Some(pool) = &self.pool
+            && pool.has_nonce(&sender, nonce)
+        {
+            return Err(TxPoolError::NonceAlreadyInPool { sender, nonce });
         }
 
         let max_cost = max_tx_cost(&envelope);
