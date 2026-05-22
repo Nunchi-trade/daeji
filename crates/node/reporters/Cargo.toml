@@ -33,6 +33,9 @@ alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 
+# Async runtime
+tokio.workspace = true
+
 # Tracing
 tracing.workspace = true
 

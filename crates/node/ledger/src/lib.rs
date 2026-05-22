@@ -413,7 +413,7 @@ impl LedgerView {
         };
 
         let result = qmdb.commit_changes(changes).await;
-        let snapshots_handle = {
+        {
             let inner = self.inner.lock().await;
             inner.snapshots.clear_persisting_chain(&chain);
             match result {
@@ -437,15 +437,16 @@ impl LedgerView {
                         );
                     }
                     inner.snapshots.mark_persisted(&chain);
-                    Ok(inner.snapshots.clone())
+                    // Evict oldest persisted snapshots to bound memory usage.
+                    // Must happen inside the ledger mutex to prevent a TOCTOU
+                    // race where another thread reads a snapshot between
+                    // mark_persisted() and eviction.
+                    inner.snapshots.evict_persisted();
+                    Ok(())
                 }
                 Err(err) => Err(LedgerError::from(err)),
             }
         }?;
-        // Evict oldest persisted snapshots to bound memory usage.
-        // Done outside the `inner` mutex since `InMemorySnapshotStore` uses
-        // its own fine-grained `RwLock`s internally.
-        snapshots_handle.evict_persisted();
         Ok(true)
     }
 

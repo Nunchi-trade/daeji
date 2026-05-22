@@ -6,7 +6,7 @@
 
 mod gc_log;
 
-use std::{fmt, marker::PhantomData, sync::Arc};
+use std::{fmt, marker::PhantomData, sync::Arc, time::Duration};
 
 use alloy_consensus::{
     Transaction as _, TxEnvelope,
@@ -190,7 +190,34 @@ where
             trace!(?digest, "missing snapshot for finalized block; re-executing");
         }
         let parent_digest = block.parent();
-        if let Some(parent_snapshot) = state.parent_snapshot(parent_digest).await {
+
+        // Retry parent snapshot lookup with exponential backoff. A concurrent
+        // persist_snapshot() call may be evicting or replacing snapshots; a
+        // brief retry window avoids spurious "missing parent" failures that
+        // would otherwise nullify the view.
+        const MAX_PARENT_RETRIES: u32 = 3;
+        const PARENT_RETRY_BASE_MS: u64 = 10;
+
+        let mut parent_snapshot = state.parent_snapshot(parent_digest).await;
+        if parent_snapshot.is_none() && !snapshot_exists {
+            for attempt in 1..=MAX_PARENT_RETRIES {
+                let delay = Duration::from_millis(PARENT_RETRY_BASE_MS << (attempt - 1));
+                warn!(
+                    ?digest,
+                    ?parent_digest,
+                    attempt,
+                    ?delay,
+                    "parent snapshot not found, retrying"
+                );
+                ::tokio::time::sleep(delay).await;
+                parent_snapshot = state.parent_snapshot(parent_digest).await;
+                if parent_snapshot.is_some() {
+                    break;
+                }
+            }
+        }
+
+        if let Some(parent_snapshot) = parent_snapshot {
             let block_context = provider.context(block);
             let execution = match BlockExecution::execute(
                 &parent_snapshot,
@@ -252,7 +279,7 @@ where
                 "missing parent snapshot for cached finalized block; skipping RPC indexing replay"
             );
         } else {
-            error!(?digest, ?parent_digest, "missing parent snapshot for finalized block");
+            error!(?digest, ?parent_digest, "missing parent snapshot for finalized block after retries");
             return Err(());
         }
     } else {
