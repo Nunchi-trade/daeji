@@ -504,7 +504,7 @@ impl NodeRunner for ProductionRunner {
                 let listener = match tokio::net::TcpListener::bind(metrics_addr).await {
                     Ok(l) => l,
                     Err(e) => {
-                        error!(error = %e, "Failed to bind metrics server");
+                        error!(addr = %metrics_addr, error = %e, "Failed to bind metrics server");
                         return;
                     }
                 };
