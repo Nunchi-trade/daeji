@@ -5,7 +5,6 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 mod gc_log;
-pub use gc_log::SelfdestructGcLog;
 
 use std::{fmt, marker::PhantomData, sync::Arc};
 
@@ -26,6 +25,7 @@ use commonware_consensus::{
 use commonware_cryptography::{Committable as _, bls12381::primitives::variant::Variant};
 use commonware_runtime::{Spawner as _, tokio};
 use commonware_utils::acknowledgement::Acknowledgement as _;
+pub use gc_log::SelfdestructGcLog;
 use kora_consensus::BlockExecution;
 use kora_domain::{Block, ConsensusDigest, MempoolEvent, PublicKey};
 use kora_executor::{BlockContext, BlockExecutor, ExecutionOutcome};
@@ -108,6 +108,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_finalized_update<E, P>(
     state: LedgerService,
     context: tokio::Context,
@@ -140,10 +141,10 @@ async fn handle_finalized_update<E, P>(
                 }
 
                 // Record selfdestructed addresses for future GC.
-                if !outcome.selfdestructed_addresses.is_empty() {
-                    if let Some(ref log) = gc_log {
-                        log.record(block.height, &outcome.selfdestructed_addresses);
-                    }
+                if !outcome.selfdestructed_addresses.is_empty()
+                    && let Some(ref log) = gc_log
+                {
+                    log.record(block.height, &outcome.selfdestructed_addresses);
                 }
             }
 
