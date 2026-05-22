@@ -482,8 +482,7 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
                 let excess = txs.len() - cap;
                 warn!(
                     excess,
-                    cap,
-                    "pending transaction cache exceeded limit, evicting oldest entries"
+                    cap, "pending transaction cache exceeded limit, evicting oldest entries"
                 );
                 let mut evicted = 0;
                 let mut drained = 0usize;
@@ -500,8 +499,7 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
                 }
                 // Update the cumulative eviction offset so that filter
                 // cursors (which store absolute indices) remain correct.
-                self.pending_tx_evicted
-                    .fetch_add(drained, std::sync::atomic::Ordering::Relaxed);
+                self.pending_tx_evicted.fetch_add(drained, std::sync::atomic::Ordering::Relaxed);
             }
         }
 
@@ -810,8 +808,7 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
             FilterSnapshot::PendingTx { known_hashes, last_seen_index } => {
                 // Return new pending tx hashes in insertion order.
                 let tx_order = self.pending_tx_order.read().await;
-                let evicted =
-                    self.pending_tx_evicted.load(std::sync::atomic::Ordering::Relaxed);
+                let evicted = self.pending_tx_evicted.load(std::sync::atomic::Ordering::Relaxed);
                 // Convert the absolute cursor to a deque-relative offset.
                 // If entries were evicted past the cursor, start from the
                 // front of the deque (relative offset 0).
@@ -2406,8 +2403,8 @@ mod tests {
     #[tokio::test]
     async fn pending_tx_cache_evicts_oldest_when_over_limit() {
         let callback: TxSubmitCallback = Arc::new(move |_| Box::pin(async { Ok(()) }));
-        let api = EthApiImpl::with_tx_submit(1, NoopStateProvider, callback)
-            .with_max_pending_txs(3);
+        let api =
+            EthApiImpl::with_tx_submit(1, NoopStateProvider, callback).with_max_pending_txs(3);
 
         // Submit 4 transactions with a cap of 3.
         let h0 = EthApiServer::send_raw_transaction(&api, signed_test_tx(1, 0)).await.unwrap();
@@ -2429,8 +2426,8 @@ mod tests {
     #[tokio::test]
     async fn pending_tx_filter_works_after_eviction() {
         let callback: TxSubmitCallback = Arc::new(move |_| Box::pin(async { Ok(()) }));
-        let api = EthApiImpl::with_tx_submit(1, NoopStateProvider, callback)
-            .with_max_pending_txs(3);
+        let api =
+            EthApiImpl::with_tx_submit(1, NoopStateProvider, callback).with_max_pending_txs(3);
 
         // Submit 3 transactions, then create a filter.
         let _h0 = EthApiServer::send_raw_transaction(&api, signed_test_tx(1, 0)).await.unwrap();
