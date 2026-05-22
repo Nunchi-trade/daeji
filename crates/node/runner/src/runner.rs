@@ -22,7 +22,8 @@ use commonware_consensus::{
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519};
 use commonware_p2p::{Manager, TrackedPeers};
 use commonware_runtime::{
-    Clock as _, Metrics as _, Spawner, ThreadPooler as _, buffer::paged::CacheRef, tokio as cw_tokio,
+    Clock as _, Metrics as _, Spawner, ThreadPooler as _, buffer::paged::CacheRef,
+    tokio as cw_tokio,
 };
 use commonware_storage::archive::{Archive, Identifier as ArchiveId};
 use commonware_utils::{NZU64, NZUsize, acknowledgement::Exact, ordered::Set};
@@ -299,7 +300,7 @@ impl ProductionRunner {
 
     /// Configure Prometheus metrics server address.
     #[must_use]
-    pub fn with_metrics_addr(mut self, addr: std::net::SocketAddr) -> Self {
+    pub const fn with_metrics_addr(mut self, addr: std::net::SocketAddr) -> Self {
         self.metrics_addr = Some(addr);
         self
     }
