@@ -7,15 +7,16 @@
       - docker-buildx
     state: present
 
-- name: Configure Docker daemon (DNS)
+- name: Configure Docker daemon
   ansible.builtin.copy:
-    content: |
-      {
-        "dns": ["185.12.64.1", "185.12.64.2", "8.8.8.8", "1.1.1.1"]
-      }
+    content: "{{ docker_daemon_config | to_nice_json }}\n"
     dest: /etc/docker/daemon.json
     mode: "0644"
+  when: docker_dns_servers | default([]) | length > 0
   notify: restart docker
+  vars:
+    docker_daemon_config:
+      dns: "{{ docker_dns_servers }}"
 
 - name: Enable and start Docker
   ansible.builtin.systemd:

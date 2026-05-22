@@ -4,6 +4,7 @@
     src: nftables.conf.j2
     dest: /etc/nftables.conf
     mode: "0644"
+    validate: 'nft -c -f %s'
   notify: restart nftables
 
 - name: Enable and start nftables

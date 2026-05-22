@@ -38,16 +38,24 @@ table inet filter {
         tcp dport {{ prometheus_port }} accept
 
         # Grafana
+{% if trusted_ips | default([]) | length > 0 %}
+{% for ip in trusted_ips %}
+        ip saddr {{ ip }} tcp dport {{ grafana_port }} accept
+{% endfor %}
+{% else %}
+        # WARNING: Grafana is open to the world. Set 'trusted_ips' to restrict access.
         tcp dport {{ grafana_port }} accept
+{% endif %}
 
         # Log and drop
         log prefix "[nftables drop] " flags all counter drop
     }
 
     chain forward {
-        type filter hook forward priority 0; policy accept;
+        type filter hook forward priority 0; policy drop;
 
         # Allow Docker bridge traffic
+        iifname "docker0" oifname "docker0" accept
         ct state established,related accept
     }
 

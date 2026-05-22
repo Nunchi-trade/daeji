@@ -4,6 +4,8 @@
     cmd: >
       docker compose -f {{ compose_file }} --profile observability up -d
       prometheus loki promtail grafana
+  environment:
+    GF_SECURITY_ADMIN_PASSWORD: "{{ grafana_admin_password }}"
   changed_when: true
 
 - name: Wait for Prometheus to be ready
@@ -42,7 +44,7 @@
       Observability stack is ready!
         Prometheus: http://{{ ansible_host }}:{{ prometheus_port }}
         Loki:       http://{{ ansible_host }}:{{ loki_port }}
-        Grafana:    http://{{ ansible_host }}:{{ grafana_port }} (admin/admin)
+        Grafana:    http://{{ ansible_host }}:{{ grafana_port }} (user: admin, password set via grafana_admin_password)
       Dashboards:
         Overview:          http://{{ ansible_host }}:{{ grafana_port }}/d/kora-overview
         Performance:       http://{{ ansible_host }}:{{ grafana_port }}/d/kora-performance

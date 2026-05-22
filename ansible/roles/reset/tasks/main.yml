@@ -20,10 +20,17 @@
     cmd: docker image prune -f
   changed_when: true
 
-- name: Prune dangling volumes
+- name: Remove project volumes
+  ansible.builtin.shell: |
+    docker volume ls --quiet --filter "name={{ compose_project_name }}" | xargs -r docker volume rm
+  changed_when: true
+  failed_when: false
+
+- name: Prune all dangling volumes
   ansible.builtin.command:
     cmd: docker volume prune -f
   changed_when: true
+  when: reset_prune_all_volumes | default(false) | bool
 
 - name: Print reset status
   ansible.builtin.debug:
