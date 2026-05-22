@@ -74,6 +74,10 @@ pub enum RpcError {
     /// Method not implemented.
     #[error("method not implemented")]
     NotImplemented,
+
+    /// Unsupported operation (e.g. historical state queries).
+    #[error("unsupported: {0}")]
+    Unsupported(String),
 }
 
 impl From<RpcError> for ErrorObjectOwned {
@@ -89,6 +93,7 @@ impl From<RpcError> for ErrorObjectOwned {
             RpcError::StateError(_) => (codes::INTERNAL_ERROR, err.to_string()),
             RpcError::Internal(_) => (codes::INTERNAL_ERROR, err.to_string()),
             RpcError::NotImplemented => (codes::METHOD_NOT_SUPPORTED, err.to_string()),
+            RpcError::Unsupported(_) => (codes::METHOD_NOT_SUPPORTED, err.to_string()),
         };
         ErrorObjectOwned::owned(code, message, None::<()>)
     }
@@ -250,6 +255,20 @@ mod tests {
         let err = RpcError::NotImplemented;
         let obj: ErrorObjectOwned = err.into();
         assert_eq!(obj.code(), codes::METHOD_NOT_SUPPORTED);
+    }
+
+    #[test]
+    fn rpc_error_display_unsupported() {
+        let err = RpcError::Unsupported("historical state not available".to_string());
+        assert_eq!(err.to_string(), "unsupported: historical state not available");
+    }
+
+    #[test]
+    fn rpc_error_to_error_object_unsupported() {
+        let err = RpcError::Unsupported("historical state".to_string());
+        let obj: ErrorObjectOwned = err.into();
+        assert_eq!(obj.code(), codes::METHOD_NOT_SUPPORTED);
+        assert!(obj.message().contains("historical state"));
     }
 
     #[test]
