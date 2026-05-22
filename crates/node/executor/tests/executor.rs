@@ -819,11 +819,8 @@ fn test_execute_signed_eip1559_transfer_verifies_state_changes() {
     assert_eq!(outcome.receipts[0].gas_used, 21_000, "per-tx gas should be 21,000");
 
     // State changes must reflect the transfer.
-    let sender_update = outcome
-        .changes
-        .accounts
-        .get(&sender)
-        .expect("sender must appear in change set");
+    let sender_update =
+        outcome.changes.accounts.get(&sender).expect("sender must appear in change set");
     assert_eq!(sender_update.nonce, 1, "sender nonce must increment to 1");
     assert_eq!(
         sender_update.balance,
@@ -831,11 +828,8 @@ fn test_execute_signed_eip1559_transfer_verifies_state_changes() {
         "sender balance must decrease by transfer value (zero base fee means no gas cost)"
     );
 
-    let receiver_update = outcome
-        .changes
-        .accounts
-        .get(&receiver)
-        .expect("receiver must appear in change set");
+    let receiver_update =
+        outcome.changes.accounts.get(&receiver).expect("receiver must appear in change set");
     assert_eq!(
         receiver_update.balance, transfer_value,
         "receiver balance must equal the transfer value"

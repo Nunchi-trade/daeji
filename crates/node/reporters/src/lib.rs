@@ -510,10 +510,8 @@ mod finalize_success_tests {
             let genesis_digest = genesis.commitment();
 
             // Fetch the genesis state root so we can build a matching block.
-            let genesis_root = service
-                .query_state_root(genesis_digest)
-                .await
-                .expect("genesis state root");
+            let genesis_root =
+                service.query_state_root(genesis_digest).await.expect("genesis state root");
 
             // -- insert a dummy tx into the mempool so we can verify pruning --
             let tx = Tx::new(Bytes::from_static(&[0x01, 0x02]));
@@ -580,10 +578,8 @@ mod finalize_success_tests {
             let service = LedgerService::new(ledger);
             let genesis = service.genesis_block();
             let genesis_digest = genesis.commitment();
-            let genesis_root = service
-                .query_state_root(genesis_digest)
-                .await
-                .expect("genesis state root");
+            let genesis_root =
+                service.query_state_root(genesis_digest).await.expect("genesis state root");
 
             // Build an empty block whose state root matches genesis (no changes).
             let block = Block {
