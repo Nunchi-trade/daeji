@@ -207,6 +207,27 @@ impl From<ThresholdScheme> for ConstantSchemeProvider {
 #[derive(Clone, Debug)]
 struct RevmContextProvider {
     gas_limit: u64,
+    block_index: Option<Arc<BlockIndex>>,
+}
+
+/// Maximum number of ancestor block hashes available to the BLOCKHASH opcode.
+const BLOCKHASH_HISTORY: u64 = 256;
+
+impl RevmContextProvider {
+    /// Collect recent block hashes from the block index for the BLOCKHASH opcode.
+    fn recent_block_hashes(&self, current_height: u64) -> std::collections::HashMap<u64, B256> {
+        let Some(index) = &self.block_index else {
+            return std::collections::HashMap::new();
+        };
+        let start = current_height.saturating_sub(BLOCKHASH_HISTORY);
+        let mut hashes = std::collections::HashMap::new();
+        for num in start..current_height {
+            if let Some(block) = index.get_block_by_number(num) {
+                hashes.insert(num, block.hash);
+            }
+        }
+        hashes
+    }
 }
 
 impl BlockContextProvider for RevmContextProvider {
@@ -219,7 +240,9 @@ impl BlockContextProvider for RevmContextProvider {
             base_fee_per_gas: Some(0),
             ..Default::default()
         };
+        let recent_hashes = self.recent_block_hashes(block.height);
         BlockContext::new(header, B256::ZERO, block.prevrandao)
+            .with_recent_block_hashes(recent_hashes)
     }
 }
 
@@ -404,7 +427,7 @@ impl NodeRunner for ProductionRunner {
         let txpool = ledger.txpool().await;
         spawn_txpool_cleanup(txpool.clone(), context.clone());
 
-        let context_provider = RevmContextProvider { gas_limit };
+        let context_provider = RevmContextProvider { gas_limit, block_index: block_index.clone() };
         recover_finalized_state(
             &ledger,
             block_index.as_ref(),
