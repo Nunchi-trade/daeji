@@ -43,9 +43,12 @@ scrape_configs:
         regex: '(?:validator|secondary)-node(\d+)'
         target_label: node_index
     pipeline_stages:
+      # Strip ANSI color/escape codes from log lines (tracing-subscriber emits colored output)
+      - decolorize:
       # Parse tracing-subscriber output: "2026-05-21T12:00:00.000Z  WARN module::path: message key=value"
+      # Note: module uses non-greedy (.+?) to handle Rust's :: path separators (e.g. kora_runner::runner)
       - regex:
-          expression: '^(?P<timestamp>\S+)\s+(?P<level>\w+)\s+(?P<module>[^:]+):\s+(?P<message>.*)$'
+          expression: '^(?P<timestamp>\S+)\s+(?P<level>\w+)\s+(?P<module>.+?):\s+(?P<message>.*)$'
       - labels:
           level:
           module:
