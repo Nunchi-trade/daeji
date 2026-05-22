@@ -93,7 +93,7 @@ impl From<RpcError> for ErrorObjectOwned {
             RpcError::StateError(_) => (codes::INTERNAL_ERROR, err.to_string()),
             RpcError::Internal(_) => (codes::INTERNAL_ERROR, err.to_string()),
             RpcError::NotImplemented => (codes::METHOD_NOT_SUPPORTED, err.to_string()),
-            RpcError::Unsupported(_) => (codes::METHOD_NOT_SUPPORTED, err.to_string()),
+            RpcError::Unsupported(_) => (codes::INVALID_PARAMS, err.to_string()),
         };
         ErrorObjectOwned::owned(code, message, None::<()>)
     }
@@ -267,14 +267,14 @@ mod tests {
     fn rpc_error_to_error_object_unsupported() {
         let err = RpcError::Unsupported("historical state".to_string());
         let obj: ErrorObjectOwned = err.into();
-        assert_eq!(obj.code(), codes::METHOD_NOT_SUPPORTED);
+        assert_eq!(obj.code(), codes::INVALID_PARAMS);
         assert!(obj.message().contains("historical state"));
     }
 
     #[test]
     fn rpc_error_debug() {
         let err = RpcError::BlockNotFound;
-        let debug_str = format!("{:?}", err);
+        let debug_str = format!("{err:?}");
         assert!(debug_str.contains("BlockNotFound"));
     }
 }
