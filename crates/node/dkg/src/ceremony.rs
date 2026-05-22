@@ -298,8 +298,7 @@ impl DkgCeremony {
         );
         Err(DkgError::CeremonyFailed(format!(
             "Phase 2.5 timeout: only {}/{} participants ready",
-            ready,
-            total
+            ready, total
         )))
     }
 
@@ -385,8 +384,7 @@ impl DkgCeremony {
         );
         Err(DkgError::CeremonyFailed(format!(
             "Phase 4 timeout: only collected {}/{} dealer logs",
-            logs,
-            required
+            logs, required
         )))
     }
 
@@ -419,7 +417,11 @@ impl DkgCeremony {
             match target {
                 Some(pk) => {
                     if let Err(e) = network.send_to(&pk, &msg) {
-                        warn!(?pk, ?e, "Failed to send DKG message to peer (will retry on next cycle)");
+                        warn!(
+                            ?pk,
+                            ?e,
+                            "Failed to send DKG message to peer (will retry on next cycle)"
+                        );
                     }
                 }
                 None => {

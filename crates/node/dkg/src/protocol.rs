@@ -1034,11 +1034,16 @@ impl DkgParticipant {
                         participant.signed_logs.insert(dealer_pk, log.clone());
                         participant.our_signed_log = Some(log);
                     } else {
-                        warn!("Failed to verify our own persisted dealer log during state restoration");
+                        warn!(
+                            "Failed to verify our own persisted dealer log during state restoration"
+                        );
                     }
                 }
                 Err(e) => {
-                    warn!(?e, "Failed to deserialize our own persisted dealer log during state restoration");
+                    warn!(
+                        ?e,
+                        "Failed to deserialize our own persisted dealer log during state restoration"
+                    );
                 }
             }
         }
@@ -1059,18 +1064,24 @@ impl DkgParticipant {
                         participant.signed_logs.insert(dealer_pk, log);
                         restored_log_count += 1;
                     } else {
-                        warn!(pk_hex, "Failed to verify persisted dealer log during state restoration");
+                        warn!(
+                            pk_hex,
+                            "Failed to verify persisted dealer log during state restoration"
+                        );
                     }
                 }
                 Err(e) => {
-                    warn!(pk_hex, ?e, "Failed to deserialize persisted dealer log during state restoration");
+                    warn!(
+                        pk_hex,
+                        ?e,
+                        "Failed to deserialize persisted dealer log during state restoration"
+                    );
                 }
             }
         }
         info!(
             restored_log_count,
-            total_persisted_logs,
-            "Restored dealer logs from persisted state"
+            total_persisted_logs, "Restored dealer logs from persisted state"
         );
 
         Ok(Some(participant))
