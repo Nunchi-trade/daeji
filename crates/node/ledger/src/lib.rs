@@ -436,6 +436,8 @@ impl LedgerView {
                     );
                 }
                 inner.snapshots.mark_persisted(&chain);
+                // Evict oldest persisted snapshots to bound memory usage.
+                inner.snapshots.evict_persisted();
                 Ok(true)
             }
             Err(err) => Err(err.into()),
