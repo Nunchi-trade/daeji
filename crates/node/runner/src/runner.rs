@@ -74,7 +74,7 @@ struct NoOpBlocker<P> {
 }
 
 impl<P> NoOpBlocker<P> {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self { _marker: std::marker::PhantomData }
     }
 }
