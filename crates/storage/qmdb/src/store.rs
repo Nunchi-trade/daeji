@@ -82,7 +82,7 @@ impl PartitionCommitSeqs {
     /// present (backward-compatible: pre-fix node that has never written a
     /// sequence marker).
     #[must_use]
-    pub fn is_consistent(&self) -> bool {
+    pub const fn is_consistent(&self) -> bool {
         match (self.accounts, self.storage, self.code) {
             // No markers at all -- pre-fix node, skip check.
             (None, None, None) => true,
@@ -168,7 +168,7 @@ impl<A, S, C> QmdbStore<A, S, C> {
     /// Intended to be called after startup once the persisted sequence has been
     /// read from the partitions, so that subsequent commits continue the
     /// monotonic sequence.
-    pub fn set_commit_seq(&mut self, seq: u64) {
+    pub const fn set_commit_seq(&mut self, seq: u64) {
         self.commit_seq = seq;
     }
 
@@ -566,16 +566,14 @@ mod tests {
 
     #[test]
     fn partition_commit_seqs_consistent_when_all_match() {
-        let seqs =
-            PartitionCommitSeqs { accounts: Some(5), storage: Some(5), code: Some(5) };
+        let seqs = PartitionCommitSeqs { accounts: Some(5), storage: Some(5), code: Some(5) };
         assert!(seqs.is_consistent());
         assert!(seqs.inconsistency_message().is_none());
     }
 
     #[test]
     fn partition_commit_seqs_inconsistent_when_different() {
-        let seqs =
-            PartitionCommitSeqs { accounts: Some(5), storage: Some(4), code: Some(5) };
+        let seqs = PartitionCommitSeqs { accounts: Some(5), storage: Some(4), code: Some(5) };
         assert!(!seqs.is_consistent());
         let msg = seqs.inconsistency_message().unwrap();
         assert!(msg.contains("accounts=5"));
