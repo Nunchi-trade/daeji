@@ -423,11 +423,8 @@ impl NodeRunner for ProductionRunner {
         if let Some((node_state, addr)) = &self.rpc_config {
             let qmdb_state = state.qmdb_state().await;
             let rpc_executor = Arc::new(RevmExecutor::new(self.chain_id));
-            let indexed_provider = kora_rpc::IndexedStateProvider::new(
-                block_index.clone(),
-                qmdb_state,
-                rpc_executor,
-            );
+            let indexed_provider =
+                kora_rpc::IndexedStateProvider::new(block_index.clone(), qmdb_state, rpc_executor);
             let tx_ledger = ledger.clone();
             let tx_state = state.qmdb_state().await;
             let chain_id = self.chain_id;
