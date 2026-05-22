@@ -57,7 +57,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Create non-root user for security
 RUN useradd -m -u 1000 -s /bin/bash kora && \
     mkdir -p /var/lib/kora /etc/kora /data /shared && \
-    chown -R kora:kora /var/lib/kora /etc/kora /data /shared
+    mkdir -p /barrier && \
+    chown -R kora:kora /var/lib/kora /etc/kora /data /shared /barrier
 
 # Copy binaries from builder
 COPY --from=builder /app/target/release/kora /usr/local/bin/
