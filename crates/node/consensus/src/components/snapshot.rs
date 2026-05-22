@@ -125,6 +125,12 @@ impl<S> InMemorySnapshotStore<S> {
     ///
     /// Returns the number of snapshots evicted.
     pub fn evict_persisted(&self) -> usize {
+        // Fast path: check with a read lock to avoid write-lock contention
+        // when no eviction is needed (the common case).
+        if self.persisted_order.read().len() <= self.max_persisted_retained {
+            return 0;
+        }
+
         let mut snapshots = self.snapshots.write();
         let persisted = self.persisted.read();
         let mut order = self.persisted_order.write();
@@ -485,6 +491,35 @@ mod tests {
         assert_eq!(store.len(), 1);
         // Both remain in persisted set.
         assert_eq!(store.persisted_count(), 2);
+    }
+
+    #[test]
+    fn evict_persisted_is_noop_within_limit() {
+        // Retention limit of 4, persist exactly 4 -- no eviction should happen.
+        let store = InMemorySnapshotStore::<MockStateDb>::with_max_persisted_retained(4);
+
+        let d1 = make_digest(0x01);
+        let d2 = make_digest(0x02);
+        let d3 = make_digest(0x03);
+        let d4 = make_digest(0x04);
+
+        store.insert(d1, make_snapshot(None));
+        store.insert(d2, make_snapshot(Some(d1)));
+        store.insert(d3, make_snapshot(Some(d2)));
+        store.insert(d4, make_snapshot(Some(d3)));
+
+        store.mark_persisted(&[d1, d2, d3, d4]);
+        assert_eq!(store.persisted_count(), 4);
+
+        // Eviction should be a no-op: exactly at the limit.
+        assert_eq!(store.evict_persisted(), 0);
+
+        // All snapshots remain in memory.
+        assert_eq!(store.len(), 4);
+        assert!(store.get(&d1).is_some());
+        assert!(store.get(&d2).is_some());
+        assert!(store.get(&d3).is_some());
+        assert!(store.get(&d4).is_some());
     }
 
     #[test]
