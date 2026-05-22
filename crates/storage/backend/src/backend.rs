@@ -139,9 +139,7 @@ impl CommonwareBackend {
     ///
     /// Returns [`BackendError::InconsistentPartitions`] if the sequences differ,
     /// or a storage error if reading the markers fails.
-    pub async fn verify_partition_consistency(
-        &self,
-    ) -> Result<PartitionCommitSeqs, BackendError> {
+    pub async fn verify_partition_consistency(&self) -> Result<PartitionCommitSeqs, BackendError> {
         let seqs = read_partition_commit_seqs(&self.accounts, &self.storage, &self.code).await?;
 
         if let Some(msg) = seqs.inconsistency_message() {
@@ -290,14 +288,12 @@ async fn read_partition_commit_seqs(
     code: &CodeStore,
 ) -> Result<PartitionCommitSeqs, BackendError> {
     use kora_qmdb::{
-        AccountEncoding, QmdbGettable, COMMIT_SEQ_ACCOUNT_KEY, COMMIT_SEQ_CODE_KEY,
-        COMMIT_SEQ_STORAGE_KEY,
+        AccountEncoding, COMMIT_SEQ_ACCOUNT_KEY, COMMIT_SEQ_CODE_KEY, COMMIT_SEQ_STORAGE_KEY,
+        QmdbGettable,
     };
 
     let accounts_seq = match accounts.get(&COMMIT_SEQ_ACCOUNT_KEY).await {
-        Ok(Some(bytes)) => {
-            AccountEncoding::decode(&bytes).map(|(nonce, _, _, _)| nonce)
-        }
+        Ok(Some(bytes)) => AccountEncoding::decode(&bytes).map(|(nonce, _, _, _)| nonce),
         Ok(None) => None,
         Err(e) => return Err(BackendError::Storage(e.to_string())),
     };
@@ -305,11 +301,7 @@ async fn read_partition_commit_seqs(
     let storage_seq = match storage.get(&COMMIT_SEQ_STORAGE_KEY).await {
         Ok(Some(value)) => {
             let limbs: [u64; 4] = value.into_limbs();
-            if limbs[1] == 0 && limbs[2] == 0 && limbs[3] == 0 {
-                Some(limbs[0])
-            } else {
-                None
-            }
+            if limbs[1] == 0 && limbs[2] == 0 && limbs[3] == 0 { Some(limbs[0]) } else { None }
         }
         Ok(None) => None,
         Err(e) => return Err(BackendError::Storage(e.to_string())),

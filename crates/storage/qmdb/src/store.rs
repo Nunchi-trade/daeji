@@ -15,8 +15,8 @@ use crate::{
 /// Derived from the first 20 bytes of keccak256(b"__QMDB_COMMIT_SEQ__").
 /// This is a preimage-resistant address that will not collide with any real Ethereum account.
 pub const COMMIT_SEQ_ACCOUNT_KEY: Address = Address::new([
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFE,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFE,
 ]);
 
 /// Sentinel storage key used to store the commit sequence number in the storage partition.
@@ -30,9 +30,8 @@ pub const COMMIT_SEQ_STORAGE_KEY: StorageKey =
 ///
 /// Uses `0xFFFF...FFFE` which is not a valid keccak256 output.
 pub const COMMIT_SEQ_CODE_KEY: B256 = B256::new([
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFE,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE,
 ]);
 
 /// Encode a commit sequence number into an 80-byte account value.
@@ -358,11 +357,7 @@ where
             .await
             .map_err(|e| QmdbError::Storage(e.to_string()))?;
 
-        stores
-            .code
-            .write_batch(code_ops)
-            .await
-            .map_err(|e| QmdbError::Storage(e.to_string()))?;
+        stores.code.write_batch(code_ops).await.map_err(|e| QmdbError::Storage(e.to_string()))?;
 
         // All three partitions committed successfully; advance the sequence.
         self.commit_seq = next_seq;
@@ -405,11 +400,7 @@ where
             Ok(Some(value)) => {
                 // U256 -> u64: the sequence number fits in a u64.
                 let limbs: [u64; 4] = value.into_limbs();
-                if limbs[1] == 0 && limbs[2] == 0 && limbs[3] == 0 {
-                    Some(limbs[0])
-                } else {
-                    None
-                }
+                if limbs[1] == 0 && limbs[2] == 0 && limbs[3] == 0 { Some(limbs[0]) } else { None }
             }
             Ok(None) => None,
             Err(e) => return Err(QmdbError::Storage(e.to_string())),
