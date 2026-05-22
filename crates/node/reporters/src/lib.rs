@@ -427,11 +427,7 @@ mod finalize_error_tests {
             .await;
 
             // -- assert: mempool was pruned --
-            assert_eq!(
-                pool.len(),
-                0,
-                "mempool must be pruned even when finalization fails"
-            );
+            assert_eq!(pool.len(), 0, "mempool must be pruned even when finalization fails");
 
             // -- assert: acknowledgement was delivered --
             waiter.await.expect("ack must be called even when finalization fails");
