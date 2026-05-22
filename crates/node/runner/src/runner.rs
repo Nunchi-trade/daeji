@@ -22,8 +22,8 @@ use commonware_consensus::{
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519};
 use commonware_p2p::{Manager, TrackedPeers};
 use commonware_runtime::{
-    Clock as _, Metrics as _, Spawner, ThreadPooler as _, buffer::paged::CacheRef,
-    tokio as cw_tokio,
+    Clock as _, Handle as RuntimeHandle, Metrics as _, Spawner, ThreadPooler as _,
+    buffer::paged::CacheRef, tokio as cw_tokio,
 };
 use commonware_storage::archive::{Archive, Identifier as ArchiveId};
 use commonware_utils::{NZU64, NZUsize, acknowledgement::Exact, ordered::Set};
@@ -125,7 +125,7 @@ fn index_recovered_block(
 
 async fn recover_finalized_state<FB, FC>(
     ledger: &LedgerService,
-    block_index: Option<&Arc<kora_indexer::BlockIndex>>,
+    block_index: &Arc<kora_indexer::BlockIndex>,
     finalized_blocks: &FB,
     finalizations_by_height: &FC,
     provider: &RevmContextProvider,
@@ -163,9 +163,7 @@ where
                 continue;
             };
 
-            if let Some(index) = block_index {
-                index_recovered_block(index, &block, provider);
-            }
+            index_recovered_block(block_index, &block, provider);
             head = Some(block);
             recovered += 1;
         }
@@ -208,6 +206,14 @@ impl From<ThresholdScheme> for ConstantSchemeProvider {
 #[derive(Clone, Debug)]
 struct RevmContextProvider {
     gas_limit: u64,
+    block_index: Arc<BlockIndex>,
+}
+
+impl RevmContextProvider {
+    /// Collect recent block hashes from the block index for the BLOCKHASH opcode.
+    fn recent_block_hashes(&self, current_height: u64) -> std::collections::HashMap<u64, B256> {
+        self.block_index.recent_block_hashes(current_height)
+    }
 }
 
 impl BlockContextProvider for RevmContextProvider {
@@ -220,7 +226,9 @@ impl BlockContextProvider for RevmContextProvider {
             base_fee_per_gas: Some(0),
             ..Default::default()
         };
+        let recent_hashes = self.recent_block_hashes(block.height);
         BlockContext::new(header, B256::ZERO, block.prevrandao)
+            .with_recent_block_hashes(recent_hashes)
     }
 }
 
@@ -252,6 +260,52 @@ fn spawn_txpool_cleanup(pool: TransactionPool, context: cw_tokio::Context) {
                 debug!(removed, "expired transactions cleaned from txpool");
             }
         }
+    });
+}
+
+/// Monitor critical consensus infrastructure tasks for unexpected termination.
+///
+/// Each of the three handles (`engine`, `marshal`, `broadcast`) wraps a
+/// long-lived actor that must never exit while the node is running.  If any of
+/// them resolves it means the actor either panicked (the commonware runtime
+/// catches panics and returns [`commonware_runtime::Error::Exited`]) or the
+/// runtime context was shut down.  In either case the node can no longer make
+/// progress on consensus, so we log an error and abort the process.
+fn spawn_consensus_monitor(
+    context: cw_tokio::Context,
+    engine_handle: RuntimeHandle<()>,
+    marshal_handle: RuntimeHandle<()>,
+    broadcast_handle: RuntimeHandle<()>,
+) {
+    spawn_task_watchdog(&context, "consensus_engine", engine_handle);
+    spawn_task_watchdog(&context, "marshal_actor", marshal_handle);
+    spawn_task_watchdog(&context, "broadcast_engine", broadcast_handle);
+}
+
+/// Spawn a watchdog that awaits a critical task handle and aborts the process
+/// if the task ever terminates.  Under normal operation the handle never
+/// resolves; if it does, consensus is irrecoverably broken.
+fn spawn_task_watchdog(context: &cw_tokio::Context, name: &'static str, handle: RuntimeHandle<()>) {
+    context.with_label(name).shared(true).spawn(move |_| async move {
+        match handle.await {
+            Ok(()) => {
+                error!(task = name, "critical task exited cleanly — this should never happen for a long-lived consensus actor");
+            }
+            Err(commonware_runtime::Error::Exited) => {
+                error!(task = name, "critical task panicked (runtime caught panic and returned Error::Exited)");
+            }
+            Err(commonware_runtime::Error::Closed) => {
+                warn!(task = name, "critical task terminated because the runtime context was shut down");
+            }
+            Err(ref e) => {
+                error!(task = name, error = %e, error_debug = ?e, "critical task failed with unexpected error");
+            }
+        }
+        error!(
+            task = name,
+            "consensus infrastructure is dead, aborting process for supervisor restart"
+        );
+        std::process::abort();
     });
 }
 
@@ -406,19 +460,16 @@ impl NodeRunner for ProductionRunner {
         let mempool_broadcast =
             self.rpc_config.as_ref().map(|_| kora_rpc::mempool_event_channel().0);
         let ledger = LedgerService::new(state.clone());
-        let block_index = self.rpc_config.as_ref().map(|_| {
-            let index = Arc::new(BlockIndex::new());
-            seed_genesis_block_index(&index, &ledger.genesis_block(), gas_limit);
-            index
-        });
+        let block_index = Arc::new(BlockIndex::new());
+        seed_genesis_block_index(&block_index, &ledger.genesis_block(), gas_limit);
         spawn_ledger_observers(ledger.clone(), context.clone());
         let txpool = ledger.txpool().await;
         spawn_txpool_cleanup(txpool.clone(), context.clone());
 
-        let context_provider = RevmContextProvider { gas_limit };
+        let context_provider = RevmContextProvider { gas_limit, block_index: block_index.clone() };
         recover_finalized_state(
             &ledger,
-            block_index.as_ref(),
+            &block_index,
             &finalized_blocks,
             &finalizations_by_height,
             &context_provider,
@@ -427,13 +478,13 @@ impl NodeRunner for ProductionRunner {
         .context("recover finalized state")?;
 
         if let Some((node_state, addr)) = &self.rpc_config {
+            let peer_count = self.scheme.participants().len().saturating_sub(1) as u64;
+            node_state.set_peer_count(peer_count);
+
             let qmdb_state = state.qmdb_state().await;
             let rpc_executor = Arc::new(RevmExecutor::new(self.chain_id));
-            let indexed_provider = kora_rpc::IndexedStateProvider::new(
-                block_index.clone().expect("block index is initialized with RPC"),
-                qmdb_state,
-                rpc_executor,
-            );
+            let indexed_provider =
+                kora_rpc::IndexedStateProvider::new(block_index.clone(), qmdb_state, rpc_executor);
             let tx_ledger = ledger.clone();
             let tx_state = state.qmdb_state().await;
             let chain_id = self.chain_id;
@@ -471,7 +522,7 @@ impl NodeRunner for ProductionRunner {
             )
             .with_tx_submit(tx_submit)
             .with_txpool(txpool.clone())
-            .with_peer_count(self.scheme.participants().len().saturating_sub(1) as u64);
+            .with_peer_count(peer_count);
             if let Some(sender) = pending_tx_broadcast.clone() {
                 rpc = rpc.with_pending_tx_broadcast(sender);
             }
@@ -528,10 +579,8 @@ impl NodeRunner for ProductionRunner {
             context.clone(),
             finalized_executor,
             context_provider,
-        );
-        if let Some(block_index) = block_index {
-            finalized_reporter = finalized_reporter.with_block_index(block_index);
-        }
+        )
+        .with_block_index(block_index);
         if let Some(sender) = mempool_broadcast {
             finalized_reporter = finalized_reporter.with_mempool_broadcast(sender);
         }
@@ -552,7 +601,7 @@ impl NodeRunner for ProductionRunner {
             transport.oracle.clone(),
             block_cfg,
         );
-        broadcast_engine.start(transport.marshal.blocks);
+        let broadcast_handle = broadcast_engine.start(transport.marshal.blocks);
 
         let (actor, marshal_mailbox, _last_processed_height) =
             kora_marshal::ActorInitializer::init_with_strategy::<_, Block, _, _, _, Exact, _>(
@@ -565,7 +614,7 @@ impl NodeRunner for ProductionRunner {
                 strategy.clone(),
             )
             .await;
-        actor.start(finalized_reporter, buffer, resolver);
+        let marshal_handle = actor.start(finalized_reporter, buffer, resolver);
 
         let epocher = FixedEpocher::new(NZU64!(EPOCH_LENGTH));
         let executor = RevmExecutor::new(self.chain_id);
@@ -591,7 +640,9 @@ impl NodeRunner for ProductionRunner {
         let reporter = Reporters::from((seed_reporter, inner_reporters));
 
         for tx in &self.bootstrap.bootstrap_txs {
-            let _ = ledger.submit_tx(tx.clone()).await;
+            if !ledger.submit_tx(tx.clone()).await {
+                warn!("failed to submit bootstrap transaction to mempool");
+            }
         }
 
         let engine = simplex::Engine::new(
@@ -622,7 +673,13 @@ impl NodeRunner for ProductionRunner {
                 forwarding: simplex::ForwardingPolicy::SilentLeader,
             },
         );
-        engine.start(transport.simplex.votes, transport.simplex.certs, transport.simplex.resolver);
+        let engine_handle = engine.start(
+            transport.simplex.votes,
+            transport.simplex.certs,
+            transport.simplex.resolver,
+        );
+
+        spawn_consensus_monitor(context, engine_handle, marshal_handle, broadcast_handle);
 
         info!("Validator started successfully");
         Ok(ledger)
