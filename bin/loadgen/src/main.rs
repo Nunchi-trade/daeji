@@ -11,8 +11,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tokio::sync::Semaphore;
-
 use alloy_consensus::{SignableTransaction as _, TxEip1559, TxEnvelope};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, keccak256};
@@ -20,6 +18,7 @@ use clap::Parser;
 use eyre::{Result, WrapErr as _};
 use k256::ecdsa::SigningKey;
 use sha3::{Digest as _, Keccak256};
+use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
 
 const MIN_LOADGEN_ACCOUNTS: usize = 1;
@@ -503,7 +502,8 @@ mod tests {
     fn sign_eip1559_transfer_produces_valid_envelope() {
         let account = Account::new(1);
         let to = Address::repeat_byte(0xBB);
-        let raw = sign_eip1559_transfer(&account.key, 1337, to, U256::from(1), 0, TRANSFER_GAS_LIMIT);
+        let raw =
+            sign_eip1559_transfer(&account.key, 1337, to, U256::from(1), 0, TRANSFER_GAS_LIMIT);
         // EIP-2718 type-2 envelope starts with 0x02
         assert!(!raw.is_empty());
         assert_eq!(raw[0], 0x02, "expected EIP-1559 type prefix");
@@ -511,9 +511,8 @@ mod tests {
 
     #[test]
     fn retry_backoff_is_exponential() {
-        let delays: Vec<Duration> = (1..=5)
-            .map(|attempt| RETRY_BASE_DELAY * 2u32.saturating_pow(attempt - 1))
-            .collect();
+        let delays: Vec<Duration> =
+            (1..=5).map(|attempt| RETRY_BASE_DELAY * 2u32.saturating_pow(attempt - 1)).collect();
         assert_eq!(delays[0], Duration::from_millis(100));
         assert_eq!(delays[1], Duration::from_millis(200));
         assert_eq!(delays[2], Duration::from_millis(400));
