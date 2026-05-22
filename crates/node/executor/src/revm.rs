@@ -393,6 +393,7 @@ impl<S: StateDb> BlockExecutor<S> for RevmExecutor {
                 Ok(env) => env,
                 Err(e) => {
                     warn!(hash = ?tx_hash, error = %e, "skipping undecodable transaction");
+                    outcome.receipts.push(build_skipped_receipt(tx_hash, cumulative_gas));
                     continue;
                 }
             };
@@ -402,6 +403,7 @@ impl<S: StateDb> BlockExecutor<S> for RevmExecutor {
                 Ok(result) => result,
                 Err(e) => {
                     warn!(hash = ?tx_hash, error = ?e, "skipping unexecutable transaction");
+                    outcome.receipts.push(build_skipped_receipt(tx_hash, cumulative_gas));
                     continue;
                 }
             };
@@ -611,6 +613,15 @@ fn convert_authorization_list(
         .collect()
 }
 
+/// Build a placeholder failed receipt for a skipped transaction.
+///
+/// This preserves index alignment between transactions and receipts so that
+/// downstream code (e.g. reporters) can use the receipt index as the
+/// transaction index.
+fn build_skipped_receipt(tx_hash: B256, cumulative_gas_used: u64) -> ExecutionReceipt {
+    ExecutionReceipt::new(tx_hash, false, 0, cumulative_gas_used, Vec::new(), None)
+}
+
 /// Build a transaction receipt from execution result.
 fn build_receipt(
     result: &ExecutionResult,
@@ -754,12 +765,8 @@ mod tests {
 
     /// Helper: create a default block context suitable for tests.
     fn test_block_context() -> BlockContext {
-        let header = Header {
-            number: 1,
-            timestamp: 1000,
-            gas_limit: 30_000_000,
-            ..Header::default()
-        };
+        let header =
+            Header { number: 1, timestamp: 1000, gas_limit: 30_000_000, ..Header::default() };
         BlockContext::new(header, B256::ZERO, B256::ZERO)
     }
 
@@ -1047,8 +1054,8 @@ mod tests {
 
     #[test]
     fn execute_skips_garbage_bytes() {
-        // A block containing only garbage bytes should succeed with an empty outcome
-        // rather than aborting the entire block.
+        // A block containing only garbage bytes should succeed with a placeholder
+        // failed receipt rather than aborting the entire block.
         let executor = RevmExecutor::new(1);
         let state = MockStateDb;
         let context = test_block_context();
@@ -1057,14 +1064,17 @@ mod tests {
         let txs = vec![garbage];
 
         let outcome = executor.execute(&state, &context, &txs).expect("block should not fail");
-        assert!(outcome.receipts.is_empty(), "garbage tx should produce no receipt");
+        // Receipt count must equal transaction count to preserve index alignment.
+        assert_eq!(outcome.receipts.len(), txs.len(), "receipt count must match tx count");
+        assert!(!outcome.receipts[0].success(), "skipped tx receipt must be failed");
+        assert_eq!(outcome.receipts[0].gas_used, 0, "skipped tx should use no gas");
         assert_eq!(outcome.gas_used, 0, "no gas should be consumed");
     }
 
     #[test]
     fn execute_skips_invalid_but_processes_valid() {
-        // A block with [garbage, valid_tx] should skip the garbage and
-        // still execute the valid transaction.
+        // A block with [garbage, valid_tx] should emit a placeholder receipt for
+        // the garbage and still execute the valid transaction, preserving indices.
         let executor = RevmExecutor::new(1);
         let state = MockStateDb;
         let context = test_block_context();
@@ -1075,15 +1085,18 @@ mod tests {
 
         let outcome = executor.execute(&state, &context, &txs).expect("block should not fail");
 
-        // Only the valid transaction should produce a receipt.
-        assert_eq!(outcome.receipts.len(), 1, "only valid tx should have a receipt");
+        // Receipt count must equal transaction count to preserve index alignment.
+        assert_eq!(outcome.receipts.len(), txs.len(), "receipt count must match tx count");
+        assert!(!outcome.receipts[0].success(), "garbage tx receipt must be failed");
+        assert_eq!(outcome.receipts[0].gas_used, 0, "garbage tx should use no gas");
+        assert!(outcome.receipts[1].success(), "valid tx receipt must be successful");
         assert!(outcome.gas_used > 0, "valid tx should consume gas");
     }
 
     #[test]
     fn execute_processes_valid_tx_between_invalid() {
-        // A block with [garbage, valid_tx, more_garbage] should produce exactly
-        // one receipt and correct cumulative gas.
+        // A block with [garbage, valid_tx, more_garbage] should produce a receipt
+        // for every transaction, preserving index alignment.
         let executor = RevmExecutor::new(1);
         let state = MockStateDb;
         let context = test_block_context();
@@ -1095,9 +1108,13 @@ mod tests {
 
         let outcome = executor.execute(&state, &context, &txs).expect("block should not fail");
 
-        assert_eq!(outcome.receipts.len(), 1, "only 1 valid tx");
-        // Cumulative gas in the receipt should match total gas used.
-        assert_eq!(outcome.receipts[0].cumulative_gas_used(), outcome.gas_used);
+        // Receipt count must equal transaction count to preserve index alignment.
+        assert_eq!(outcome.receipts.len(), txs.len(), "receipt count must match tx count");
+        assert!(!outcome.receipts[0].success(), "first garbage receipt must be failed");
+        assert!(outcome.receipts[1].success(), "valid tx receipt must be successful");
+        assert!(!outcome.receipts[2].success(), "second garbage receipt must be failed");
+        // Cumulative gas in the last receipt should match total gas used.
+        assert_eq!(outcome.receipts[2].cumulative_gas_used(), outcome.gas_used);
     }
 
     #[test]
