@@ -136,10 +136,8 @@ impl<S> InMemorySnapshotStore<S> {
             };
             // Only remove snapshot data if it is actually persisted.
             // (Guards against stale entries in the order queue.)
-            if persisted.contains(&oldest) {
-                if snapshots.remove(&oldest).is_some() {
-                    evicted += 1;
-                }
+            if persisted.contains(&oldest) && snapshots.remove(&oldest).is_some() {
+                evicted += 1;
             }
         }
 
