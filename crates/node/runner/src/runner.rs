@@ -22,7 +22,7 @@ use commonware_consensus::{
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519};
 use commonware_p2p::{Manager, TrackedPeers};
 use commonware_runtime::{
-    Clock as _, Metrics as _, Spawner, ThreadPooler as _, buffer::paged::CacheRef, tokio,
+    Clock as _, Metrics as _, Spawner, ThreadPooler as _, buffer::paged::CacheRef, tokio as cw_tokio,
 };
 use commonware_storage::archive::{Archive, Identifier as ArchiveId};
 use commonware_utils::{NZU64, NZUsize, acknowledgement::Exact, ordered::Set};
@@ -37,7 +37,7 @@ use kora_service::{NodeRunContext, NodeRunner};
 use kora_simplex::{DEFAULT_MAILBOX_SIZE as MAILBOX_SIZE, DefaultPool};
 use kora_transport::NetworkTransport;
 use kora_txpool::{PoolConfig, TransactionPool, TransactionValidator};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{RevmApplication, RunnerError, scheme::ThresholdScheme};
 
@@ -51,7 +51,7 @@ type CertArchive = Finalization<ThresholdScheme, ConsensusDigest>;
 type MarshalMailbox = Mailbox<ThresholdScheme, Standard<Block>>;
 type NodeStateRptr = NodeStateReporter<ThresholdScheme>;
 
-fn default_page_cache(context: &tokio::Context) -> CacheRef {
+fn default_page_cache(context: &cw_tokio::Context) -> CacheRef {
     DefaultPool::init(context)
 }
 
@@ -242,7 +242,7 @@ fn spawn_ledger_observers<S: Spawner>(service: LedgerService, spawner: S) {
     });
 }
 
-fn spawn_txpool_cleanup(pool: TransactionPool, context: tokio::Context) {
+fn spawn_txpool_cleanup(pool: TransactionPool, context: cw_tokio::Context) {
     context.with_label("txpool-cleanup").shared(false).spawn(move |ctx| async move {
         loop {
             ctx.sleep(TXPOOL_CLEANUP_INTERVAL).await;
@@ -267,6 +267,8 @@ pub struct ProductionRunner {
     pub partition_prefix: String,
     /// Optional RPC configuration (state, bind address).
     pub rpc_config: Option<(kora_rpc::NodeState, std::net::SocketAddr)>,
+    /// Optional Prometheus metrics server address.
+    pub metrics_addr: Option<std::net::SocketAddr>,
     /// Secondary peers authorized to follow validator traffic without participating in consensus.
     pub secondary_peers: Vec<Peer>,
 }
@@ -283,6 +285,7 @@ impl ProductionRunner {
             bootstrap,
             partition_prefix: PARTITION_PREFIX.to_string(),
             rpc_config: None,
+            metrics_addr: None,
             secondary_peers: Vec::new(),
         }
     }
@@ -291,6 +294,13 @@ impl ProductionRunner {
     #[must_use]
     pub fn with_rpc(mut self, state: kora_rpc::NodeState, addr: std::net::SocketAddr) -> Self {
         self.rpc_config = Some((state, addr));
+        self
+    }
+
+    /// Configure Prometheus metrics server address.
+    #[must_use]
+    pub fn with_metrics_addr(mut self, addr: std::net::SocketAddr) -> Self {
+        self.metrics_addr = Some(addr);
         self
     }
 
@@ -311,7 +321,7 @@ impl ProductionRunner {
         let runtime_dir = runtime_storage_directory(&config.data_dir);
         info!(runtime_dir = %runtime_dir.display(), "Starting Commonware runtime");
         let executor =
-            tokio::Runner::new(tokio::Config::default().with_storage_directory(runtime_dir));
+            cw_tokio::Runner::new(cw_tokio::Config::default().with_storage_directory(runtime_dir));
         executor.start(|context| async move {
             let validator_key = config
                 .validator_key()
@@ -334,7 +344,7 @@ impl ProductionRunner {
 }
 
 impl NodeRunner for ProductionRunner {
-    type Transport = NetworkTransport<Peer, tokio::Context>;
+    type Transport = NetworkTransport<Peer, cw_tokio::Context>;
     type Handle = LedgerService;
     type Error = RunnerError;
 
@@ -469,6 +479,41 @@ impl NodeRunner for ProductionRunner {
             }
             drop(rpc.start());
             info!(addr = %addr, "RPC server started with live state provider");
+        }
+
+        if let Some(metrics_addr) = self.metrics_addr {
+            let metrics_context = context.clone();
+            context.with_label("metrics").shared(true).spawn(move |_| async move {
+                let app = axum::Router::new().route(
+                    "/metrics",
+                    axum::routing::get(move || {
+                        let body = metrics_context.encode();
+                        async move {
+                            (
+                                axum::http::StatusCode::OK,
+                                [(
+                                    axum::http::header::CONTENT_TYPE,
+                                    "application/openmetrics-text; version=1.0.0; charset=utf-8",
+                                )],
+                                body,
+                            )
+                        }
+                    }),
+                );
+
+                let listener = match tokio::net::TcpListener::bind(metrics_addr).await {
+                    Ok(l) => l,
+                    Err(e) => {
+                        error!(error = %e, "Failed to bind metrics server");
+                        return;
+                    }
+                };
+
+                info!(addr = %metrics_addr, "Starting metrics server");
+                if let Err(e) = axum::serve(listener, app).await {
+                    error!(error = %e, "Metrics server error");
+                }
+            });
         }
 
         let validator_key = config
