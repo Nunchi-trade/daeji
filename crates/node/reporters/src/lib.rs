@@ -265,6 +265,7 @@ mod mempool_tests {
         let block = Block {
             parent: BlockId(B256::ZERO),
             height: 7,
+            timestamp: 0,
             prevrandao: B256::ZERO,
             state_root: StateRoot(B256::ZERO),
             txs: vec![tx.clone()],
