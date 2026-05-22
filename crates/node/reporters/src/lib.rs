@@ -315,6 +315,130 @@ mod mempool_tests {
     }
 }
 
+#[cfg(test)]
+mod finalize_error_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use alloy_consensus::Header;
+    use alloy_primitives::{B256, Bytes};
+    use commonware_runtime::Runner as _;
+    use commonware_utils::acknowledgement::{Acknowledgement as _, Exact};
+    use kora_domain::{StateRoot, Tx};
+    use kora_executor::ExecutionError;
+    use kora_ledger::LedgerView;
+
+    use super::*;
+
+    static PARTITION_COUNTER: AtomicUsize = AtomicUsize::new(10_000);
+
+    fn next_partition(prefix: &str) -> String {
+        let id = PARTITION_COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("{prefix}-{id}")
+    }
+
+    /// A block executor that always returns an error.
+    ///
+    /// Used to force `finalize_block` into an error path so the caller can
+    /// verify that pruning and acknowledgement still happen unconditionally.
+    #[derive(Clone)]
+    struct FailingExecutor;
+
+    impl BlockExecutor<OverlayState<QmdbState>> for FailingExecutor {
+        type Tx = Bytes;
+
+        fn execute(
+            &self,
+            _state: &OverlayState<QmdbState>,
+            _context: &BlockContext,
+            _txs: &[Bytes],
+        ) -> Result<ExecutionOutcome, ExecutionError> {
+            Err(ExecutionError::TxExecution("injected test failure".into()))
+        }
+
+        fn validate_header(&self, _header: &Header) -> Result<(), ExecutionError> {
+            Ok(())
+        }
+    }
+
+    /// A trivial block-context provider for tests.
+    #[derive(Clone)]
+    struct StubProvider;
+
+    impl BlockContextProvider for StubProvider {
+        fn context(&self, block: &Block) -> BlockContext {
+            BlockContext::new(Header::default(), block.parent.0, block.prevrandao)
+        }
+    }
+
+    /// Regression test: when `finalize_block` returns `Err(())` (e.g. executor
+    /// failure), `handle_finalized_update` must still prune the mempool and
+    /// acknowledge the update so the node does not stall.
+    ///
+    /// This covers the bug where early-returns on error paths skipped pruning
+    /// and acknowledgement, leading to stale tx re-proposals and marshal
+    /// delivery stalls.
+    #[test]
+    fn prune_and_ack_still_run_when_finalization_fails() {
+        let runner = tokio::Runner::default();
+        runner.start(|context| async move {
+            // -- set up ledger with an empty genesis --
+            let ledger = LedgerView::init(
+                context.clone(),
+                next_partition("reporters-finalize-err"),
+                Vec::new(),
+            )
+            .await
+            .expect("init ledger");
+            let service = LedgerService::new(ledger);
+            let genesis = service.genesis_block();
+
+            // -- insert a transaction into the mempool --
+            let tx = Tx::new(Bytes::from_static(&[0xab, 0xcd]));
+            assert!(service.submit_tx(tx.clone()).await, "tx should be accepted into mempool");
+            let pool = service.txpool().await;
+            assert_eq!(pool.len(), 1, "mempool should contain the submitted tx");
+
+            // -- build a block that references genesis as parent --
+            // The block's own snapshot does NOT exist in the store, so
+            // `finalize_block` will attempt execution (and our FailingExecutor
+            // will cause it to return Err(())).
+            let block = Block {
+                parent: genesis.id(),
+                height: 1,
+                timestamp: 1,
+                prevrandao: B256::ZERO,
+                state_root: StateRoot(B256::ZERO),
+                txs: vec![tx],
+            };
+
+            // -- create an acknowledgement we can observe --
+            let (ack, waiter) = Exact::handle();
+
+            // -- invoke the handler --
+            handle_finalized_update(
+                service.clone(),
+                context,
+                FailingExecutor,
+                StubProvider,
+                None,
+                None,
+                Update::Block(block, ack),
+            )
+            .await;
+
+            // -- assert: mempool was pruned --
+            assert_eq!(
+                pool.len(),
+                0,
+                "mempool must be pruned even when finalization fails"
+            );
+
+            // -- assert: acknowledgement was delivered --
+            waiter.await.expect("ack must be called even when finalization fails");
+        });
+    }
+}
+
 #[derive(Clone, Debug)]
 struct TxMetadata {
     from: alloy_primitives::Address,
