@@ -277,11 +277,7 @@ fn spawn_consensus_monitor(
 /// Spawn a watchdog that awaits a critical task handle and aborts the process
 /// if the task ever terminates.  Under normal operation the handle never
 /// resolves; if it does, consensus is irrecoverably broken.
-fn spawn_task_watchdog(
-    context: &tokio::Context,
-    name: &'static str,
-    handle: RuntimeHandle<()>,
-) {
+fn spawn_task_watchdog(context: &tokio::Context, name: &'static str, handle: RuntimeHandle<()>) {
     context.with_label(name).shared(true).spawn(move |_| async move {
         match handle.await {
             Ok(()) => {
@@ -621,8 +617,11 @@ impl NodeRunner for ProductionRunner {
                 forwarding: simplex::ForwardingPolicy::SilentLeader,
             },
         );
-        let engine_handle =
-            engine.start(transport.simplex.votes, transport.simplex.certs, transport.simplex.resolver);
+        let engine_handle = engine.start(
+            transport.simplex.votes,
+            transport.simplex.certs,
+            transport.simplex.resolver,
+        );
 
         spawn_consensus_monitor(
             context,
