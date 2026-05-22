@@ -32,13 +32,12 @@
 
 mod in_memory;
 
-pub use in_memory::InMemoryChat;
-
 use std::pin::Pin;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::Stream;
+pub use in_memory::InMemoryChat;
 
 /// A frame received on (or published to) a channel.
 ///

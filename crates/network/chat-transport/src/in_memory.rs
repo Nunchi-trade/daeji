@@ -57,12 +57,7 @@ impl InMemoryChat {
     #[must_use]
     pub fn with_capacity(me: PeerInfo, capacity: usize) -> Self {
         let peers = Arc::new(Mutex::new(vec![me.clone()]));
-        Self {
-            me,
-            channels: Arc::new(Mutex::new(HashMap::new())),
-            peers,
-            capacity,
-        }
+        Self { me, channels: Arc::new(Mutex::new(HashMap::new())), peers, capacity }
     }
 
     /// Construct `n` connected transports, all sharing the same backing
@@ -77,10 +72,7 @@ impl InMemoryChat {
         let channels = Arc::new(Mutex::new(HashMap::new()));
         let peers: Vec<PeerInfo> = names
             .iter()
-            .map(|n| PeerInfo {
-                pubkey: n.as_bytes().to_vec(),
-                addr: Some(format!("inmem://{n}")),
-            })
+            .map(|n| PeerInfo { pubkey: n.as_bytes().to_vec(), addr: Some(format!("inmem://{n}")) })
             .collect();
         let peer_set = Arc::new(Mutex::new(peers.clone()));
 
@@ -106,10 +98,7 @@ impl InMemoryChat {
 
     fn sender_for(&self, channel_id: u64) -> broadcast::Sender<ChatFrame> {
         let mut guard = self.channels.lock().expect("channels poisoned");
-        guard
-            .entry(channel_id)
-            .or_insert_with(|| broadcast::channel(self.capacity).0)
-            .clone()
+        guard.entry(channel_id).or_insert_with(|| broadcast::channel(self.capacity).0).clone()
     }
 }
 
@@ -126,11 +115,7 @@ impl ChatTransport for InMemoryChat {
 
     async fn publish(&self, channel_id: u64, payload: Bytes) -> ChatResult<()> {
         let sender = self.sender_for(channel_id);
-        let frame = ChatFrame {
-            channel_id,
-            sender: self.me.clone(),
-            payload,
-        };
+        let frame = ChatFrame { channel_id, sender: self.me.clone(), payload };
         // `send` errors only when there are no active receivers, which is
         // fine here — fire-and-forget publish.
         let _ = sender.send(frame);

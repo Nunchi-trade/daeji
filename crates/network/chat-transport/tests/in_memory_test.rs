@@ -10,19 +10,14 @@ use chat_transport::{ChatTransport, InMemoryChat, PeerInfo};
 use futures::StreamExt;
 
 fn peer(name: &str) -> PeerInfo {
-    PeerInfo {
-        pubkey: name.as_bytes().to_vec(),
-        addr: Some(format!("inmem://{name}")),
-    }
+    PeerInfo { pubkey: name.as_bytes().to_vec(), addr: Some(format!("inmem://{name}")) }
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn publish_subscribe_roundtrip() {
     let t = InMemoryChat::new(peer("alice"));
     let mut sub = t.subscribe(42);
-    t.publish(42, Bytes::from_static(b"hello"))
-        .await
-        .expect("publish");
+    t.publish(42, Bytes::from_static(b"hello")).await.expect("publish");
     let frame = sub.next().await.expect("frame");
     assert_eq!(frame.channel_id, 42);
     assert_eq!(frame.sender.pubkey, b"alice");
@@ -34,12 +29,8 @@ async fn channels_are_isolated() {
     let t = InMemoryChat::new(peer("alice"));
     let mut sub_lobby = t.subscribe(1);
     let mut sub_slot = t.subscribe(2);
-    t.publish(1, Bytes::from_static(b"lobby"))
-        .await
-        .expect("publish");
-    t.publish(2, Bytes::from_static(b"slot"))
-        .await
-        .expect("publish");
+    t.publish(1, Bytes::from_static(b"lobby")).await.expect("publish");
+    t.publish(2, Bytes::from_static(b"slot")).await.expect("publish");
 
     let f1 = sub_lobby.next().await.expect("lobby frame");
     let f2 = sub_slot.next().await.expect("slot frame");
@@ -59,10 +50,7 @@ async fn connected_set_sees_each_others_traffic() {
     let mut sub_d = agents[3].subscribe(7);
 
     // Alice publishes.
-    agents[0]
-        .publish(7, Bytes::from_static(b"hi from alice"))
-        .await
-        .expect("publish");
+    agents[0].publish(7, Bytes::from_static(b"hi from alice")).await.expect("publish");
 
     for sub in [&mut sub_b, &mut sub_c, &mut sub_d] {
         let f = sub.next().await.expect("frame");
@@ -89,9 +77,7 @@ async fn register_channels_is_idempotent() {
 
     // Subsequent publishes work as expected.
     let mut sub = t.subscribe(2);
-    t.publish(2, Bytes::from_static(b"ok"))
-        .await
-        .expect("publish");
+    t.publish(2, Bytes::from_static(b"ok")).await.expect("publish");
     let f = sub.next().await.expect("frame");
     assert_eq!(&f.payload[..], b"ok");
 }
