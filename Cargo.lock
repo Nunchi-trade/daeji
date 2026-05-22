@@ -3727,6 +3727,7 @@ dependencies = [
  "alloy-primitives",
  "clap",
  "eyre",
+ "futures",
  "hex",
  "k256",
  "rand 0.8.6",
