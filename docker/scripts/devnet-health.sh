@@ -5,7 +5,7 @@ set -euo pipefail
 
 PROM="${PROM_URL:-http://localhost:9090}"
 
-query() { curl -sg "${PROM}/api/v1/query?query=$1" 2>/dev/null; }
+query() { curl -sG --data-urlencode "query=$1" "${PROM}/api/v1/query" 2>/dev/null; }
 val()   { echo "$1" | python3 -c "import json,sys; r=json.load(sys.stdin)['data']['result']; print(r[0]['value'][1] if r else 'N/A')" 2>/dev/null || echo "N/A"; }
 vals()  { echo "$1" | python3 -c "
 import json,sys

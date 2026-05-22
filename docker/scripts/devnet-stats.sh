@@ -22,7 +22,14 @@ declare -a PREV_SAMPLE_MS=()
 
 # Portable millisecond timestamp (macOS date lacks %N)
 millis() {
-    perl -MTime::HiRes=time -e 'printf "%d\n", time()*1000'
+    if perl -MTime::HiRes=time -e 'printf "%d\n", time()*1000' 2>/dev/null; then
+        return
+    elif python3 -c 'import time; print(int(time.time()*1000))' 2>/dev/null; then
+        return
+    else
+        # Fallback: second-precision (loses sub-second accuracy for blocks/s)
+        echo "$(date +%s)000"
+    fi
 }
 
 cleanup() {

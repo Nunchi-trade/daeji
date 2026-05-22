@@ -66,7 +66,7 @@
       "gridPos": {"h": 4, "w": 4, "x": 8, "y": 1},
       "id": 203,
       "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"expr": "count(rate(engine_voter_state_current_view[1m]) > 0)", "refId": "A"}],
+      "targets": [{"expr": "count(rate(engine_voter_state_current_view{job=\"kora-validators\"}[1m]) > 0)", "refId": "A"}],
       "title": "Nodes w/ Active Views",
       "type": "stat"
     },
@@ -83,7 +83,7 @@
       "gridPos": {"h": 4, "w": 4, "x": 12, "y": 1},
       "id": 204,
       "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"expr": "count(rate(finalized_height[1m]) > 0)", "refId": "A"}],
+      "targets": [{"expr": "count(rate(finalized_height{job=\"kora-validators\"}[1m]) > 0)", "refId": "A"}],
       "title": "Nodes Finalizing",
       "type": "stat"
     },
@@ -101,7 +101,7 @@
       "gridPos": {"h": 4, "w": 4, "x": 16, "y": 1},
       "id": 205,
       "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"expr": "max(finalized_height) - min(finalized_height)", "refId": "A"}],
+      "targets": [{"expr": "max(finalized_height{job=\"kora-validators\"}) - min(finalized_height{job=\"kora-validators\"})", "refId": "A"}],
       "title": "Height Drift",
       "type": "stat"
     },
@@ -182,8 +182,8 @@
       "id": 213,
       "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "targets": [
-        {"expr": "rate(engine_voter_state_current_view[1m])", "legendFormat": "Node {{validator_index}} view/s", "refId": "A"},
-        {"expr": "rate(finalized_height[1m])", "legendFormat": "Node {{validator_index}} finalized/s", "refId": "B"}
+        {"expr": "rate(engine_voter_state_current_view{job=\"kora-validators\"}[1m])", "legendFormat": "Node {{validator_index}} view/s", "refId": "A"},
+        {"expr": "rate(finalized_height{job=\"kora-validators\"}[1m])", "legendFormat": "Node {{validator_index}} finalized/s", "refId": "B"}
       ],
       "title": "View Rate vs Finalization Rate",
       "type": "timeseries"

@@ -182,7 +182,7 @@
       "gridPos": {"h": 7, "w": 8, "x": 8, "y": 5},
       "id": 11,
       "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"expr": "rate(finalized_height[1m])", "legendFormat": "Node {{validator_index}}", "refId": "A"}],
+      "targets": [{"expr": "rate(finalized_height{job=\"kora-validators\"}[1m])", "legendFormat": "Node {{validator_index}}", "refId": "A"}],
       "title": "Finalization Rate (blocks/s)",
       "type": "timeseries"
     },

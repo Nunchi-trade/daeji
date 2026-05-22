@@ -266,7 +266,7 @@
       "title": "Views Without Finalization (STALL INDICATOR)",
       "type": "timeseries",
       "targets": [
-        {"expr": "rate(engine_voter_state_current_view[1m]) > 0 and rate(finalized_height[1m]) == 0", "legendFormat": "STALLED {{instance}}"}
+        {"expr": "rate(engine_voter_state_current_view[1m]) > 0 and rate(finalized_height[1m]) < 0.001", "legendFormat": "STALLED {{instance}}"}
       ]
     },
     {

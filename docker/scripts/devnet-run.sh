@@ -310,10 +310,10 @@ docker compose -f compose/devnet.yaml stop \
     validator-node0 validator-node1 validator-node2 validator-node3 secondary-node0 >/dev/null 2>&1 || true
 clear_runtime_state
 
-if [[ "${COMPOSE_PROFILES}" != "none" ]]; then
+if [[ "${COMPOSE_PROFILES:-}" == *observability* ]]; then
     run_with_spinner "Launching validator, secondary, and observability containers..." docker compose -f compose/devnet.yaml --profile observability up -d \
         validator-node0 validator-node1 validator-node2 validator-node3 secondary-node0 \
-        prometheus grafana
+        prometheus grafana loki promtail
 else
     run_with_spinner "Launching validator and secondary containers..." docker compose -f compose/devnet.yaml up -d \
         validator-node0 validator-node1 validator-node2 validator-node3 secondary-node0

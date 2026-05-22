@@ -31,7 +31,7 @@
       "gridPos": {"h": 4, "w": 4, "x": 0, "y": 1},
       "id": 401,
       "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"expr": "1 / avg(rate(finalized_height[1m]) > 0)", "refId": "A"}],
+      "targets": [{"expr": "1 / clamp_min(avg(rate(finalized_height[1m])), 0.001)", "refId": "A"}],
       "title": "Avg Block Time",
       "type": "stat"
     },
@@ -171,7 +171,7 @@
       "id": 412,
       "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "targets": [
-        {"expr": "1 / (avg(rate(finalized_height[1m])) > 0)", "legendFormat": "Actual Block Time", "refId": "A"},
+        {"expr": "1 / clamp_min(avg(rate(finalized_height[1m])), 0.001)", "legendFormat": "Actual Block Time", "refId": "A"},
         {"expr": "avg(rate(marshaled_build_duration_sum[1m]) / rate(marshaled_build_duration_count[1m])) + avg(rate(engine_voter_finalization_latency_sum[1m]) / rate(engine_voter_finalization_latency_count[1m]))", "legendFormat": "Theoretical Min (build+finalize)", "refId": "B"},
         {"expr": "avg(rate(engine_batcher_verify_latency_sum[1m]) / rate(engine_batcher_verify_latency_count[1m]))", "legendFormat": "Sig Verify Overhead", "refId": "C"}
       ],
@@ -435,7 +435,7 @@
       "id": 452,
       "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "targets": [
-        {"expr": "(rate(runtime_outbound_bandwidth_total[5m]) + rate(runtime_inbound_bandwidth_total[5m])) / (rate(finalized_height[5m]) > 0)", "legendFormat": "Node {{validator_index}} bytes/block", "refId": "A"}
+        {"expr": "(rate(runtime_outbound_bandwidth_total[5m]) + rate(runtime_inbound_bandwidth_total[5m])) / clamp_min(rate(finalized_height[5m]), 0.001)", "legendFormat": "Node {{validator_index}} bytes/block", "refId": "A"}
       ],
       "title": "Network Cost per Block",
       "type": "timeseries"
@@ -523,7 +523,7 @@
       "id": 463,
       "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "targets": [
-        {"expr": "deriv(runtime_process_rss[5m]) / (rate(finalized_height[5m]) > 0)", "legendFormat": "Node {{validator_index}} bytes/block", "refId": "A"}
+        {"expr": "deriv(runtime_process_rss[5m]) / clamp_min(rate(finalized_height[5m]), 0.001)", "legendFormat": "Node {{validator_index}} bytes/block", "refId": "A"}
       ],
       "title": "Memory Growth per Block",
       "type": "timeseries"
@@ -558,7 +558,7 @@
         {"expr": "avg(rate(marshaled_build_duration_sum[5m]) / rate(marshaled_build_duration_count[5m]))", "legendFormat": "Build", "refId": "A"},
         {"expr": "avg(rate(engine_voter_notarization_latency_sum[5m]) / rate(engine_voter_notarization_latency_count[5m]))", "legendFormat": "Notarization", "refId": "B"},
         {"expr": "clamp_min(avg(rate(engine_voter_finalization_latency_sum[5m]) / rate(engine_voter_finalization_latency_count[5m])) - avg(rate(engine_voter_notarization_latency_sum[5m]) / rate(engine_voter_notarization_latency_count[5m])), 0)", "legendFormat": "Finalization", "refId": "C"},
-        {"expr": "clamp_min((1 / (avg(rate(finalized_height[5m])) > 0)) - avg(rate(engine_voter_finalization_latency_sum[5m]) / rate(engine_voter_finalization_latency_count[5m])) - avg(rate(marshaled_build_duration_sum[5m]) / rate(marshaled_build_duration_count[5m])), 0)", "legendFormat": "Wasted (nullified)", "refId": "D"}
+        {"expr": "clamp_min((1 / clamp_min(avg(rate(finalized_height[5m])), 0.001)) - avg(rate(engine_voter_finalization_latency_sum[5m]) / rate(engine_voter_finalization_latency_count[5m])) - avg(rate(marshaled_build_duration_sum[5m]) / rate(marshaled_build_duration_count[5m])), 0)", "legendFormat": "Wasted (nullified)", "refId": "D"}
       ],
       "title": "Time Budget Breakdown",
       "type": "piechart"
