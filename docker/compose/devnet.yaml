@@ -299,7 +299,7 @@ services:
       - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
       - IS_BOOTSTRAP=false
       - BOOTSTRAP_PEERS=node0:30303
-      - HEALTHCHECK_MODE=ready
+      - HEALTHCHECK_MODE=p2p
     ports:
       - "30500:30303"
 
