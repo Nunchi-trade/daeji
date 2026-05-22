@@ -34,13 +34,25 @@ x-validator-common: &validator-common
   restart: unless-stopped
   stop_grace_period: 30s
   stop_signal: SIGTERM
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  ulimits:
+    nofile:
+      soft: 65536
+      hard: 65536
+    core: 0
   deploy:
     resources:
       limits:
         memory: 4G
         cpus: "2"
+        pids: 4096
   tmpfs:
-    - /runtime:size=1g,mode=1777
+    - /runtime:size=1g,mode=0700
+    - /tmp:size=64m,mode=0700
   healthcheck:
     test: ["CMD", "/scripts/healthcheck.sh"]
     interval: 10s
@@ -215,8 +227,8 @@ services:
       - HEALTHCHECK_MODE=ready
     ports:
       - "30400:30303"
-      - "8545:8545"
-      - "9000:9002"
+      - "127.0.0.1:8545:8545"
+      - "127.0.0.1:9000:9002"
 
   validator-node1:
     <<: *validator-common
@@ -238,8 +250,8 @@ services:
       - HEALTHCHECK_MODE=ready
     ports:
       - "30401:30303"
-      - "8546:8545"
-      - "9001:9002"
+      - "127.0.0.1:8546:8545"
+      - "127.0.0.1:9001:9002"
 
   validator-node2:
     <<: *validator-common
@@ -261,8 +273,8 @@ services:
       - HEALTHCHECK_MODE=ready
     ports:
       - "30402:30303"
-      - "8547:8545"
-      - "9002:9002"
+      - "127.0.0.1:8547:8545"
+      - "127.0.0.1:9002:9002"
 
   validator-node3:
     <<: *validator-common
@@ -284,8 +296,8 @@ services:
       - HEALTHCHECK_MODE=ready
     ports:
       - "30403:30303"
-      - "8548:8545"
-      - "9003:9002"
+      - "127.0.0.1:8548:8545"
+      - "127.0.0.1:9003:9002"
 
   secondary-node0:
     <<: *validator-common
@@ -310,6 +322,14 @@ services:
   prometheus:
     image: prom/prometheus:latest
     profiles: ["observability"]
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=64m,mode=0700
     volumes:
       - prometheus_data:/prometheus
       - ../config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -320,29 +340,49 @@ services:
       - '--storage.tsdb.path=/prometheus'
       - '--web.enable-lifecycle'
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     networks:
       - kora-net
 
   loki:
     image: grafana/loki:3.4.2
     profiles: ["observability"]
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=64m,mode=0700
     volumes:
       - loki_data:/loki
       - ../config/loki.yml:/etc/loki/local-config.yaml:ro
     command: -config.file=/etc/loki/local-config.yaml
     ports:
-      - "3100:3100"
+      - "127.0.0.1:3100:3100"
     networks:
       - kora-net
 
   promtail:
     image: grafana/promtail:3.4.2
     profiles: ["observability"]
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=64m,mode=0700
     depends_on:
       - loki
     volumes:
       - ../config/promtail.yml:/etc/promtail/config.yml:ro
+      # SECURITY: Docker socket is mounted read-only so Promtail can discover
+      # container labels for log collection. This grants the container visibility
+      # into all Docker API metadata. In production, consider using a socket
+      # proxy (e.g. tecnativa/docker-socket-proxy) to restrict API access.
       - /var/run/docker.sock:/var/run/docker.sock:ro
     command: -config.file=/etc/promtail/config.yml
     networks:
@@ -351,6 +391,14 @@ services:
   grafana:
     image: grafana/grafana:latest
     profiles: ["observability"]
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=64m,mode=0700
     depends_on:
       - prometheus
       - loki
@@ -364,6 +412,6 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     networks:
       - kora-net
