@@ -476,21 +476,29 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
             txs.insert(tx_hash, pending_tx.clone());
             order.push_back(tx_hash);
 
-            // Evict oldest entries when the pending set exceeds the cap.
+            // Evict oldest entries when either the pending map or the
+            // order deque exceeds the cap. The deque can accumulate stale
+            // entries (hashes removed from the map by
+            // `get_transaction_by_hash` but not from the deque), so we
+            // must bound both independently.
             let cap = self.max_pending_txs;
-            if txs.len() > cap {
-                let excess = txs.len() - cap;
+            let needs_eviction = txs.len() > cap || order.len() > cap;
+            if needs_eviction {
+                let map_excess = txs.len().saturating_sub(cap);
+                let deque_excess = order.len().saturating_sub(cap);
+                let target = map_excess.max(deque_excess);
                 warn!(
-                    excess,
-                    cap, "pending transaction cache exceeded limit, evicting oldest entries"
+                    map_excess,
+                    deque_excess,
+                    cap,
+                    "pending transaction cache exceeded limit, evicting oldest entries"
                 );
                 let mut evicted = 0;
                 let mut drained = 0usize;
                 // Drain from the front (oldest) of the order deque until
-                // we have removed enough entries from the map, skipping
-                // hashes that were already removed (e.g. by
-                // get_transaction_by_hash).
-                while evicted < excess && !order.is_empty() {
+                // we have removed enough entries from the map AND trimmed
+                // the deque back to the cap.
+                while (evicted < map_excess || drained < target) && !order.is_empty() {
                     let old_hash = order.pop_front().unwrap();
                     drained += 1;
                     if txs.remove(&old_hash).is_some() {
@@ -687,8 +695,15 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
 
     async fn new_pending_transaction_filter(&self) -> RpcResult<U256> {
         let known_hashes = self.pending_txs.read().await.keys().copied().collect();
-        let evicted = self.pending_tx_evicted.load(std::sync::atomic::Ordering::Relaxed);
-        let last_seen_index = evicted + self.pending_tx_order.read().await.len();
+        // Read `evicted` and `order.len()` under the same lock to avoid a
+        // race where an eviction between the two reads would shift the
+        // cursor. This is consistent with `send_raw_transaction`'s lock
+        // ordering (`pending_txs` then `pending_tx_order`).
+        let last_seen_index = {
+            let order = self.pending_tx_order.read().await;
+            let evicted = self.pending_tx_evicted.load(std::sync::atomic::Ordering::Relaxed);
+            evicted + order.len()
+        };
         let id =
             self.filter_store.create(Filter::PendingTransaction { known_hashes, last_seen_index });
         Ok(U256::from(id))
@@ -807,22 +822,31 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
             }
             FilterSnapshot::PendingTx { known_hashes, last_seen_index } => {
                 // Return new pending tx hashes in insertion order.
-                let tx_order = self.pending_tx_order.read().await;
-                let evicted = self.pending_tx_evicted.load(std::sync::atomic::Ordering::Relaxed);
-                // Convert the absolute cursor to a deque-relative offset.
-                // If entries were evicted past the cursor, start from the
-                // front of the deque (relative offset 0).
-                let relative_skip = last_seen_index.saturating_sub(evicted);
-                let new_hashes: Vec<B256> = tx_order
-                    .iter()
-                    .skip(relative_skip)
-                    .filter(|h| !known_hashes.contains(*h))
-                    .copied()
-                    .collect();
-                let new_index = evicted + tx_order.len();
+                //
+                // IMPORTANT: We must drop the `pending_tx_order` lock before
+                // acquiring `pending_txs` to maintain consistent lock ordering
+                // with `send_raw_transaction` (which takes `pending_txs` then
+                // `pending_tx_order`).
+                let (new_hashes, new_index) = {
+                    let tx_order = self.pending_tx_order.read().await;
+                    let evicted =
+                        self.pending_tx_evicted.load(std::sync::atomic::Ordering::Relaxed);
+                    // Convert the absolute cursor to a deque-relative offset.
+                    // If entries were evicted past the cursor, start from the
+                    // front of the deque (relative offset 0).
+                    let relative_skip = last_seen_index.saturating_sub(evicted);
+                    let hashes: Vec<B256> = tx_order
+                        .iter()
+                        .skip(relative_skip)
+                        .filter(|h| !known_hashes.contains(*h))
+                        .copied()
+                        .collect();
+                    let idx = evicted + tx_order.len();
+                    (hashes, idx)
+                    // tx_order lock is dropped here
+                };
                 let current_hashes: HashSet<B256> =
                     self.pending_txs.read().await.keys().copied().collect();
-                drop(tx_order);
 
                 let mut filter = entry.lock().await;
                 if let Filter::PendingTransaction { known_hashes: kh, last_seen_index: idx } =
