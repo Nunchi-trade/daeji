@@ -252,8 +252,8 @@ fn publish_mempool_inclusions(mempool_broadcast: Option<&MempoolEventSender>, bl
 }
 
 #[cfg(test)]
-mod tests {
-    use alloy_primitives::{B256, Bytes};
+mod mempool_tests {
+    use alloy_primitives::{B256, Bytes, keccak256};
     use kora_domain::{BlockId, StateRoot, Tx};
 
     use super::*;
