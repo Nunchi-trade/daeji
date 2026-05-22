@@ -1,6 +1,6 @@
 //! REVM-based block executor.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use alloy_consensus::Header;
 use alloy_primitives::{B256, Bytes, U256, keccak256};
@@ -212,7 +212,7 @@ impl RevmExecutor {
         params: CallParams,
         context: &BlockContext,
     ) -> Result<Bytes, ExecutionError> {
-        let adapter = StateDbAdapter::new(state.clone(), HashMap::new());
+        let adapter = StateDbAdapter::new(state.clone(), context.recent_block_hashes.clone());
         let db = State::builder().with_database_ref(adapter).build();
 
         type Db<S> = State<revm::database::WrapDatabaseRef<StateDbAdapter<S>>>;

@@ -210,23 +210,13 @@ struct RevmContextProvider {
     block_index: Option<Arc<BlockIndex>>,
 }
 
-/// Maximum number of ancestor block hashes available to the BLOCKHASH opcode.
-const BLOCKHASH_HISTORY: u64 = 256;
-
 impl RevmContextProvider {
     /// Collect recent block hashes from the block index for the BLOCKHASH opcode.
     fn recent_block_hashes(&self, current_height: u64) -> std::collections::HashMap<u64, B256> {
-        let Some(index) = &self.block_index else {
-            return std::collections::HashMap::new();
-        };
-        let start = current_height.saturating_sub(BLOCKHASH_HISTORY);
-        let mut hashes = std::collections::HashMap::new();
-        for num in start..current_height {
-            if let Some(block) = index.get_block_by_number(num) {
-                hashes.insert(num, block.hash);
-            }
+        match &self.block_index {
+            Some(index) => index.recent_block_hashes(current_height),
+            None => std::collections::HashMap::new(),
         }
-        hashes
     }
 }
 
