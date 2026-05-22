@@ -194,12 +194,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeMap,
-        sync::{Arc, RwLock},
-    };
+    use std::{collections::BTreeMap, sync::Arc};
 
     use alloy_primitives::{Address, Bytes, U256};
+    use parking_lot::RwLock;
     use kora_executor::ExecutionOutcome;
     use kora_qmdb::ChangeSet;
 
@@ -280,20 +278,19 @@ mod tests {
 
         fn add(&self, tx: Tx) {
             let id = tx.id();
-            self.txs.write().unwrap().insert(id, tx);
+            self.txs.write().insert(id, tx);
         }
     }
 
     impl Mempool for MockMempool {
         fn insert(&self, tx: Tx) -> bool {
             let id = tx.id();
-            self.txs.write().unwrap().insert(id, tx).is_none()
+            self.txs.write().insert(id, tx).is_none()
         }
 
         fn build(&self, max_txs: usize, excluded: &BTreeSet<TxId>) -> Vec<Tx> {
             self.txs
                 .read()
-                .unwrap()
                 .iter()
                 .filter(|(id, _)| !excluded.contains(id))
                 .take(max_txs)
@@ -302,14 +299,14 @@ mod tests {
         }
 
         fn prune(&self, tx_ids: &[TxId]) {
-            let mut txs = self.txs.write().unwrap();
+            let mut txs = self.txs.write();
             for id in tx_ids {
                 txs.remove(id);
             }
         }
 
         fn len(&self) -> usize {
-            self.txs.read().unwrap().len()
+            self.txs.read().len()
         }
     }
 
@@ -330,19 +327,19 @@ mod tests {
 
     impl SnapshotStore<MockStateDb> for MockSnapshotStore {
         fn get(&self, digest: &Digest) -> Option<Snapshot<MockStateDb>> {
-            self.snapshots.read().unwrap().get(digest).cloned()
+            self.snapshots.read().get(digest).cloned()
         }
 
         fn insert(&self, digest: Digest, snapshot: Snapshot<MockStateDb>) {
-            self.snapshots.write().unwrap().insert(digest, snapshot);
+            self.snapshots.write().insert(digest, snapshot);
         }
 
         fn is_persisted(&self, digest: &Digest) -> bool {
-            self.persisted.read().unwrap().contains(digest)
+            self.persisted.read().contains(digest)
         }
 
         fn mark_persisted(&self, digests: &[Digest]) {
-            let mut persisted = self.persisted.write().unwrap();
+            let mut persisted = self.persisted.write();
             for digest in digests {
                 persisted.insert(*digest);
             }
@@ -363,7 +360,6 @@ mod tests {
             let snapshot = self
                 .snapshots
                 .read()
-                .unwrap()
                 .get(&digest)
                 .cloned()
                 .ok_or(ConsensusError::SnapshotNotFound(digest))?;
