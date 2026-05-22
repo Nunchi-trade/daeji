@@ -620,7 +620,6 @@ mod finalize_success_tests {
             assert_eq!(indexed_block.hash, block_hash);
         });
     }
-
 }
 
 #[derive(Clone, Debug)]
