@@ -65,10 +65,7 @@ impl SelfdestructGcLog {
         std::fs::create_dir_all(dir)?;
         let path = dir.join(GC_LOG_FILENAME);
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
-        Ok(Self {
-            writer: Mutex::new(BufWriter::new(file)),
-            path,
-        })
+        Ok(Self { writer: Mutex::new(BufWriter::new(file)), path })
     }
 
     /// Record one or more selfdestructed addresses from a finalized block.
@@ -153,8 +150,7 @@ mod tests {
 
         gc_log.record(1, &[]);
 
-        let metadata =
-            std::fs::metadata(dir.path().join(GC_LOG_FILENAME)).expect("metadata");
+        let metadata = std::fs::metadata(dir.path().join(GC_LOG_FILENAME)).expect("metadata");
         assert_eq!(metadata.len(), 0);
     }
 
