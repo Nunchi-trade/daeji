@@ -13,6 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use commonware_cryptography::sha256;
 use kora_domain::ConsensusDigest;
 use tracing::{debug, warn};
 
@@ -90,7 +91,7 @@ pub fn read_commit_marker(data_dir: &Path) -> Option<ConsensusDigest> {
 
     let mut bytes = [0u8; 32];
     match hex::decode_to_slice(hex_str, &mut bytes) {
-        Ok(()) => Some(ConsensusDigest(bytes)),
+        Ok(()) => Some(sha256::Digest(bytes)),
         Err(e) => {
             warn!(
                 error = %e,
@@ -109,7 +110,7 @@ mod tests {
     #[test]
     fn round_trip_write_read() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let digest = ConsensusDigest([0xab; 32]);
+        let digest = sha256::Digest([0xab; 32]);
 
         write_commit_marker(dir.path(), &digest).expect("write");
         let read_back = read_commit_marker(dir.path());
@@ -135,8 +136,8 @@ mod tests {
     #[test]
     fn overwrite_marker() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let digest_a = ConsensusDigest([0x11; 32]);
-        let digest_b = ConsensusDigest([0x22; 32]);
+        let digest_a = sha256::Digest([0x11; 32]);
+        let digest_b = sha256::Digest([0x22; 32]);
 
         write_commit_marker(dir.path(), &digest_a).expect("write a");
         assert_eq!(read_commit_marker(dir.path()), Some(digest_a));

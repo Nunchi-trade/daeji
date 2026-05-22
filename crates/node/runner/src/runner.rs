@@ -274,11 +274,7 @@ impl BlockContextProvider for RevmContextProvider {
     }
 }
 
-fn spawn_ledger_observers<S: Spawner>(
-    service: LedgerService,
-    spawner: S,
-    data_dir: PathBuf,
-) {
+fn spawn_ledger_observers<S: Spawner>(service: LedgerService, spawner: S, data_dir: PathBuf) {
     let mut receiver = service.subscribe();
     spawner.shared(true).spawn(move |_| async move {
         while let Some(event) = receiver.next().await {
@@ -291,9 +287,7 @@ fn spawn_ledger_observers<S: Spawner>(
                 }
                 LedgerEvent::SnapshotPersisted(digest) => {
                     trace!(?digest, "snapshot persisted");
-                    if let Err(e) =
-                        crate::commit_marker::write_commit_marker(&data_dir, &digest)
-                    {
+                    if let Err(e) = crate::commit_marker::write_commit_marker(&data_dir, &digest) {
                         warn!(
                             error = %e,
                             ?digest,
