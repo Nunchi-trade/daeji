@@ -281,10 +281,16 @@ fn spawn_task_watchdog(context: &tokio::Context, name: &'static str, handle: Run
     context.with_label(name).shared(true).spawn(move |_| async move {
         match handle.await {
             Ok(()) => {
-                error!(task = name, "critical task exited unexpectedly without error");
+                error!(task = name, "critical task exited cleanly — this should never happen for a long-lived consensus actor");
             }
-            Err(e) => {
-                error!(task = name, error = %e, "critical task failed (possible panic)");
+            Err(commonware_runtime::Error::Exited) => {
+                error!(task = name, "critical task panicked (runtime caught panic and returned Error::Exited)");
+            }
+            Err(commonware_runtime::Error::Closed) => {
+                warn!(task = name, "critical task terminated because the runtime context was shut down");
+            }
+            Err(ref e) => {
+                error!(task = name, error = %e, error_debug = ?e, "critical task failed with unexpected error");
             }
         }
         error!(
