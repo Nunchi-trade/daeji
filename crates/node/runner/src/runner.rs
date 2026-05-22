@@ -623,12 +623,7 @@ impl NodeRunner for ProductionRunner {
             transport.simplex.resolver,
         );
 
-        spawn_consensus_monitor(
-            context,
-            engine_handle,
-            marshal_handle,
-            broadcast_handle,
-        );
+        spawn_consensus_monitor(context, engine_handle, marshal_handle, broadcast_handle);
 
         info!("Validator started successfully");
         Ok(ledger)
