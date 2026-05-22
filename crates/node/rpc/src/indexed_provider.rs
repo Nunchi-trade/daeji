@@ -251,9 +251,9 @@ impl<S> IndexedStateProvider<S> {
                     )))
                 }
             }
-            Some(BlockNumberOrTag::Tag(tag)) => Err(RpcError::Unsupported(format!(
-                "historical state not available (tag {tag:?})",
-            ))),
+            Some(BlockNumberOrTag::Tag(tag)) => {
+                Err(RpcError::Unsupported(format!("historical state not available (tag {tag:?})",)))
+            }
         }
     }
 
@@ -902,10 +902,8 @@ mod tests {
         index.insert_block(create_test_block(5, B256::repeat_byte(5)), vec![], vec![]);
         let provider = IndexedStateProvider::with_chain_id(index, MockState, 1337);
 
-        let balance = provider
-            .balance(Address::ZERO, Some(BlockNumberOrTag::Latest))
-            .await
-            .unwrap();
+        let balance =
+            provider.balance(Address::ZERO, Some(BlockNumberOrTag::Latest)).await.unwrap();
         assert_eq!(balance, U256::from(1000));
     }
 
