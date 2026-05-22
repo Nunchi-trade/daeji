@@ -213,10 +213,7 @@ struct RevmContextProvider {
 impl RevmContextProvider {
     /// Collect recent block hashes from the block index for the BLOCKHASH opcode.
     fn recent_block_hashes(&self, current_height: u64) -> std::collections::HashMap<u64, B256> {
-        match &self.block_index {
-            Some(index) => index.recent_block_hashes(current_height),
-            None => std::collections::HashMap::new(),
-        }
+        self.block_index.as_ref().map_or_else(std::collections::HashMap::new, |index| index.recent_block_hashes(current_height))
     }
 }
 
