@@ -1,7 +1,7 @@
 //! Ethereum JSON-RPC API implementation.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     future::Future,
     pin::Pin,
     sync::Arc,
@@ -16,6 +16,7 @@ use alloy_primitives::{Address, B256, Bytes, U64, U256};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use kora_domain::MempoolEvent;
 use tokio::sync::RwLock;
+use tracing::warn;
 
 use crate::{
     error::RpcError,
@@ -32,6 +33,14 @@ const DEFAULT_GAS_ORACLE_BLOCKS: usize = 20;
 const DEFAULT_GAS_ORACLE_PERCENTILE: u8 = 60;
 const GWEI: u64 = 1_000_000_000;
 const DEFAULT_MAX_GAS_PRICE: u64 = 500 * GWEI;
+
+/// Maximum number of pending transactions to track in memory.
+///
+/// When the limit is reached, the oldest entries are evicted on the next
+/// `send_raw_transaction` call. This prevents unbounded memory growth
+/// under sustained load when transactions are submitted faster than they
+/// are finalized and queried.
+const MAX_PENDING_TXS: usize = 10_000;
 
 /// Ethereum JSON-RPC API trait.
 ///
@@ -281,7 +290,14 @@ pub struct EthApiImpl<S: StateProvider> {
     /// Insertion-ordered record of pending transaction hashes so that
     /// `eth_getFilterChanges` for pending-tx filters can return hashes
     /// in arrival order rather than an arbitrary sorted order.
-    pending_tx_order: Arc<RwLock<Vec<B256>>>,
+    pending_tx_order: Arc<RwLock<VecDeque<B256>>>,
+    /// Cumulative count of entries evicted from the front of
+    /// `pending_tx_order`. Filter cursors store an absolute index; this
+    /// offset converts it to a position inside the (now shorter) deque.
+    pending_tx_evicted: Arc<std::sync::atomic::AtomicUsize>,
+    /// Maximum number of pending transactions to hold in memory before
+    /// evicting the oldest entries.
+    max_pending_txs: usize,
     filter_store: Arc<FilterStore>,
 }
 
@@ -323,7 +339,9 @@ impl<S: StateProvider + 'static> EthApiImpl<S> {
             mempool_broadcast: None,
             gas_oracle_config,
             gas_oracle_cache: Arc::new(RwLock::new(None)),
-            pending_tx_order: Arc::new(RwLock::new(Vec::new())),
+            pending_tx_order: Arc::new(RwLock::new(VecDeque::new())),
+            pending_tx_evicted: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            max_pending_txs: MAX_PENDING_TXS,
             filter_store: Arc::new(FilterStore::default()),
         }
     }
@@ -339,6 +357,13 @@ impl<S: StateProvider + 'static> EthApiImpl<S> {
     #[must_use]
     pub fn with_mempool_broadcast(mut self, mempool_broadcast: MempoolEventSender) -> Self {
         self.mempool_broadcast = Some(mempool_broadcast);
+        self
+    }
+
+    /// Override the maximum number of pending transactions held in memory.
+    #[cfg(test)]
+    fn with_max_pending_txs(mut self, max_pending_txs: usize) -> Self {
+        self.max_pending_txs = max_pending_txs;
         self
     }
 
@@ -445,8 +470,41 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
             false
         };
 
-        self.pending_txs.write().await.insert(tx_hash, pending_tx.clone());
-        self.pending_tx_order.write().await.push(tx_hash);
+        {
+            let mut txs = self.pending_txs.write().await;
+            let mut order = self.pending_tx_order.write().await;
+            txs.insert(tx_hash, pending_tx.clone());
+            order.push_back(tx_hash);
+
+            // Evict oldest entries when the pending set exceeds the cap.
+            let cap = self.max_pending_txs;
+            if txs.len() > cap {
+                let excess = txs.len() - cap;
+                warn!(
+                    excess,
+                    cap,
+                    "pending transaction cache exceeded limit, evicting oldest entries"
+                );
+                let mut evicted = 0;
+                let mut drained = 0usize;
+                // Drain from the front (oldest) of the order deque until
+                // we have removed enough entries from the map, skipping
+                // hashes that were already removed (e.g. by
+                // get_transaction_by_hash).
+                while evicted < excess && !order.is_empty() {
+                    let old_hash = order.pop_front().unwrap();
+                    drained += 1;
+                    if txs.remove(&old_hash).is_some() {
+                        evicted += 1;
+                    }
+                }
+                // Update the cumulative eviction offset so that filter
+                // cursors (which store absolute indices) remain correct.
+                self.pending_tx_evicted
+                    .fetch_add(drained, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+
         if accepted {
             self.broadcast_pending_tx(tx_hash, pending_tx);
         }
@@ -631,7 +689,8 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
 
     async fn new_pending_transaction_filter(&self) -> RpcResult<U256> {
         let known_hashes = self.pending_txs.read().await.keys().copied().collect();
-        let last_seen_index = self.pending_tx_order.read().await.len();
+        let evicted = self.pending_tx_evicted.load(std::sync::atomic::Ordering::Relaxed);
+        let last_seen_index = evicted + self.pending_tx_order.read().await.len();
         let id =
             self.filter_store.create(Filter::PendingTransaction { known_hashes, last_seen_index });
         Ok(U256::from(id))
@@ -751,13 +810,19 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
             FilterSnapshot::PendingTx { known_hashes, last_seen_index } => {
                 // Return new pending tx hashes in insertion order.
                 let tx_order = self.pending_tx_order.read().await;
+                let evicted =
+                    self.pending_tx_evicted.load(std::sync::atomic::Ordering::Relaxed);
+                // Convert the absolute cursor to a deque-relative offset.
+                // If entries were evicted past the cursor, start from the
+                // front of the deque (relative offset 0).
+                let relative_skip = last_seen_index.saturating_sub(evicted);
                 let new_hashes: Vec<B256> = tx_order
                     .iter()
-                    .skip(last_seen_index)
+                    .skip(relative_skip)
                     .filter(|h| !known_hashes.contains(*h))
                     .copied()
                     .collect();
-                let new_index = tx_order.len();
+                let new_index = evicted + tx_order.len();
                 let current_hashes: HashSet<B256> =
                     self.pending_txs.read().await.keys().copied().collect();
                 drop(tx_order);
@@ -2336,5 +2401,53 @@ mod tests {
     fn block_gas_used_ratio_edge_cases() {
         assert_eq!(block_gas_used_ratio(100, 0), 0.0);
         assert_eq!(block_gas_used_ratio(30_000_000, 30_000_000), 1.0);
+    }
+
+    #[tokio::test]
+    async fn pending_tx_cache_evicts_oldest_when_over_limit() {
+        let callback: TxSubmitCallback = Arc::new(move |_| Box::pin(async { Ok(()) }));
+        let api = EthApiImpl::with_tx_submit(1, NoopStateProvider, callback)
+            .with_max_pending_txs(3);
+
+        // Submit 4 transactions with a cap of 3.
+        let h0 = EthApiServer::send_raw_transaction(&api, signed_test_tx(1, 0)).await.unwrap();
+        let _h1 = EthApiServer::send_raw_transaction(&api, signed_test_tx(1, 1)).await.unwrap();
+        let _h2 = EthApiServer::send_raw_transaction(&api, signed_test_tx(1, 2)).await.unwrap();
+        let h3 = EthApiServer::send_raw_transaction(&api, signed_test_tx(1, 3)).await.unwrap();
+
+        // The oldest transaction (h0) should have been evicted.
+        let txs = api.pending_txs.read().await;
+        assert_eq!(txs.len(), 3, "map must be bounded to the cap");
+        assert!(!txs.contains_key(&h0), "oldest tx should be evicted");
+        assert!(txs.contains_key(&h3), "newest tx should still be present");
+        drop(txs);
+
+        let order = api.pending_tx_order.read().await;
+        assert_eq!(order.len(), 3, "order deque must be bounded to the cap");
+    }
+
+    #[tokio::test]
+    async fn pending_tx_filter_works_after_eviction() {
+        let callback: TxSubmitCallback = Arc::new(move |_| Box::pin(async { Ok(()) }));
+        let api = EthApiImpl::with_tx_submit(1, NoopStateProvider, callback)
+            .with_max_pending_txs(3);
+
+        // Submit 3 transactions, then create a filter.
+        let _h0 = EthApiServer::send_raw_transaction(&api, signed_test_tx(1, 0)).await.unwrap();
+        let _h1 = EthApiServer::send_raw_transaction(&api, signed_test_tx(1, 1)).await.unwrap();
+        let _h2 = EthApiServer::send_raw_transaction(&api, signed_test_tx(1, 2)).await.unwrap();
+        let filter_id = EthApiServer::new_pending_transaction_filter(&api).await.unwrap();
+
+        // Submit 2 more which trigger eviction of h0 and h1.
+        let h3 = EthApiServer::send_raw_transaction(&api, signed_test_tx(1, 3)).await.unwrap();
+        let h4 = EthApiServer::send_raw_transaction(&api, signed_test_tx(1, 4)).await.unwrap();
+
+        // Filter changes should report the newly added hashes.
+        let changes = EthApiServer::get_filter_changes(&api, filter_id).await.unwrap();
+        let FilterChanges::Hashes(hashes) = changes else {
+            panic!("pending transaction filter should return hashes");
+        };
+        assert!(hashes.contains(&h3), "new tx after filter creation should appear");
+        assert!(hashes.contains(&h4), "new tx after filter creation should appear");
     }
 }
