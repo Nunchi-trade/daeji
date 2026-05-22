@@ -120,113 +120,25 @@ async fn handle_finalized_update<E, P>(
     match update {
         Update::Tip(..) => {}
         Update::Block(block, ack) => {
-            let digest = block.commitment();
-            let snapshot_exists = state.query_state_root(digest).await.is_some();
-            let mut execution_outcome = None;
-            let mut execution_context = None;
+            let result = finalize_block(
+                &state,
+                &context,
+                &executor,
+                &provider,
+                block_index.as_ref(),
+                &block,
+            )
+            .await;
 
-            if !snapshot_exists || block_index.is_some() {
-                if snapshot_exists {
-                    trace!(?digest, "re-executing finalized block for RPC indexing");
-                } else {
-                    trace!(?digest, "missing snapshot for finalized block; re-executing");
+            if let Ok((Some(outcome), Some(block_context))) = result.as_ref() {
+                if let Some(index) = block_index.as_ref() {
+                    index_finalized_block(index, &block, block_context, outcome);
                 }
-                let parent_digest = block.parent();
-                if let Some(parent_snapshot) = state.parent_snapshot(parent_digest).await {
-                    let block_context = provider.context(&block);
-                    let execution = match BlockExecution::execute(
-                        &parent_snapshot,
-                        &executor,
-                        &block_context,
-                        &block.txs,
-                    )
-                    .await
-                    {
-                        Ok(result) => result,
-                        Err(err) => {
-                            error!(?digest, error = ?err, "failed to execute finalized block");
-                            ack.acknowledge();
-                            return;
-                        }
-                    };
-
-                    let state_root = match state
-                        .compute_root_from_store(parent_digest, execution.outcome.changes.clone())
-                        .await
-                    {
-                        Ok(root) => root,
-                        Err(err) => {
-                            error!(?digest, error = ?err, "failed to compute qmdb root");
-                            ack.acknowledge();
-                            return;
-                        }
-                    };
-                    if state_root != block.state_root {
-                        warn!(
-                            ?digest,
-                            expected = ?block.state_root,
-                            computed = ?state_root,
-                            "state root mismatch for finalized block"
-                        );
-                        ack.acknowledge();
-                        return;
-                    }
-
-                    if !snapshot_exists {
-                        let merged_changes =
-                            parent_snapshot.state.merge_changes(execution.outcome.changes.clone());
-                        let next_state =
-                            OverlayState::new(parent_snapshot.state.base(), merged_changes);
-                        state
-                            .insert_snapshot(
-                                digest,
-                                parent_digest,
-                                next_state,
-                                state_root,
-                                execution.outcome.changes.clone(),
-                                &block.txs,
-                            )
-                            .await;
-                    }
-
-                    execution_outcome = Some(execution.outcome);
-                    execution_context = Some(block_context);
-                } else if snapshot_exists {
-                    warn!(
-                        ?digest,
-                        ?parent_digest,
-                        "missing parent snapshot for cached finalized block; skipping RPC indexing replay"
-                    );
-                } else {
-                    error!(?digest, ?parent_digest, "missing parent snapshot for finalized block");
-                    ack.acknowledge();
-                    return;
-                }
-            } else {
-                trace!(?digest, "using cached snapshot for finalized block");
             }
-            let persist_state = state.clone();
-            let persist_handle = context
-                .shared(true)
-                .spawn(move |_| async move { persist_state.persist_snapshot(digest).await });
-            let persist_result = match persist_handle.await {
-                Ok(result) => result,
-                Err(err) => {
-                    error!(?digest, error = ?err, "persist task failed");
-                    ack.acknowledge();
-                    return;
-                }
-            };
-            if let Err(err) = persist_result {
-                error!(?digest, error = ?err, "failed to persist finalized block");
-                ack.acknowledge();
-                return;
-            }
-            if let (Some(index), Some(outcome), Some(block_context)) =
-                (block_index.as_ref(), execution_outcome.as_ref(), execution_context.as_ref())
-            {
-                index_finalized_block(index, &block, block_context, outcome);
-            }
+
+            // Always prune the mempool regardless of whether finalization succeeded.
+            // The block is consensus-finalized, so its transactions must never be
+            // re-proposed even if local execution or persistence failed.
             state.prune_mempool(&block.txs).await;
             publish_mempool_inclusions(mempool_broadcast.as_ref(), &block);
             // Marshal waits for the application to acknowledge processing before advancing the
@@ -234,6 +146,125 @@ async fn handle_finalized_update<E, P>(
             ack.acknowledge();
         }
     }
+}
+
+/// Inner helper that performs the fallible finalization work for a single block.
+///
+/// Returns `Ok((execution_outcome, execution_context))` on success, where the
+/// inner `Option`s may be `None` when a cached snapshot was reused without
+/// re-execution.  Returns `Err(())` when a fatal error is encountered (already
+/// logged inside this function).
+async fn finalize_block<E, P>(
+    state: &LedgerService,
+    context: &tokio::Context,
+    executor: &E,
+    provider: &P,
+    block_index: Option<&Arc<BlockIndex>>,
+    block: &Block,
+) -> Result<(Option<ExecutionOutcome>, Option<BlockContext>), ()>
+where
+    E: BlockExecutor<OverlayState<QmdbState>, Tx = Bytes>,
+    P: BlockContextProvider,
+{
+    let digest = block.commitment();
+    let snapshot_exists = state.query_state_root(digest).await.is_some();
+    let mut execution_outcome = None;
+    let mut execution_context = None;
+
+    if !snapshot_exists || block_index.is_some() {
+        if snapshot_exists {
+            trace!(?digest, "re-executing finalized block for RPC indexing");
+        } else {
+            trace!(?digest, "missing snapshot for finalized block; re-executing");
+        }
+        let parent_digest = block.parent();
+        if let Some(parent_snapshot) = state.parent_snapshot(parent_digest).await {
+            let block_context = provider.context(block);
+            let execution = match BlockExecution::execute(
+                &parent_snapshot,
+                executor,
+                &block_context,
+                &block.txs,
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(err) => {
+                    error!(?digest, error = ?err, "failed to execute finalized block");
+                    return Err(());
+                }
+            };
+
+            let state_root = match state
+                .compute_root_from_store(parent_digest, execution.outcome.changes.clone())
+                .await
+            {
+                Ok(root) => root,
+                Err(err) => {
+                    error!(?digest, error = ?err, "failed to compute qmdb root");
+                    return Err(());
+                }
+            };
+            if state_root != block.state_root {
+                warn!(
+                    ?digest,
+                    expected = ?block.state_root,
+                    computed = ?state_root,
+                    "state root mismatch for finalized block"
+                );
+                return Err(());
+            }
+
+            if !snapshot_exists {
+                let merged_changes =
+                    parent_snapshot.state.merge_changes(execution.outcome.changes.clone());
+                let next_state =
+                    OverlayState::new(parent_snapshot.state.base(), merged_changes);
+                state
+                    .insert_snapshot(
+                        digest,
+                        parent_digest,
+                        next_state,
+                        state_root,
+                        execution.outcome.changes.clone(),
+                        &block.txs,
+                    )
+                    .await;
+            }
+
+            execution_outcome = Some(execution.outcome);
+            execution_context = Some(block_context);
+        } else if snapshot_exists {
+            warn!(
+                ?digest,
+                ?parent_digest,
+                "missing parent snapshot for cached finalized block; skipping RPC indexing replay"
+            );
+        } else {
+            error!(?digest, ?parent_digest, "missing parent snapshot for finalized block");
+            return Err(());
+        }
+    } else {
+        trace!(?digest, "using cached snapshot for finalized block");
+    }
+    let persist_state = state.clone();
+    let persist_handle = context
+        .clone()
+        .shared(true)
+        .spawn(move |_| async move { persist_state.persist_snapshot(digest).await });
+    let persist_result = match persist_handle.await {
+        Ok(result) => result,
+        Err(err) => {
+            error!(?digest, error = ?err, "persist task failed");
+            return Err(());
+        }
+    };
+    if let Err(err) = persist_result {
+        error!(?digest, error = ?err, "failed to persist finalized block");
+        return Err(());
+    }
+
+    Ok((execution_outcome, execution_context))
 }
 
 fn publish_mempool_inclusions(mempool_broadcast: Option<&MempoolEventSender>, block: &Block) {
