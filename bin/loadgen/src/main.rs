@@ -25,7 +25,7 @@ use tracing::{error, info, warn};
 const MIN_LOADGEN_ACCOUNTS: usize = 1;
 const MAX_LOADGEN_ACCOUNTS: usize = u8::MAX as usize;
 
-/// Simple ETH transfer gas cost (EIP-21000).
+/// Intrinsic gas for a simple ETH transfer (21,000).
 const TRANSFER_GAS_LIMIT: u64 = 21_000;
 
 /// Maximum retry attempts before giving up on a transaction.
@@ -338,6 +338,9 @@ async fn main() -> Result<()> {
         let remainder = args.total_txs % num_accounts as u64;
 
         // Global concurrency limiter — bounds total in-flight HTTP requests
+        if args.concurrency == 0 {
+            eyre::bail!("--concurrency must be >= 1");
+        }
         let semaphore = Arc::new(Semaphore::new(args.concurrency));
 
         let mut handles = Vec::with_capacity(num_accounts);
@@ -359,9 +362,6 @@ async fn main() -> Result<()> {
 
             let handle = tokio::spawn(async move {
                 for _ in 0..count {
-                    // Acquire semaphore BEFORE sending (limits global concurrency)
-                    let _permit = semaphore.acquire().await.expect("semaphore closed");
-
                     let nonce = account.next_nonce();
                     let tx = sign_eip1559_transfer(
                         &account.key,
@@ -372,22 +372,29 @@ async fn main() -> Result<()> {
                         TRANSFER_GAS_LIMIT,
                     );
 
-                    // Retry with exponential backoff if pool rejects (nonce gap / pool full)
+                    // Retry with exponential backoff if pool rejects (nonce gap / pool full).
+                    // The semaphore permit is acquired per-attempt and dropped after the HTTP
+                    // call completes, so backoff sleeps do not consume concurrency slots.
                     let mut attempts = 0u32;
+                    let mut succeeded = false;
                     loop {
-                        match send_raw_transaction_to(&clients, tx.clone(), target_validator).await
-                        {
+                        let _permit = semaphore.acquire().await.expect("semaphore closed");
+                        let result =
+                            send_raw_transaction_to(&clients, tx.clone(), target_validator).await;
+                        drop(_permit);
+
+                        match result {
                             Ok(hash) => {
                                 success.fetch_add(1, Ordering::Relaxed);
                                 if verbose {
                                     info!(nonce, hash = %hash, account = %account.address, "tx sent");
                                 }
+                                succeeded = true;
                                 break;
                             }
                             Err(e) => {
                                 attempts += 1;
                                 if u64::from(attempts) >= MAX_RETRY_ATTEMPTS {
-                                    failure.fetch_add(1, Ordering::Relaxed);
                                     warn!(nonce, error = %e, account = %account.address, "tx failed after retries");
                                     break;
                                 }
@@ -396,6 +403,13 @@ async fn main() -> Result<()> {
                                 tokio::time::sleep(delay).await;
                             }
                         }
+                    }
+
+                    if !succeeded {
+                        // Restore the nonce so the next iteration retries with the same value,
+                        // avoiding a permanent nonce gap from an unconsumed sequence number.
+                        account.set_nonce(nonce);
+                        failure.fetch_add(1, Ordering::Relaxed);
                     }
                     // Nonce N completes before nonce N+1 is assigned for this account
                 }
@@ -491,8 +505,8 @@ mod tests {
         let to = Address::repeat_byte(0xBB);
         let raw = sign_eip1559_transfer(&account.key, 1337, to, U256::from(1), 0, TRANSFER_GAS_LIMIT);
         // EIP-2718 type-2 envelope starts with 0x02
-        assert_eq!(raw[0], 0x02, "expected EIP-1559 type prefix");
         assert!(!raw.is_empty());
+        assert_eq!(raw[0], 0x02, "expected EIP-1559 type prefix");
     }
 
     #[test]
