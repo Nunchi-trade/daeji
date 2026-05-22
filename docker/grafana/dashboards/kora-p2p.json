@@ -129,7 +129,7 @@
     },
     {
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "description": "Messages sent per second by channel. Uses recording rules to map data_0..data_4 to human-readable names:\n- simplex_votes (data_0)\n- simplex_certs (data_1)\n- simplex_resolver (data_2)\n- broadcast_blocks (data_3)\n- broadcast_resolver (data_4)",
+      "description": "Messages sent per second by channel. Uses recording rules to map data_0..data_4 to human-readable names:\n- simplex_votes (data_0)\n- simplex_certs (data_1)\n- simplex_resolver (data_2)\n- broadcast_blocks (data_3)\n- marshal_backfill (data_4)",
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "palette-classic"},

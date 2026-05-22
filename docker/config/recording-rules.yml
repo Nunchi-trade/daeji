@@ -82,7 +82,7 @@ groups:
   #   data_1 = simplex certs
   #   data_2 = simplex resolver
   #   data_3 = broadcast blocks
-  #   data_4 = broadcast resolver
+  #   data_4 = marshal backfill
   - name: p2p_channel_recording
     interval: 10s
     rules:
@@ -116,7 +116,7 @@ groups:
         expr: >-
           label_replace(
             sum by (message) (rate(network_spawner_messages_sent_total{message="data_4"}[1m])),
-            "channel", "broadcast_resolver", "message", ".*"
+            "channel", "marshal_backfill", "message", ".*"
           )
 
       # ---------- Messages received per channel ----------
@@ -148,7 +148,7 @@ groups:
         expr: >-
           label_replace(
             sum by (message) (rate(network_spawner_messages_received_total{message="data_4"}[1m])),
-            "channel", "broadcast_resolver", "message", ".*"
+            "channel", "marshal_backfill", "message", ".*"
           )
 
       # ---------- Messages dropped per channel ----------
@@ -180,7 +180,7 @@ groups:
         expr: >-
           label_replace(
             sum by (message) (rate(network_router_messages_dropped_total{message="data_4"}[1m])),
-            "channel", "broadcast_resolver", "message", ".*"
+            "channel", "marshal_backfill", "message", ".*"
           )
 
       # ---------- Aggregate P2P health ----------
