@@ -397,6 +397,13 @@ impl<S: StateDb> BlockExecutor<S> for RevmExecutor {
                     continue;
                 }
             };
+
+            // Enforce block gas limit: stop processing when the next transaction
+            // cannot fit within the remaining block gas capacity.
+            let tx_gas_limit = tx_env.gas_limit;
+            if cumulative_gas.saturating_add(tx_gas_limit) > context.header.gas_limit {
+                break;
+            }
             evm.set_tx(tx_env);
 
             let result_and_state = match evm.replay() {
