@@ -2,10 +2,6 @@ use std::sync::Arc;
 
 use alloy_primitives::{Address, B256, U256};
 use commonware_runtime::tokio::Context;
-use thiserror::Error;
-use tokio::sync::RwLock;
-use tracing::info;
-
 use kora_backend::{
     AccountStore, CodeStore, CommonwareBackend, CommonwareRootProvider, QmdbBackendConfig,
     StorageStore,
@@ -14,6 +10,9 @@ use kora_domain::StateRoot;
 use kora_handlers::{HandleError, QmdbHandle, QmdbRefDb as HandlerQmdbRefDb};
 use kora_qmdb::StateRoot as QmdbStateRoot;
 use kora_traits::{StateDb, StateDbWrite};
+use thiserror::Error;
+use tokio::sync::RwLock;
+use tracing::info;
 
 /// QMDB configuration for the backend.
 pub type QmdbConfig = QmdbBackendConfig;
