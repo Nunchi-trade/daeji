@@ -130,10 +130,10 @@ async fn handle_finalized_update<E, P>(
             )
             .await;
 
-            if let Ok((Some(outcome), Some(block_context))) = result.as_ref() {
-                if let Some(index) = block_index.as_ref() {
-                    index_finalized_block(index, &block, block_context, outcome);
-                }
+            if let Ok((Some(outcome), Some(block_context))) = result.as_ref()
+                && let Some(index) = block_index.as_ref()
+            {
+                index_finalized_block(index, &block, block_context, outcome);
             }
 
             // Always prune the mempool regardless of whether finalization succeeded.
@@ -218,8 +218,7 @@ where
             if !snapshot_exists {
                 let merged_changes =
                     parent_snapshot.state.merge_changes(execution.outcome.changes.clone());
-                let next_state =
-                    OverlayState::new(parent_snapshot.state.base(), merged_changes);
+                let next_state = OverlayState::new(parent_snapshot.state.base(), merged_changes);
                 state
                     .insert_snapshot(
                         digest,
