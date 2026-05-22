@@ -239,8 +239,14 @@ impl Cli {
                 .await;
 
             tracing::info!("secondary peer joined network");
-            futures::future::pending::<()>().await;
-            #[allow(unreachable_code)]
+
+            let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to register SIGTERM handler");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = sigterm.recv() => {},
+            }
+            tracing::info!("Received shutdown signal, stopping...");
             Ok::<(), eyre::Error>(())
         })
     }
