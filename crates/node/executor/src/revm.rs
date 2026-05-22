@@ -618,7 +618,7 @@ fn convert_authorization_list(
 /// This preserves index alignment between transactions and receipts so that
 /// downstream code (e.g. reporters) can use the receipt index as the
 /// transaction index.
-fn build_skipped_receipt(tx_hash: B256, cumulative_gas_used: u64) -> ExecutionReceipt {
+const fn build_skipped_receipt(tx_hash: B256, cumulative_gas_used: u64) -> ExecutionReceipt {
     ExecutionReceipt::new(tx_hash, false, 0, cumulative_gas_used, Vec::new(), None)
 }
 
