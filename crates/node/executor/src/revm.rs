@@ -21,6 +21,7 @@ use revm::{
     primitives::{TxKind, hardfork::SpecId},
     state::{EvmState, EvmStorageSlot},
 };
+use tracing::warn;
 
 use crate::{
     BlockContext, BlockExecutor, ExecutionConfig, ExecutionError, ExecutionOutcome,
@@ -388,11 +389,22 @@ impl<S: StateDb> BlockExecutor<S> for RevmExecutor {
         for tx_bytes in txs {
             let tx_hash = keccak256(tx_bytes);
 
-            let tx_env = decode_tx_env(tx_bytes, self.config.chain_id)?;
+            let tx_env = match decode_tx_env(tx_bytes, self.config.chain_id) {
+                Ok(env) => env,
+                Err(e) => {
+                    warn!(hash = ?tx_hash, error = %e, "skipping undecodable transaction");
+                    continue;
+                }
+            };
             evm.set_tx(tx_env);
 
-            let result_and_state =
-                evm.replay().map_err(|e| ExecutionError::TxExecution(format!("{:?}", e)))?;
+            let result_and_state = match evm.replay() {
+                Ok(result) => result,
+                Err(e) => {
+                    warn!(hash = ?tx_hash, error = ?e, "skipping unexecutable transaction");
+                    continue;
+                }
+            };
 
             let gas_used = result_and_state.result.tx_gas_used();
             cumulative_gas = cumulative_gas.saturating_add(gas_used);
@@ -660,10 +672,14 @@ fn extract_changes(state: EvmState) -> ChangeSet {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY};
+    use alloy_consensus::{SignableTransaction as _, TxEip1559, TxEnvelope};
+    use alloy_eips::eip2718::Encodable2718;
+    use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, Signature, TxKind as AlTxKind, U256};
+    use k256::ecdsa::SigningKey;
     use kora_qmdb::ChangeSet;
     use kora_traits::{StateDb, StateDbError, StateDbRead, StateDbWrite};
     use revm::state::Account;
+    use sha3::{Digest as _, Keccak256};
 
     use super::*;
     use crate::GasLimitBounds;
@@ -705,6 +721,46 @@ mod tests {
         async fn state_root(&self) -> Result<B256, StateDbError> {
             Ok(B256::ZERO)
         }
+    }
+
+    /// Helper: build a signed EIP-1559 transfer and return its raw encoded bytes.
+    fn build_valid_tx(chain_id: u64, nonce: u64) -> Bytes {
+        let mut secret = [0u8; 32];
+        secret[31] = 1; // deterministic key
+        let key = SigningKey::from_bytes((&secret).into()).expect("valid key");
+
+        let to = Address::repeat_byte(0xab);
+        let tx = TxEip1559 {
+            chain_id,
+            nonce,
+            gas_limit: 21_000,
+            max_fee_per_gas: 0,
+            max_priority_fee_per_gas: 0,
+            to: AlTxKind::Call(to),
+            value: U256::ZERO,
+            access_list: Default::default(),
+            input: Bytes::new(),
+        };
+
+        let digest = Keccak256::new_with_prefix(tx.encoded_for_signing());
+        let (sig, recid) = key.sign_digest_recoverable(digest).expect("sign tx");
+        let signature = Signature::from((sig, recid));
+        let signed = tx.into_signed(signature);
+        let envelope = TxEnvelope::from(signed);
+        let mut raw = Vec::new();
+        envelope.encode_2718(&mut raw);
+        Bytes::from(raw)
+    }
+
+    /// Helper: create a default block context suitable for tests.
+    fn test_block_context() -> BlockContext {
+        let header = Header {
+            number: 1,
+            timestamp: 1000,
+            gas_limit: 30_000_000,
+            ..Header::default()
+        };
+        BlockContext::new(header, B256::ZERO, B256::ZERO)
     }
 
     #[test]
@@ -985,5 +1041,74 @@ mod tests {
 
         let update = changes.accounts.get(&Address::ZERO).unwrap();
         assert!(update.selfdestructed);
+    }
+
+    // --- Tests for invalid transaction skipping ---
+
+    #[test]
+    fn execute_skips_garbage_bytes() {
+        // A block containing only garbage bytes should succeed with an empty outcome
+        // rather than aborting the entire block.
+        let executor = RevmExecutor::new(1);
+        let state = MockStateDb;
+        let context = test_block_context();
+
+        let garbage = Bytes::from(vec![0xde, 0xad, 0xbe, 0xef]);
+        let txs = vec![garbage];
+
+        let outcome = executor.execute(&state, &context, &txs).expect("block should not fail");
+        assert!(outcome.receipts.is_empty(), "garbage tx should produce no receipt");
+        assert_eq!(outcome.gas_used, 0, "no gas should be consumed");
+    }
+
+    #[test]
+    fn execute_skips_invalid_but_processes_valid() {
+        // A block with [garbage, valid_tx] should skip the garbage and
+        // still execute the valid transaction.
+        let executor = RevmExecutor::new(1);
+        let state = MockStateDb;
+        let context = test_block_context();
+
+        let garbage = Bytes::from(vec![0xff, 0x01, 0x02, 0x03]);
+        let valid_tx = build_valid_tx(1, 0);
+        let txs = vec![garbage, valid_tx];
+
+        let outcome = executor.execute(&state, &context, &txs).expect("block should not fail");
+
+        // Only the valid transaction should produce a receipt.
+        assert_eq!(outcome.receipts.len(), 1, "only valid tx should have a receipt");
+        assert!(outcome.gas_used > 0, "valid tx should consume gas");
+    }
+
+    #[test]
+    fn execute_processes_valid_tx_between_invalid() {
+        // A block with [garbage, valid_tx, more_garbage] should produce exactly
+        // one receipt and correct cumulative gas.
+        let executor = RevmExecutor::new(1);
+        let state = MockStateDb;
+        let context = test_block_context();
+
+        let garbage1 = Bytes::from(vec![0xaa, 0xbb]);
+        let valid_tx = build_valid_tx(1, 0);
+        let garbage2 = Bytes::from(vec![0xcc, 0xdd, 0xee]);
+        let txs = vec![garbage1, valid_tx, garbage2];
+
+        let outcome = executor.execute(&state, &context, &txs).expect("block should not fail");
+
+        assert_eq!(outcome.receipts.len(), 1, "only 1 valid tx");
+        // Cumulative gas in the receipt should match total gas used.
+        assert_eq!(outcome.receipts[0].cumulative_gas_used(), outcome.gas_used);
+    }
+
+    #[test]
+    fn execute_empty_block_succeeds() {
+        // An empty transaction list should produce an empty outcome.
+        let executor = RevmExecutor::new(1);
+        let state = MockStateDb;
+        let context = test_block_context();
+
+        let outcome = executor.execute(&state, &context, &[]).expect("empty block should succeed");
+        assert!(outcome.receipts.is_empty());
+        assert_eq!(outcome.gas_used, 0);
     }
 }
