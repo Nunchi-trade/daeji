@@ -203,3 +203,12 @@ groups:
       # Peer count (tracked peers in the directory)
       - record: kora:p2p:tracked_peers
         expr: avg(network_tracker_directory_tracked)
+
+      # Message delivery ratio (fraction of sent messages that are not dropped)
+      - record: kora:p2p:delivery_ratio
+        expr: >-
+          1 - (
+            sum(rate(network_router_messages_dropped_total[5m]))
+            /
+            clamp_min(sum(rate(network_spawner_messages_sent_total[5m])), 1)
+          )
