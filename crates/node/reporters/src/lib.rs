@@ -31,6 +31,7 @@ use kora_domain::{Block, ConsensusDigest, MempoolEvent, PublicKey};
 use kora_executor::{BlockContext, BlockExecutor, ExecutionOutcome};
 use kora_indexer::{BlockIndex, IndexedBlock, IndexedLog, IndexedReceipt, IndexedTransaction};
 use kora_ledger::LedgerService;
+use kora_metrics::AppMetrics;
 use kora_overlay::OverlayState;
 use kora_qmdb_ledger::QmdbState;
 use kora_rpc::{MempoolEventSender, NodeState};
@@ -117,6 +118,7 @@ async fn handle_finalized_update<E, P>(
     block_index: Option<Arc<BlockIndex>>,
     mempool_broadcast: Option<MempoolEventSender>,
     gc_log: Option<Arc<SelfdestructGcLog>>,
+    metrics: Option<AppMetrics>,
     update: Update<Block>,
 ) where
     E: BlockExecutor<OverlayState<QmdbState>, Tx = Bytes>,
@@ -134,6 +136,15 @@ async fn handle_finalized_update<E, P>(
                 &block,
             )
             .await;
+
+            // Record finalization result in metrics.
+            if let Some(ref m) = metrics {
+                if result.is_ok() {
+                    m.blocks_finalized.inc();
+                } else {
+                    m.finalization_failures.inc();
+                }
+            }
 
             if let Ok((Some(outcome), Some(block_context))) = result.as_ref() {
                 if let Some(index) = block_index.as_ref() {
@@ -435,6 +446,7 @@ mod finalize_error_tests {
                 None,
                 None,
                 None,
+                None,
                 Update::Block(block, ack),
             )
             .await;
@@ -553,6 +565,8 @@ mod finalize_success_tests {
                 StubProvider,
                 None,
                 None,
+                None,
+                None,
                 Update::Block(block.clone(), ack),
             )
             .await;
@@ -614,6 +628,8 @@ mod finalize_success_tests {
                 EmptySuccessExecutor,
                 StubProvider,
                 Some(index.clone()),
+                None,
+                None,
                 None,
                 Update::Block(block, ack),
             )
@@ -868,6 +884,8 @@ pub struct FinalizedReporter<E, P> {
     mempool_broadcast: Option<MempoolEventSender>,
     /// Optional GC log for tracking selfdestructed addresses.
     gc_log: Option<Arc<SelfdestructGcLog>>,
+    /// Optional application-level metrics.
+    metrics: Option<AppMetrics>,
 }
 
 impl<E, P> fmt::Debug for FinalizedReporter<E, P> {
@@ -896,6 +914,7 @@ where
             block_index: None,
             mempool_broadcast: None,
             gc_log: None,
+            metrics: None,
         }
     }
 
@@ -923,6 +942,13 @@ where
         self.gc_log = Some(gc_log);
         self
     }
+
+    /// Attach application-level metrics for tracking finalization outcomes.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: AppMetrics) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
 }
 
 impl<E, P> Reporter for FinalizedReporter<E, P>
@@ -940,6 +966,7 @@ where
         let block_index = self.block_index.clone();
         let mempool_broadcast = self.mempool_broadcast.clone();
         let gc_log = self.gc_log.clone();
+        let metrics = self.metrics.clone();
         async move {
             handle_finalized_update(
                 state,
@@ -949,6 +976,7 @@ where
                 block_index,
                 mempool_broadcast,
                 gc_log,
+                metrics,
                 update,
             )
             .await;
