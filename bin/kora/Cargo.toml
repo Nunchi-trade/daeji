@@ -22,6 +22,7 @@ commonware-p2p.workspace = true
 commonware-runtime.workspace = true
 commonware-utils.workspace = true
 
+axum.workspace = true
 clap.workspace = true
 tokio.workspace = true
 tracing.workspace = true

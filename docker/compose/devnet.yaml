@@ -52,6 +52,7 @@ x-validator-common: &validator-common
     - RUST_LOG=${RUST_LOG:-info}
     - CHAIN_ID=${CHAIN_ID:-1337}
     - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
+    - TX_GOSSIP=${TX_GOSSIP:-true}
     - HEALTHCHECK_MODE=ready
 
 services:
@@ -87,6 +88,12 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
+        if [ -f /shared/node0/share.key ] && [ -f /shared/node0/output.json ]; then
+            echo "[init] DKG already completed, skipping"
+            exit 0
+        fi
+        echo "[init] Clearing startup barrier from previous runs..." && \
+        rm -f /barrier/*.ready && \
         echo "[init] Running keygen setup..." && \
         /usr/local/bin/keygen setup \
           --validators=4 \
@@ -109,6 +116,7 @@ services:
       - data_node2:/shared/node2
       - data_node3:/shared/node3
       - data_secondary0:/shared/secondary0
+      - startup_barrier:/barrier
 
   # Interactive DKG nodes - run ceremony then exit
   dkg-node0:
@@ -200,6 +208,9 @@ services:
   validator-node0:
     <<: *validator-common
     hostname: node0
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
     entrypoint: ["/scripts/entrypoint.sh", "validator"]
     volumes:
       - shared_config:/shared:ro
@@ -222,6 +233,9 @@ services:
   validator-node1:
     <<: *validator-common
     hostname: node1
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
     entrypoint: ["/scripts/entrypoint.sh", "validator"]
     volumes:
       - shared_config:/shared:ro
@@ -245,6 +259,9 @@ services:
   validator-node2:
     <<: *validator-common
     hostname: node2
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
     entrypoint: ["/scripts/entrypoint.sh", "validator"]
     volumes:
       - shared_config:/shared:ro
@@ -268,6 +285,9 @@ services:
   validator-node3:
     <<: *validator-common
     hostname: node3
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
     entrypoint: ["/scripts/entrypoint.sh", "validator"]
     volumes:
       - shared_config:/shared:ro
@@ -307,6 +327,8 @@ services:
       - HEALTHCHECK_MODE=p2p
     ports:
       - "30500:30303"
+      - "8549:8545"
+      - "9004:9002"
 
   prometheus:
     image: prom/prometheus:latest
