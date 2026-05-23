@@ -411,6 +411,8 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD:-admin}
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      # read_only rootfs prevents writing to /var/log/grafana; use console only
+      - GF_LOG_MODE=console
     ports:
       - "127.0.0.1:3000:3000"
     networks:
