@@ -34,7 +34,7 @@ impl PartitionStatus {
     /// For a BFT system with `n` validators, quorum requires `2f+1` where
     /// `f = (n-1)/3`. A node needs at least `2f` *other* peers to form
     /// quorum (since it counts itself as part of the `2f+1`).
-    fn from_peer_counts(connected_peers: u64, total_expected_peers: u64) -> Self {
+    const fn from_peer_counts(connected_peers: u64, total_expected_peers: u64) -> Self {
         if connected_peers >= total_expected_peers {
             Self::Healthy
         } else {
@@ -43,11 +43,7 @@ impl PartitionStatus {
             // f = (n-1) / 3, quorum = 2f+1, peers needed = quorum - 1 (self)
             let f = (total_validators.saturating_sub(1)) / 3;
             let quorum_peers_needed = 2 * f; // 2f peers + self = 2f+1
-            if connected_peers >= quorum_peers_needed {
-                Self::Degraded
-            } else {
-                Self::Partitioned
-            }
+            if connected_peers >= quorum_peers_needed { Self::Degraded } else { Self::Partitioned }
         }
     }
 }
@@ -158,10 +154,8 @@ impl NodeState {
     /// Get current node status.
     pub fn status(&self) -> NodeStatus {
         let peer_count = self.inner.peer_count.load(Ordering::Relaxed);
-        let total_expected_peers =
-            u64::from(self.inner.validator_count.get()).saturating_sub(1);
-        let partition_status =
-            PartitionStatus::from_peer_counts(peer_count, total_expected_peers);
+        let total_expected_peers = u64::from(self.inner.validator_count.get()).saturating_sub(1);
+        let partition_status = PartitionStatus::from_peer_counts(peer_count, total_expected_peers);
 
         NodeStatus {
             chain_id: self.inner.chain_id,

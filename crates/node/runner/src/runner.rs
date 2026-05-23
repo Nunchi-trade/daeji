@@ -613,10 +613,7 @@ fn mark_seen(seen: &SeenSet, hash: B256) -> bool {
 /// count to determine partition status. Warnings and errors are emitted so
 /// operators (and log-based alerting) can detect connectivity issues even
 /// without Prometheus.
-fn spawn_partition_monitor(
-    node_state: kora_rpc::NodeState,
-    context: cw_tokio::Context,
-) {
+fn spawn_partition_monitor(node_state: kora_rpc::NodeState, context: cw_tokio::Context) {
     context.with_label("partition-monitor").shared(false).spawn(move |ctx| async move {
         loop {
             ctx.sleep(PARTITION_CHECK_INTERVAL).await;
