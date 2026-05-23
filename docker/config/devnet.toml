@@ -1,0 +1,15 @@
+# Devnet validator tuning.
+#
+# Mounted into Docker validators via `--config /config/devnet.toml`.
+#
+# Keep production leader/certification timeouts so healthy four-validator
+# devnets retain full throughput (~95 blocks/s). Only tighten the inactivity
+# threshold: mark a silent validator inactive after five views (~50 ms at
+# devnet speed) so its leader rounds nullify immediately instead of waiting
+# five seconds. Five views is enough to avoid false positives from P2P jitter
+# while still detecting a stopped container quickly.
+
+[consensus.simplex]
+leader_timeout_secs = 1
+certification_timeout_secs = 2
+skip_timeout_views = 5

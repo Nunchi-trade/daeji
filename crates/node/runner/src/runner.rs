@@ -68,6 +68,29 @@ const TXPOOL_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 const RUNTIME_DIR_ENV: &str = "KORA_RUNTIME_DIR";
 const CHECKPOINT_INTERVAL_ENV: &str = "KORA_CHECKPOINT_INTERVAL";
 const DEFAULT_CHECKPOINT_INTERVAL: u64 = 256;
+/// Resolved Simplex timing parameters from node configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResolvedSimplexTiming {
+    leader_timeout: Duration,
+    certification_timeout: Duration,
+    timeout_retry: Duration,
+    fetch_timeout: Duration,
+    activity_timeout: ViewDelta,
+    skip_timeout: ViewDelta,
+}
+
+fn resolve_simplex_timing(
+    config: &kora_config::ConsensusSimplexConfig,
+) -> ResolvedSimplexTiming {
+    ResolvedSimplexTiming {
+        leader_timeout: Duration::from_secs(config.leader_timeout_secs.get()),
+        certification_timeout: Duration::from_secs(config.certification_timeout_secs.get()),
+        timeout_retry: Duration::from_secs(config.timeout_retry_secs.get()),
+        fetch_timeout: Duration::from_secs(config.fetch_timeout_secs.get()),
+        activity_timeout: ViewDelta::new(config.activity_timeout_views.get()),
+        skip_timeout: ViewDelta::new(config.skip_timeout_views.get()),
+    }
+}
 
 /// Maximum number of transaction hashes retained in the gossip seen-set.
 /// When the set exceeds this size it is cleared to avoid unbounded memory
@@ -766,8 +789,15 @@ impl NodeRunner for ProductionRunner {
         let (context, config, mut transport) = ctx.into_parts();
         let gas_limit = config.execution.gas_limit;
         let simplex_config = config.consensus.simplex;
+        let simplex_timing = resolve_simplex_timing(&simplex_config);
 
-        info!(chain_id = self.chain_id, "Starting production validator");
+        info!(
+            chain_id = self.chain_id,
+            leader_timeout_ms = simplex_timing.leader_timeout.as_millis(),
+            certification_timeout_ms = simplex_timing.certification_timeout.as_millis(),
+            skip_timeout_views = simplex_timing.skip_timeout.get(),
+            "Starting production validator"
+        );
 
         let validators = self.scheme.participants().clone();
         let secondary = Set::from_iter_dedup(self.secondary_peers.iter().cloned());
@@ -1181,14 +1211,12 @@ impl NodeRunner for ProductionRunner {
                 epoch: Epoch::zero(),
                 replay_buffer: simplex_config.replay_buffer_bytes,
                 write_buffer: simplex_config.write_buffer_bytes,
-                leader_timeout: Duration::from_secs(simplex_config.leader_timeout_secs.get()),
-                certification_timeout: Duration::from_secs(
-                    simplex_config.certification_timeout_secs.get(),
-                ),
-                timeout_retry: Duration::from_secs(simplex_config.timeout_retry_secs.get()),
-                fetch_timeout: Duration::from_secs(simplex_config.fetch_timeout_secs.get()),
-                activity_timeout: ViewDelta::new(simplex_config.activity_timeout_views.get()),
-                skip_timeout: ViewDelta::new(simplex_config.skip_timeout_views.get()),
+                leader_timeout: simplex_timing.leader_timeout,
+                certification_timeout: simplex_timing.certification_timeout,
+                timeout_retry: simplex_timing.timeout_retry,
+                fetch_timeout: simplex_timing.fetch_timeout,
+                activity_timeout: simplex_timing.activity_timeout,
+                skip_timeout: simplex_timing.skip_timeout,
                 fetch_concurrent: simplex_config.fetch_concurrent.get(),
                 page_cache,
                 forwarding: simplex::ForwardingPolicy::SilentLeader,
@@ -1303,5 +1331,30 @@ mod tests {
             runtime_storage_directory_from(&data_dir, Some(OsString::from("/runtime"))),
             PathBuf::from("/runtime")
         );
+    }
+
+    #[test]
+    fn resolve_simplex_timing_uses_config_defaults() {
+        let config = kora_config::ConsensusSimplexConfig::default();
+        let timing = resolve_simplex_timing(&config);
+
+        assert_eq!(timing.leader_timeout, Duration::from_secs(5));
+        assert_eq!(timing.certification_timeout, Duration::from_secs(10));
+        assert_eq!(timing.skip_timeout, ViewDelta::new(10));
+    }
+
+    #[test]
+    fn resolve_simplex_timing_uses_devnet_skip_timeout() {
+        let config = kora_config::NodeConfig::from_toml(include_str!(
+            "../../../../docker/config/devnet.toml"
+        ))
+        .expect("parse devnet config")
+        .consensus
+        .simplex;
+        let timing = resolve_simplex_timing(&config);
+
+        assert_eq!(timing.skip_timeout, ViewDelta::new(5));
+        assert_eq!(timing.leader_timeout, Duration::from_secs(1));
+        assert_eq!(timing.certification_timeout, Duration::from_secs(2));
     }
 }

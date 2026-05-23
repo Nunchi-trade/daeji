@@ -64,13 +64,17 @@ x-validator-common: &validator-common
     timeout: 5s
     retries: 3
     start_period: 30s
-  environment:
-    - RUST_LOG=${RUST_LOG:-info}
-    - CHAIN_ID=${CHAIN_ID:-1337}
-    - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
-    - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
-    - TX_GOSSIP=${TX_GOSSIP:-true}
-    - HEALTHCHECK_MODE=ready
+
+x-validator-environment: &validator-environment
+  RUST_LOG: ${RUST_LOG:-info}
+  CHAIN_ID: ${CHAIN_ID:-1337}
+  KORA_RUNTIME_DIR: ${KORA_RUNTIME_DIR:-/runtime}
+  KORA_CHECKPOINT_INTERVAL: ${KORA_CHECKPOINT_INTERVAL:-256}
+  KORA_CONFIG: /config/devnet.toml
+  TX_GOSSIP: ${TX_GOSSIP:-true}
+  HEALTHCHECK_MODE: ready
+  VALIDATOR_COUNT: "4"
+  PEER_NODES: node0,node1,node2,node3
 
 services:
   # Setup only (for interactive DKG) - generates keys and peers.json but no shares
@@ -234,16 +238,11 @@ services:
       - data_node0:/data
       - runtime_node0:/runtime
       - startup_barrier:/barrier
+      - ../config/devnet.toml:/config/devnet.toml:ro
     environment:
-      - RUST_LOG=${RUST_LOG:-info}
-      - CHAIN_ID=${CHAIN_ID:-1337}
-      - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
-      - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
-      - VALIDATOR_INDEX=0
-      - VALIDATOR_COUNT=4
-      - IS_BOOTSTRAP=true
-      - PEER_NODES=node0,node1,node2,node3
-      - HEALTHCHECK_MODE=ready
+      <<: *validator-environment
+      VALIDATOR_INDEX: "0"
+      IS_BOOTSTRAP: "true"
     ports:
       - "30400:30303"
       - "127.0.0.1:8545:8545"
@@ -261,17 +260,12 @@ services:
       - data_node1:/data
       - runtime_node1:/runtime
       - startup_barrier:/barrier
+      - ../config/devnet.toml:/config/devnet.toml:ro
     environment:
-      - RUST_LOG=${RUST_LOG:-info}
-      - CHAIN_ID=${CHAIN_ID:-1337}
-      - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
-      - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
-      - VALIDATOR_INDEX=1
-      - VALIDATOR_COUNT=4
-      - IS_BOOTSTRAP=false
-      - BOOTSTRAP_PEERS=node0:30303
-      - PEER_NODES=node0,node1,node2,node3
-      - HEALTHCHECK_MODE=ready
+      <<: *validator-environment
+      VALIDATOR_INDEX: "1"
+      IS_BOOTSTRAP: "false"
+      BOOTSTRAP_PEERS: node0:30303
     ports:
       - "30401:30303"
       - "127.0.0.1:8546:8545"
@@ -289,17 +283,12 @@ services:
       - data_node2:/data
       - runtime_node2:/runtime
       - startup_barrier:/barrier
+      - ../config/devnet.toml:/config/devnet.toml:ro
     environment:
-      - RUST_LOG=${RUST_LOG:-info}
-      - CHAIN_ID=${CHAIN_ID:-1337}
-      - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
-      - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
-      - VALIDATOR_INDEX=2
-      - VALIDATOR_COUNT=4
-      - IS_BOOTSTRAP=false
-      - BOOTSTRAP_PEERS=node0:30303
-      - PEER_NODES=node0,node1,node2,node3
-      - HEALTHCHECK_MODE=ready
+      <<: *validator-environment
+      VALIDATOR_INDEX: "2"
+      IS_BOOTSTRAP: "false"
+      BOOTSTRAP_PEERS: node0:30303
     ports:
       - "30402:30303"
       - "127.0.0.1:8547:8545"
@@ -317,17 +306,12 @@ services:
       - data_node3:/data
       - runtime_node3:/runtime
       - startup_barrier:/barrier
+      - ../config/devnet.toml:/config/devnet.toml:ro
     environment:
-      - RUST_LOG=${RUST_LOG:-info}
-      - CHAIN_ID=${CHAIN_ID:-1337}
-      - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
-      - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
-      - VALIDATOR_INDEX=3
-      - VALIDATOR_COUNT=4
-      - IS_BOOTSTRAP=false
-      - BOOTSTRAP_PEERS=node0:30303
-      - PEER_NODES=node0,node1,node2,node3
-      - HEALTHCHECK_MODE=ready
+      <<: *validator-environment
+      VALIDATOR_INDEX: "3"
+      IS_BOOTSTRAP: "false"
+      BOOTSTRAP_PEERS: node0:30303
     ports:
       - "30403:30303"
       - "127.0.0.1:8548:8545"

@@ -145,7 +145,9 @@ case "$MODE" in
             log "Transaction gossip enabled"
         fi
 
-        exec /usr/local/bin/kora validator \
+        exec /usr/local/bin/kora \
+            ${KORA_CONFIG:+--config "$KORA_CONFIG"} \
+            validator \
             --data-dir "$DATA_DIR" \
             --peers "${SHARED_DIR}/peers.json" \
             --chain-id "$CHAIN_ID" \
