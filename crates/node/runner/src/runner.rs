@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     ffi::OsString,
     path::{Path, PathBuf},
     sync::Arc,
@@ -20,7 +21,7 @@ use commonware_consensus::{
     types::{Epoch, FixedEpocher, ViewDelta},
 };
 use commonware_cryptography::{Committable as _, bls12381::primitives::variant::MinSig, ed25519};
-use commonware_p2p::{Blocker, Manager, TrackedPeers};
+use commonware_p2p::{Blocker, Manager, Receiver as _, Recipients, Sender as _, TrackedPeers};
 use commonware_runtime::{
     Clock as _, Handle as RuntimeHandle, Metrics as _, Spawner, ThreadPooler as _,
     buffer::paged::CacheRef, tokio as cw_tokio,
@@ -46,6 +47,15 @@ const EPOCH_LENGTH: u64 = u64::MAX;
 const PARTITION_PREFIX: &str = "kora";
 const TXPOOL_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 const RUNTIME_DIR_ENV: &str = "KORA_RUNTIME_DIR";
+
+/// Maximum number of transaction hashes retained in the gossip seen-set.
+/// When the set exceeds this size it is cleared to avoid unbounded memory
+/// growth. Under normal load the TTL-based cleanup keeps the set far smaller.
+const TX_GOSSIP_SEEN_SET_CAPACITY: usize = 65_536;
+
+/// Buffer size for the internal channel that forwards locally accepted
+/// transactions to the P2P gossip broadcast task.
+const TX_GOSSIP_OUTBOUND_BUFFER: usize = 4096;
 
 type Peer = ed25519::PublicKey;
 type CertArchive = Finalization<ThresholdScheme, ConsensusDigest>;
@@ -123,10 +133,10 @@ fn seed_genesis_block_index(index: &BlockIndex, genesis: &Block, gas_limit: u64)
             number: 0,
             parent_hash: genesis.parent.0,
             state_root: genesis.state_root.0,
-            timestamp: 0,
+            timestamp: genesis.timestamp,
             gas_limit,
             gas_used: 0,
-            base_fee_per_gas: Some(0),
+            base_fee_per_gas: Some(kora_config::INITIAL_BASE_FEE),
             transaction_hashes: Vec::new(),
         },
         Vec::new(),
@@ -159,6 +169,11 @@ fn index_recovered_block(
     index.insert_block(indexed_block, Vec::new(), Vec::new());
 }
 
+/// Number of recent blocks to restore during startup to pre-populate the
+/// snapshot cache. This ensures that blocks arriving shortly after restart
+/// can find their parent snapshot without entering catch-up mode.
+const SNAPSHOT_PREPOPULATE_COUNT: u64 = 16;
+
 async fn recover_finalized_state<FB, FC>(
     ledger: &LedgerService,
     block_index: &Arc<kora_indexer::BlockIndex>,
@@ -166,7 +181,7 @@ async fn recover_finalized_state<FB, FC>(
     finalizations_by_height: &FC,
     provider: &RevmContextProvider,
     data_dir: &Path,
-) -> anyhow::Result<()>
+) -> anyhow::Result<Option<u64>>
 where
     FB: Archive<Key = ConsensusDigest, Value = Block>,
     FC: Archive<Key = ConsensusDigest, Value = CertArchive>,
@@ -206,7 +221,7 @@ where
         }
     }
 
-    if let Some(ref head) = head {
+    let head_height = if let Some(ref head) = head {
         // Validate the commit marker against the archive head to detect
         // potential QMDB inconsistencies from a previous crash.
         validate_commit_marker(data_dir, head);
@@ -217,9 +232,74 @@ where
             blocks = recovered,
             "recovered finalized ledger head from archive"
         );
+        Some(head.height)
+    } else {
+        None
+    };
+
+    Ok(head_height)
+}
+
+/// Pre-populate the in-memory snapshot cache by restoring recent finalized
+/// blocks from the archive.
+///
+/// After a restart, only the HEAD snapshot is in the cache. The consensus
+/// engine's ancestry walk (`verify`) stops when it hits a block whose
+/// `state_root` is already known. By restoring snapshots for the last N
+/// blocks, the ancestry walk terminates earlier and fewer blocks need to be
+/// re-verified. Any blocks whose parent snapshot is genuinely missing (due
+/// to gaps larger than the prepopulation window) are handled by the
+/// catch-up trust mechanism in `verify_block`.
+async fn prepopulate_snapshot_cache<FB>(
+    ledger: &LedgerService,
+    finalized_blocks: &FB,
+    head_height: u64,
+    count: u64,
+) where
+    FB: Archive<Key = ConsensusDigest, Value = Block>,
+{
+    if head_height == 0 || count == 0 {
+        return;
     }
 
-    Ok(())
+    // Restore blocks from (head_height - count) to (head_height - 1).
+    // HEAD itself is already restored by `recover_finalized_state`.
+    let start_height = head_height.saturating_sub(count);
+    if start_height == head_height {
+        return;
+    }
+
+    let mut populated = 0u64;
+    for height in start_height..head_height {
+        match finalized_blocks.get(ArchiveId::Index(height)).await {
+            Ok(Some(block)) => {
+                let digest = block.commitment();
+                // Skip if already in the cache.
+                if ledger.query_state_root(digest).await.is_some() {
+                    continue;
+                }
+                ledger.restore_persisted_snapshot(&block).await;
+                populated += 1;
+            }
+            Ok(None) => {
+                debug!(height, "prepopulate: no block at height, stopping");
+                break;
+            }
+            Err(err) => {
+                warn!(height, error = ?err, "prepopulate: failed to load block");
+                break;
+            }
+        }
+    }
+
+    if populated > 0 {
+        info!(
+            populated,
+            range_start = start_height,
+            head_height,
+            "pre-populated snapshot cache with recent finalized blocks"
+        );
+    }
 }
 
 /// Compare the on-disk commit marker against the archive head block.
@@ -301,7 +381,7 @@ impl BlockContextProvider for RevmContextProvider {
             timestamp: block.timestamp,
             gas_limit: self.gas_limit,
             beneficiary: Address::ZERO,
-            base_fee_per_gas: Some(0),
+            base_fee_per_gas: Some(kora_config::INITIAL_BASE_FEE),
             ..Default::default()
         };
         let recent_hashes = self.recent_block_hashes(block.height);
@@ -348,6 +428,30 @@ fn spawn_txpool_cleanup(pool: TransactionPool, context: cw_tokio::Context) {
     });
 }
 
+/// Bounded seen-set for transaction gossip de-duplication.
+///
+/// Tracks the hashes of recently seen transactions so we neither re-broadcast
+/// locally originated transactions that come back from peers nor re-insert
+/// gossipped transactions we already have.  When the set exceeds
+/// [`TX_GOSSIP_SEEN_SET_CAPACITY`] it is cleared wholesale -- this is cheaper
+/// than an LRU and perfectly safe because the txpool itself provides the
+/// ultimate dedup (via `AlreadyExists` / `NonceAlreadyInPool`).
+type SeenSet = Arc<parking_lot::Mutex<HashSet<B256>>>;
+
+fn new_seen_set() -> SeenSet {
+    Arc::new(parking_lot::Mutex::new(HashSet::with_capacity(1024)))
+}
+
+/// Returns `true` if the hash was **not** previously present (i.e. it is new).
+fn mark_seen(seen: &SeenSet, hash: B256) -> bool {
+    let mut set = seen.lock();
+    if set.len() >= TX_GOSSIP_SEEN_SET_CAPACITY {
+        debug!(capacity = TX_GOSSIP_SEEN_SET_CAPACITY, "tx gossip seen-set full, clearing");
+        set.clear();
+    }
+    set.insert(hash)
+}
+
 /// Monitor critical consensus infrastructure tasks for unexpected termination.
 ///
 /// Each of the three handles (`engine`, `marshal`, `broadcast`) wraps a
@@ -370,26 +474,37 @@ fn spawn_consensus_monitor(
 /// Spawn a watchdog that awaits a critical task handle and aborts the process
 /// if the task ever terminates.  Under normal operation the handle never
 /// resolves; if it does, consensus is irrecoverably broken.
+///
+/// Before aborting, the watchdog sleeps briefly to allow the tracing subscriber
+/// to flush buffered log output.  This makes post-mortem diagnosis possible
+/// even when the process is restarted by a supervisor immediately.
 fn spawn_task_watchdog(context: &cw_tokio::Context, name: &'static str, handle: RuntimeHandle<()>) {
-    context.with_label(name).shared(true).spawn(move |_| async move {
-        match handle.await {
+    context.with_label(name).shared(true).spawn(move |ctx| async move {
+        let reason = match handle.await {
             Ok(()) => {
                 error!(task = name, "critical task exited cleanly — this should never happen for a long-lived consensus actor");
+                "exited cleanly (unexpected)"
             }
             Err(commonware_runtime::Error::Exited) => {
                 error!(task = name, "critical task panicked (runtime caught panic and returned Error::Exited)");
+                "panicked (Error::Exited)"
             }
             Err(commonware_runtime::Error::Closed) => {
                 warn!(task = name, "critical task terminated because the runtime context was shut down");
+                "runtime context closed"
             }
             Err(ref e) => {
                 error!(task = name, error = %e, error_debug = ?e, "critical task failed with unexpected error");
+                "unexpected error"
             }
-        }
-        error!(
+        };
+        info!(
             task = name,
-            "consensus infrastructure is dead, aborting process for supervisor restart"
+            reason,
+            "consensus infrastructure is dead — aborting process for supervisor restart"
         );
+        // Brief delay so the tracing subscriber can flush the log messages above.
+        ctx.sleep(Duration::from_millis(100)).await;
         std::process::abort();
     });
 }
@@ -477,7 +592,13 @@ impl ProductionRunner {
 
             let _ledger = self.run(ctx).await?;
 
-            tokio::signal::ctrl_c().await.ok();
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("failed to register SIGTERM handler");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = sigterm.recv() => {},
+            }
             info!("Received shutdown signal, stopping...");
             Ok::<(), RunnerError>(())
         })
@@ -552,8 +673,99 @@ impl NodeRunner for ProductionRunner {
         let txpool = ledger.txpool().await;
         spawn_txpool_cleanup(txpool.clone(), context.clone());
 
+        // -- Transaction gossip infrastructure --
+        let (gossip_outbound_tx, gossip_seen): (
+            Option<tokio::sync::mpsc::Sender<alloy_primitives::Bytes>>,
+            Option<SeenSet>,
+        ) = if config.network.tx_gossip {
+            let (tx_gossip_sender, tx_gossip_receiver) = transport.tx_gossip.channel;
+            let seen = new_seen_set();
+            let (outbound_tx, gossip_outbound_rx) =
+                tokio::sync::mpsc::channel::<alloy_primitives::Bytes>(TX_GOSSIP_OUTBOUND_BUFFER);
+
+            // Outbound: read from internal channel, broadcast via P2P.
+            {
+                let seen = seen.clone();
+                let mut sender = tx_gossip_sender;
+                context.with_label("tx-gossip-out").shared(true).spawn(move |_| async move {
+                    let mut rx = gossip_outbound_rx;
+                    while let Some(raw) = rx.recv().await {
+                        let hash = keccak256(&raw);
+                        if !mark_seen(&seen, hash) {
+                            continue;
+                        }
+                        let msg = bytes::Bytes::copy_from_slice(&raw);
+                        if let Err(e) = sender.send(Recipients::All, msg, false).await {
+                            warn!(error = %e, "tx gossip: failed to broadcast transaction");
+                        } else {
+                            trace!(?hash, "tx gossip: broadcast transaction to peers");
+                        }
+                    }
+                    debug!("tx gossip outbound channel closed");
+                });
+            }
+
+            // Inbound: read from P2P, validate, insert into local pool.
+            {
+                let seen = seen.clone();
+                let gossip_ledger = ledger.clone();
+                let gossip_chain_id = self.chain_id;
+                let gossip_state = state.qmdb_state().await;
+                let gossip_pool = txpool.clone();
+                let mut receiver = tx_gossip_receiver;
+                context.with_label("tx-gossip-in").shared(true).spawn(move |_| async move {
+                    loop {
+                        let (peer, raw) = match receiver.recv().await {
+                            Ok(msg) => msg,
+                            Err(e) => {
+                                warn!(error = %e, "tx gossip: receive error, stopping inbound handler");
+                                break;
+                            }
+                        };
+
+                        let hash = keccak256(&raw);
+                        if !mark_seen(&seen, hash) {
+                            trace!(?hash, ?peer, "tx gossip: skipping already-seen transaction");
+                            continue;
+                        }
+
+                        let data = alloy_primitives::Bytes::copy_from_slice(raw.as_ref());
+                        let tx = Tx::new(data);
+                        let tx_id = tx.id();
+
+                        let validator = TransactionValidator::new(
+                            gossip_chain_id,
+                            gossip_state.clone(),
+                            PoolConfig::default(),
+                        )
+                        .with_pool(gossip_pool.clone());
+                        if let Err(e) = validator.validate(tx.clone()).await {
+                            trace!(?tx_id, ?peer, error = %e, "tx gossip: peer tx failed validation");
+                            continue;
+                        }
+
+                        if gossip_ledger.submit_tx(tx).await {
+                            debug!(?tx_id, ?peer, "tx gossip: accepted transaction from peer");
+                        } else {
+                            trace!(?tx_id, ?peer, "tx gossip: ledger rejected transaction (duplicate)");
+                        }
+                    }
+                });
+            }
+
+            info!("Transaction gossip enabled");
+            (Some(outbound_tx), Some(seen))
+        } else {
+            // Drop the gossip channel - we won't use it
+            drop(transport.tx_gossip);
+            info!(
+                "Transaction gossip disabled (enable with network.tx_gossip = true or --tx-gossip)"
+            );
+            (None, None)
+        };
+
         let context_provider = RevmContextProvider { gas_limit, block_index: block_index.clone() };
-        recover_finalized_state(
+        let recovered_head_height = recover_finalized_state(
             &ledger,
             &block_index,
             &finalized_blocks,
@@ -563,6 +775,21 @@ impl NodeRunner for ProductionRunner {
         )
         .await
         .context("recover finalized state")?;
+
+        // Pre-populate the snapshot cache with the last N blocks so that
+        // blocks arriving shortly after restart can find their parent
+        // snapshot. Without this, only the HEAD snapshot exists after
+        // recovery, and verify_block would fail for any block whose parent
+        // is not HEAD.
+        if let Some(head_height) = recovered_head_height {
+            prepopulate_snapshot_cache(
+                &ledger,
+                &finalized_blocks,
+                head_height,
+                SNAPSHOT_PREPOPULATE_COUNT,
+            )
+            .await;
+        }
 
         if let Some((node_state, addr)) = &self.rpc_config {
             let peer_count = self.scheme.participants().len().saturating_sub(1) as u64;
@@ -576,12 +803,16 @@ impl NodeRunner for ProductionRunner {
             let tx_state = state.qmdb_state().await;
             let chain_id = self.chain_id;
             let tx_pool = txpool.clone();
+            let gossip_tx = gossip_outbound_tx.clone();
+            let gossip_seen_rpc = gossip_seen.clone();
             let tx_submit: kora_rpc::TxSubmitCallback = Arc::new(move |data| {
                 let ledger = tx_ledger.clone();
                 let state = tx_state.clone();
                 let pool = tx_pool.clone();
+                let gossip = gossip_tx.clone();
+                let seen = gossip_seen_rpc.clone();
                 Box::pin(async move {
-                    let tx = Tx::new(data);
+                    let tx = Tx::new(data.clone());
                     let tx_id = tx.id();
                     let validator =
                         TransactionValidator::new(chain_id, state, PoolConfig::default())
@@ -592,6 +823,14 @@ impl NodeRunner for ProductionRunner {
                     })?;
                     if ledger.submit_tx(tx).await {
                         debug!(?tx_id, "rpc submit: tx inserted into mempool");
+                        // Forward to gossip if enabled.
+                        if let (Some(gossip), Some(seen)) = (&gossip, &seen) {
+                            let hash = keccak256(&data);
+                            mark_seen(seen, hash);
+                            if let Err(e) = gossip.try_send(data) {
+                                warn!(error = %e, "tx gossip: outbound channel full, skipping broadcast");
+                            }
+                        }
                         Ok(())
                     } else {
                         warn!(
@@ -731,6 +970,9 @@ impl NodeRunner for ProductionRunner {
             block_cfg.max_txs,
             gas_limit,
         );
+        if let Some(height) = recovered_head_height {
+            app = app.with_recovered_height(height);
+        }
         if let Some((state, _)) = &self.rpc_config {
             app = app.with_node_state(state.clone());
         }
@@ -825,8 +1067,27 @@ mod tests {
         assert_eq!(indexed.timestamp, 0);
         assert_eq!(indexed.gas_limit, gas_limit);
         assert_eq!(indexed.gas_used, 0);
+        assert_eq!(indexed.base_fee_per_gas, Some(kora_config::INITIAL_BASE_FEE));
         assert_eq!(indexed.transaction_hashes, Vec::<B256>::new());
         assert_eq!(index.get_block_by_hash(&genesis.id().0).expect("genesis by hash").number, 0);
+    }
+
+    #[test]
+    fn seed_genesis_block_index_uses_genesis_timestamp() {
+        let index = BlockIndex::new();
+        let genesis = Block {
+            parent: BlockId(B256::ZERO),
+            height: 0,
+            timestamp: 1_700_000_000,
+            prevrandao: B256::ZERO,
+            state_root: StateRoot(B256::ZERO),
+            txs: Vec::new(),
+        };
+
+        seed_genesis_block_index(&index, &genesis, 30_000_000);
+
+        let indexed = index.get_block_by_number(0).expect("genesis indexed");
+        assert_eq!(indexed.timestamp, 1_700_000_000);
     }
 
     #[test]

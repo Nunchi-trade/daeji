@@ -115,7 +115,7 @@ impl TestSetup {
         let transfer_amount = U256::from(100u64);
 
         let tx =
-            Evm::sign_eip1559_transfer(&sender_key, chain_id, receiver, transfer_amount, 0, 21_000);
+            Evm::sign_eip1559_transfer(&sender_key, chain_id, receiver, transfer_amount, 0, 21_000, 0, 0);
 
         Self {
             genesis_alloc: vec![(sender, initial_balance), (receiver, U256::ZERO)],
@@ -154,6 +154,8 @@ impl TestSetup {
                 transfer_amount,
                 0,
                 21_000,
+                0,
+                0,
             );
             bootstrap_txs.push(tx);
 
@@ -183,6 +185,8 @@ impl TestSetup {
                 transfer_amount,
                 nonce as u64,
                 21_000,
+                0,
+                0,
             );
             bootstrap_txs.push(tx);
         }
