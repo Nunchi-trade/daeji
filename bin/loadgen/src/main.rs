@@ -350,13 +350,9 @@ async fn main() -> Result<()> {
     // Initialize nonces from chain state, with fallback across all RPC endpoints
     if !args.dry_run {
         for account in &accounts {
-            let nonce = get_nonce_from_any(&clients, account.address)
-                .await
-                .wrap_err_with(|| {
-                    format!(
-                        "failed to query nonce for {} from any RPC endpoint",
-                        account.address
-                    )
+            let nonce =
+                get_nonce_from_any(&clients, account.address).await.wrap_err_with(|| {
+                    format!("failed to query nonce for {} from any RPC endpoint", account.address)
                 })?;
             account.set_nonce(nonce);
         }
@@ -649,11 +645,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        info!(
-            total_confirmed,
-            total_pending,
-            "Inclusion verification complete"
-        );
+        info!(total_confirmed, total_pending, "Inclusion verification complete");
     }
 
     if failure > 0 {
