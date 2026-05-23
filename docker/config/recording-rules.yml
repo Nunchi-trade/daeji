@@ -49,7 +49,7 @@ groups:
       - record: kora:blocks_per_sec
         expr: sum(rate(finalized_height{job="kora-validators"}[1m])) / clamp_min(count(up{job="kora-validators"} == 1), 1)
       - record: kora:views_per_sec
-        expr: avg(rate(engine_voter_state_current_view[1m]))
+        expr: avg(rate(engine_voter_state_current_view{job="kora-validators"}[1m]))
 
       # Effective block time
       - record: kora:block_time
@@ -190,15 +190,14 @@ groups:
         expr: sum(rate(network_spawner_messages_rate_limited_total[1m]))
 
       # Drop ratio: fraction of received messages that were dropped.
-      # Returns 0 when no messages are flowing (avoids divide-by-zero
-      # producing NaN, which was previously masked by clamp_min(…, 1)
-      # inflating the ratio when receive rate was below 1 msg/s).
+      # Uses clamp_min on the denominator to avoid NaN when idle (0/0).
+      # A floor of 0.001 is small enough to not distort the ratio when
+      # traffic is flowing, and produces ~0 when only the floor is active.
       - record: kora:p2p:drop_ratio
         expr: >-
           sum(rate(network_router_messages_dropped_total[5m]))
           /
-          sum(rate(network_spawner_messages_received_total[5m]))
-          or vector(0)
+          clamp_min(sum(rate(network_spawner_messages_received_total[5m])), 0.001)
 
       # Peer count (tracked peers in the directory)
       - record: kora:p2p:tracked_peers
