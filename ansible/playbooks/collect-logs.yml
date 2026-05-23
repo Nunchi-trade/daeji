@@ -10,8 +10,8 @@
   hosts: devnet
   become: true
   vars:
-    since: "{{ since | default('30m') }}"
-    level: "{{ level | default('WARN') }}"
+    log_since: "{{ since | default('30m') }}"
+    log_level: "{{ level | default('WARN') }}"
     output_dir: "/tmp/kora-logs-{{ ansible_date_time.iso8601_basic_short }}"
 
   tasks:
@@ -24,21 +24,21 @@
     - name: Export full logs per validator
       ansible.builtin.shell: |
         docker logs {{ compose_project_name }}-validator-node{{ item }}-1 \
-          --since {{ since }} > {{ output_dir }}/validator-node{{ item }}.log 2>&1
+          --since {{ log_since }} > {{ output_dir }}/validator-node{{ item }}.log 2>&1
       loop: "{{ range(num_validators | int) | list }}"
 
     - name: Export secondary logs
       ansible.builtin.shell: |
         docker logs {{ compose_project_name }}-secondary-node0-1 \
-          --since {{ since }} > {{ output_dir }}/secondary-node0.log 2>&1
+          --since {{ log_since }} > {{ output_dir }}/secondary-node0.log 2>&1
 
     - name: Extract warnings/errors summary
       ansible.builtin.shell: |
-        echo "=== {{ level }}+ Messages (last {{ since }}) ===" > {{ output_dir }}/summary.txt
+        echo "=== {{ log_level }}+ Messages (last {{ log_since }}) ===" > {{ output_dir }}/summary.txt
         echo "" >> {{ output_dir }}/summary.txt
         for n in $(seq 0 {{ (num_validators | int) - 1 }}); do
           echo "--- validator-node$n ---" >> {{ output_dir }}/summary.txt
-          grep -oP '(?:{{ level }}|ERROR)\s+\S+.*' {{ output_dir }}/validator-node${n}.log \
+          grep -oP '(?:{{ log_level }}|ERROR)\s+\S+.*' {{ output_dir }}/validator-node${n}.log \
             | sort | uniq -c | sort -rn | head -20 >> {{ output_dir }}/summary.txt
           echo "" >> {{ output_dir }}/summary.txt
         done
