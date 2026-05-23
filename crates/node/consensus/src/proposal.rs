@@ -8,7 +8,6 @@ use commonware_cryptography::Committable as _;
 use kora_domain::{Block, StateRoot, Tx};
 use kora_executor::{BlockContext, BlockExecutor};
 use kora_traits::StateDb;
-
 use tracing::warn;
 
 use crate::{ConsensusError, Digest, Mempool, Snapshot, SnapshotStore, TxId};
