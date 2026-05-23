@@ -197,9 +197,9 @@ mod tests {
     use std::{collections::BTreeMap, sync::Arc};
 
     use alloy_primitives::{Address, Bytes, U256};
-    use parking_lot::RwLock;
     use kora_executor::ExecutionOutcome;
     use kora_qmdb::ChangeSet;
+    use parking_lot::RwLock;
 
     use super::*;
 
