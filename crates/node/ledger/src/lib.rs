@@ -610,12 +610,11 @@ mod tests {
     use commonware_cryptography::Committable as _;
     use commonware_runtime::{Runner, tokio};
     use k256::ecdsa::SigningKey;
+    use kora_config::INITIAL_BASE_FEE;
     use kora_domain::{Block, ConsensusDigest, Tx, evm::Evm};
     use kora_executor::{BlockContext, BlockExecutor, RevmExecutor};
     use kora_overlay::OverlayState;
     use kora_traits::StateDbRead;
-
-    use kora_config::INITIAL_BASE_FEE;
 
     use super::{LedgerService, LedgerSnapshot, LedgerView};
 
