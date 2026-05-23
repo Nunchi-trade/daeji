@@ -615,6 +615,8 @@ mod tests {
     use kora_overlay::OverlayState;
     use kora_traits::StateDbRead;
 
+    use kora_config::INITIAL_BASE_FEE;
+
     use super::{LedgerService, LedgerSnapshot, LedgerView};
 
     static PARTITION_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -674,7 +676,7 @@ mod tests {
             timestamp,
             gas_limit: 30_000_000,
             beneficiary: Address::ZERO,
-            base_fee_per_gas: Some(0),
+            base_fee_per_gas: Some(INITIAL_BASE_FEE),
             ..Default::default()
         };
         BlockContext::new(header, B256::ZERO, prevrandao)
