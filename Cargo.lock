@@ -3352,6 +3352,7 @@ dependencies = [
  "commonware-utils",
  "futures",
  "k256",
+ "kora-config",
  "kora-consensus",
  "kora-crypto",
  "kora-domain",
@@ -3427,6 +3428,7 @@ dependencies = [
  "commonware-utils",
  "futures",
  "k256",
+ "kora-config",
  "kora-consensus",
  "kora-domain",
  "kora-executor",
@@ -3436,6 +3438,7 @@ dependencies = [
  "kora-traits",
  "kora-txpool",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -3458,6 +3461,13 @@ dependencies = [
  "rand_core 0.6.4",
  "tracing",
  "tracing-subscriber 0.3.23",
+]
+
+[[package]]
+name = "kora-metrics"
+version = "0.1.0"
+dependencies = [
+ "prometheus-client",
 ]
 
 [[package]]
@@ -3514,6 +3524,7 @@ dependencies = [
  "kora-executor",
  "kora-indexer",
  "kora-ledger",
+ "kora-metrics",
  "kora-overlay",
  "kora-qmdb-ledger",
  "kora-rpc",
@@ -3568,6 +3579,7 @@ dependencies = [
  "commonware-storage",
  "commonware-utils",
  "futures",
+ "governor",
  "hex",
  "kora-config",
  "kora-consensus",
@@ -3577,6 +3589,7 @@ dependencies = [
  "kora-indexer",
  "kora-ledger",
  "kora-marshal",
+ "kora-metrics",
  "kora-overlay",
  "kora-qmdb-ledger",
  "kora-reporters",
@@ -3586,6 +3599,7 @@ dependencies = [
  "kora-transport",
  "kora-txpool",
  "parking_lot",
+ "prometheus-client",
  "rand 0.8.6",
  "tempfile",
  "tokio",
@@ -3681,6 +3695,7 @@ dependencies = [
  "alloy-rlp",
  "k256",
  "kora-domain",
+ "kora-metrics",
  "kora-traits",
  "parking_lot",
  "rand 0.8.6",
