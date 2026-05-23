@@ -91,7 +91,7 @@ enum FinalizationError {
 impl FinalizationError {
     /// Returns `true` if this error is potentially transient and the operation
     /// should be retried.
-    fn is_retryable(&self) -> bool {
+    const fn is_retryable(&self) -> bool {
         match self {
             // Deterministic: local state has diverged, retry produces the same mismatch.
             Self::StateRootMismatch { .. } => false,
@@ -107,7 +107,7 @@ impl FinalizationError {
     }
 
     /// Returns a static label suitable for Prometheus metric labels.
-    fn metric_label(&self) -> &'static str {
+    const fn metric_label(&self) -> &'static str {
         match self {
             Self::ExecutionFailed(_) => "execution_failed",
             Self::RootComputationFailed(_) => "root_computation_failed",
@@ -354,14 +354,10 @@ where
         let parent_digest = block.parent();
         if let Some(parent_snapshot) = state.parent_snapshot(parent_digest).await {
             let block_context = provider.context(block);
-            let execution = BlockExecution::execute(
-                &parent_snapshot,
-                executor,
-                &block_context,
-                &block.txs,
-            )
-            .await
-            .map_err(|err| FinalizationError::ExecutionFailed(Box::new(err)))?;
+            let execution =
+                BlockExecution::execute(&parent_snapshot, executor, &block_context, &block.txs)
+                    .await
+                    .map_err(|err| FinalizationError::ExecutionFailed(Box::new(err)))?;
 
             let state_root = state
                 .compute_root_from_store(parent_digest, execution.outcome.changes.clone())
