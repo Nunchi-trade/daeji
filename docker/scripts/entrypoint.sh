@@ -10,11 +10,28 @@ DATA_DIR=${DATA_DIR:-/data}
 SHARED_DIR=${SHARED_DIR:-/shared}
 BARRIER_DIR=${BARRIER_DIR:-/barrier}
 
+RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
+
 MODE="${1:-validator}"
 shift || true
 
 log() { echo "[entrypoint] $*"; }
 error() { echo "[entrypoint] ERROR: $*" >&2; exit 1; }
+
+# Ensure runtime directory exists and is writable by the kora user.
+# Docker named volumes inherit ownership from the image on first mount,
+# but we verify here in case an external volume with different ownership
+# is attached.
+if [[ -d "$RUNTIME_DIR" ]]; then
+    if [[ ! -w "$RUNTIME_DIR" ]]; then
+        log "WARNING: runtime dir ${RUNTIME_DIR} is not writable, attempting chown..."
+        chown -R "$(id -u):$(id -g)" "$RUNTIME_DIR" 2>/dev/null || \
+            error "Cannot write to runtime dir ${RUNTIME_DIR}. Fix volume permissions."
+    fi
+else
+    mkdir -p "$RUNTIME_DIR" 2>/dev/null || error "Cannot create runtime dir ${RUNTIME_DIR}"
+fi
+log "Runtime dir: ${RUNTIME_DIR} (writable)"
 
 # Startup barrier: ensures all validators reach this point before any starts
 # consensus. Each validator writes a marker file to a shared volume, then waits
@@ -93,6 +110,11 @@ case "$MODE" in
         [[ -f "${DATA_DIR}/share.key" ]] || error "share.key not found (run DKG first)"
         [[ -f "${DATA_DIR}/output.json" ]] || error "output.json not found (run DKG first)"
 
+        # Log key fingerprints so DKG key mismatches are immediately obvious
+        SHARE_KEY_HASH=$(sha256sum "${DATA_DIR}/share.key" 2>/dev/null | cut -c1-16)
+        OUTPUT_HASH=$(sha256sum "${DATA_DIR}/output.json" 2>/dev/null | cut -c1-16)
+        log "DKG key fingerprints: share.key=${SHARE_KEY_HASH} output.json=${OUTPUT_HASH}"
+
         cp "${SHARED_DIR}/genesis.json" "${DATA_DIR}/" 2>/dev/null || true
 
         # Detect whether this is a first startup or a restart by checking
@@ -129,10 +151,18 @@ case "$MODE" in
 
         touch "${DATA_DIR}/.ready"
 
+        TX_GOSSIP=${TX_GOSSIP:-false}
+        GOSSIP_FLAG=""
+        if [[ "$TX_GOSSIP" == "true" ]]; then
+            GOSSIP_FLAG="--tx-gossip"
+            log "Transaction gossip enabled"
+        fi
+
         exec /usr/local/bin/kora validator \
             --data-dir "$DATA_DIR" \
             --peers "${SHARED_DIR}/peers.json" \
             --chain-id "$CHAIN_ID" \
+            $GOSSIP_FLAG \
             "$@"
         ;;
 
