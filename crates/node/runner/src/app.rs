@@ -115,6 +115,7 @@ where
         let parent_snapshot = {
             let mut snap = self.ledger.parent_snapshot(parent_digest).await;
             let mut poll_count = 0u32;
+            let poll_start = Instant::now();
             while snap.is_none() && poll_count < SNAPSHOT_POLL_ATTEMPTS {
                 tokio::time::sleep(SNAPSHOT_POLL_INTERVAL).await;
                 poll_count += 1;
@@ -127,7 +128,7 @@ where
                             parent_height = parent.height,
                             ?parent_digest,
                             poll_count,
-                            wait_ms = start.elapsed().as_millis(),
+                            wait_ms = poll_start.elapsed().as_millis(),
                             "build_block: parent snapshot arrived after polling"
                         );
                     }
@@ -138,7 +139,7 @@ where
                         parent_height = parent.height,
                         ?parent_digest,
                         poll_count,
-                        wait_ms = start.elapsed().as_millis(),
+                        wait_ms = poll_start.elapsed().as_millis(),
                         "build_block: parent snapshot not found after polling — \
                          node has not yet processed this parent block"
                     );
