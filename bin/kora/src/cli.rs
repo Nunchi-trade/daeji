@@ -224,9 +224,10 @@ impl Cli {
         let metrics_addr: std::net::SocketAddr = args.metrics_addr.parse().map_err(|err| {
             eyre::eyre!("invalid --metrics-addr '{}': {}", args.metrics_addr, err)
         })?;
-        let _rpc_addr: std::net::SocketAddr = args.rpc_addr.parse().map_err(|err| {
-            eyre::eyre!("invalid --rpc-addr '{}': {}", args.rpc_addr, err)
-        })?;
+        let _rpc_addr: std::net::SocketAddr = args
+            .rpc_addr
+            .parse()
+            .map_err(|err| eyre::eyre!("invalid --rpc-addr '{}': {}", args.rpc_addr, err))?;
 
         tracing::info!(
             chain_id = config.chain_id,
@@ -234,9 +235,7 @@ impl Cli {
             secondary_peers = secondary_count,
             "Starting secondary peer"
         );
-        tracing::warn!(
-            "Secondary node is in follower mode - read-only RPC not yet implemented"
-        );
+        tracing::warn!("Secondary node is in follower mode - read-only RPC not yet implemented");
 
         let runtime_dir = runtime_storage_directory(&config.data_dir);
         tracing::info!(runtime_dir = %runtime_dir.display(), "Starting Commonware runtime");
