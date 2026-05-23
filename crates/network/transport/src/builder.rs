@@ -11,8 +11,8 @@ use rand_core::CryptoRngCore;
 
 use crate::{
     channels::{
-        CHANNEL_BACKFILL, CHANNEL_BLOCKS, CHANNEL_CERTS, CHANNEL_RESOLVER, CHANNEL_VOTES,
-        MarshalChannels, SimplexChannels,
+        CHANNEL_BACKFILL, CHANNEL_BLOCKS, CHANNEL_CERTS, CHANNEL_RESOLVER, CHANNEL_TX_GOSSIP,
+        CHANNEL_VOTES, MarshalChannels, SimplexChannels, TxGossipChannel,
     },
     config::TransportConfig,
     transport::NetworkTransport,
@@ -86,16 +86,20 @@ impl<C: Signer> TransportConfig<C> {
         let blocks = network.register(CHANNEL_BLOCKS, quota, backlog);
         let backfill = network.register(CHANNEL_BACKFILL, quota, backlog);
 
+        // Register transaction gossip channel
+        let tx_gossip_channel = network.register(CHANNEL_TX_GOSSIP, quota, backlog);
+
         // Start the network
         let handle = network.start();
 
-        tracing::info!("network transport started with 5 channels");
+        tracing::info!("network transport started with 6 channels");
 
         NetworkTransport {
             oracle,
             handle,
             simplex: SimplexChannels { votes, certs, resolver },
             marshal: MarshalChannels { blocks, backfill },
+            tx_gossip: TxGossipChannel { channel: tx_gossip_channel },
         }
     }
 }
