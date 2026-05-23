@@ -455,6 +455,48 @@ impl LedgerView {
         let tx_ids: Vec<TxId> = txs.iter().map(Tx::id).collect();
         inner.mempool.prune(&tx_ids);
     }
+
+    /// Remove transactions with stale nonces from the mempool.
+    ///
+    /// For each sender with transactions in the pool, queries the finalized
+    /// QMDB state for the current account nonce and removes all transactions
+    /// whose nonce is below that value.  This catches stale transactions that
+    /// were not literally included in the finalized block but whose nonces
+    /// have been consumed by other transactions in earlier blocks.
+    pub async fn prune_stale_nonces(&self) {
+        let (pool, qmdb_state) = {
+            let inner = self.inner.lock().await;
+            (inner.mempool.txpool(), inner.qmdb.state())
+        };
+
+        let senders = pool.senders();
+        if senders.is_empty() {
+            return;
+        }
+
+        for sender in senders {
+            let finalized_nonce = match qmdb_state.nonce(&sender).await {
+                Ok(n) => n,
+                Err(err) => {
+                    tracing::warn!(%sender, error = ?err, "failed to query nonce during stale-nonce pruning");
+                    continue;
+                }
+            };
+
+            // The finalized nonce is the *next* nonce to be used, so all
+            // transactions with nonce < finalized_nonce are confirmed/stale.
+            if finalized_nonce > 0 {
+                pool.remove_confirmed(&sender, finalized_nonce - 1);
+            }
+        }
+    }
+
+    /// Returns `true` if the snapshot for `digest` has been persisted to QMDB
+    /// (even if the in-memory snapshot data has since been evicted).
+    pub async fn is_snapshot_persisted(&self, digest: &ConsensusDigest) -> bool {
+        let inner = self.inner.lock().await;
+        inner.snapshots.is_persisted(digest)
+    }
 }
 
 /// Domain service that exposes high-level ledger commands.
@@ -599,6 +641,20 @@ impl LedgerService {
     pub async fn prune_mempool(&self, txs: &[Tx]) {
         self.view.prune_mempool(txs).await;
     }
+
+    /// Remove transactions with stale nonces from the mempool.
+    ///
+    /// Delegates to [`LedgerView::prune_stale_nonces`] which queries the
+    /// finalized QMDB state for each sender in the pool.
+    pub async fn prune_stale_nonces(&self) {
+        self.view.prune_stale_nonces().await;
+    }
+
+    /// Returns `true` if the snapshot for `digest` has been persisted to QMDB
+    /// (even if the in-memory snapshot data has since been evicted).
+    pub async fn is_snapshot_persisted(&self, digest: &ConsensusDigest) -> bool {
+        self.view.is_snapshot_persisted(digest).await
+    }
 }
 
 #[cfg(test)]
@@ -610,6 +666,7 @@ mod tests {
     use commonware_cryptography::Committable as _;
     use commonware_runtime::{Runner, tokio};
     use k256::ecdsa::SigningKey;
+    use kora_config::INITIAL_BASE_FEE;
     use kora_domain::{Block, ConsensusDigest, Tx, evm::Evm};
     use kora_executor::{BlockContext, BlockExecutor, RevmExecutor};
     use kora_overlay::OverlayState;
@@ -674,7 +731,7 @@ mod tests {
             timestamp,
             gas_limit: 30_000_000,
             beneficiary: Address::ZERO,
-            base_fee_per_gas: Some(0),
+            base_fee_per_gas: Some(INITIAL_BASE_FEE),
             ..Default::default()
         };
         BlockContext::new(header, B256::ZERO, prevrandao)
