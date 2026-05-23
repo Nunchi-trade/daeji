@@ -8,7 +8,9 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-use prometheus_client::metrics::{counter::Counter, family::Family, gauge::Gauge, histogram::Histogram};
+use prometheus_client::metrics::{
+    counter::Counter, family::Family, gauge::Gauge, histogram::Histogram,
+};
 
 /// Default histogram buckets for block build time (seconds).
 const BLOCK_BUILD_BUCKETS: [f64; 9] = [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0];
@@ -59,7 +61,7 @@ impl AppMetrics {
             txpool_pending: Gauge::default(),
             txpool_queued: Gauge::default(),
             txpool_rejected: Family::default(),
-            block_build_time: Histogram::new(BLOCK_BUILD_BUCKETS.into_iter()),
+            block_build_time: Histogram::new(BLOCK_BUILD_BUCKETS),
             block_txs_included: Gauge::default(),
             finalization_failures: Counter::default(),
             blocks_finalized: Counter::default(),
@@ -71,14 +73,46 @@ impl AppMetrics {
     /// Call this once during node startup so that the metrics appear on the
     /// `/metrics` endpoint.
     pub fn register<M: MetricsRegister>(&self, registry: &M) {
-        registry.register("kora_txpool_size", "Current number of transactions in the pool", self.txpool_size.clone());
-        registry.register("kora_txpool_pending", "Current number of pending (executable) transactions", self.txpool_pending.clone());
-        registry.register("kora_txpool_queued", "Current number of queued (future-nonce) transactions", self.txpool_queued.clone());
-        registry.register("kora_txpool_rejected_total", "Total rejected transactions by reason", self.txpool_rejected.clone());
-        registry.register("kora_block_build_time_seconds", "Block build duration in seconds", self.block_build_time.clone());
-        registry.register("kora_block_txs_included", "Transactions in the most recently built block", self.block_txs_included.clone());
-        registry.register("kora_finalization_failures_total", "Total finalization failures", self.finalization_failures.clone());
-        registry.register("kora_blocks_finalized_total", "Total blocks successfully finalized", self.blocks_finalized.clone());
+        registry.register(
+            "kora_txpool_size",
+            "Current number of transactions in the pool",
+            self.txpool_size.clone(),
+        );
+        registry.register(
+            "kora_txpool_pending",
+            "Current number of pending (executable) transactions",
+            self.txpool_pending.clone(),
+        );
+        registry.register(
+            "kora_txpool_queued",
+            "Current number of queued (future-nonce) transactions",
+            self.txpool_queued.clone(),
+        );
+        registry.register(
+            "kora_txpool_rejected_total",
+            "Total rejected transactions by reason",
+            self.txpool_rejected.clone(),
+        );
+        registry.register(
+            "kora_block_build_time_seconds",
+            "Block build duration in seconds",
+            self.block_build_time.clone(),
+        );
+        registry.register(
+            "kora_block_txs_included",
+            "Transactions in the most recently built block",
+            self.block_txs_included.clone(),
+        );
+        registry.register(
+            "kora_finalization_failures_total",
+            "Total finalization failures",
+            self.finalization_failures.clone(),
+        );
+        registry.register(
+            "kora_blocks_finalized_total",
+            "Total blocks successfully finalized",
+            self.blocks_finalized.clone(),
+        );
     }
 }
 
