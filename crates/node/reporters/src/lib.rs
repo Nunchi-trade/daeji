@@ -701,6 +701,7 @@ mod finalize_success_tests {
                 StubProvider,
                 None,
                 None,
+                None,
                 Update::Block(block.clone(), ack),
             )
             .await;
@@ -762,6 +763,7 @@ mod finalize_success_tests {
                 EmptySuccessExecutor,
                 StubProvider,
                 Some(index.clone()),
+                None,
                 None,
                 Update::Block(block, ack),
             )
