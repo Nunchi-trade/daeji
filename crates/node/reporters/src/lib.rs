@@ -279,7 +279,11 @@ where
                 "missing parent snapshot for cached finalized block; skipping RPC indexing replay"
             );
         } else {
-            error!(?digest, ?parent_digest, "missing parent snapshot for finalized block after retries");
+            error!(
+                ?digest,
+                ?parent_digest,
+                "missing parent snapshot for finalized block after retries"
+            );
             return Err(());
         }
     } else {
