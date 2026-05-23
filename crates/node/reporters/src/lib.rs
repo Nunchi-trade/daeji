@@ -408,7 +408,34 @@ where
             trace!(?digest, "missing snapshot for finalized block; re-executing");
         }
         let parent_digest = block.parent();
-        if let Some(parent_snapshot) = state.parent_snapshot(parent_digest).await {
+
+        // Retry parent snapshot lookup with exponential backoff. A concurrent
+        // persist_snapshot() call may be evicting or replacing snapshots; a
+        // brief retry window avoids spurious "missing parent" failures that
+        // would otherwise nullify the view.
+        const MAX_PARENT_RETRIES: u32 = 3;
+        const PARENT_RETRY_BASE_MS: u64 = 10;
+
+        let mut parent_snapshot = state.parent_snapshot(parent_digest).await;
+        if parent_snapshot.is_none() && !snapshot_exists {
+            for attempt in 1..=MAX_PARENT_RETRIES {
+                let delay = Duration::from_millis(PARENT_RETRY_BASE_MS << (attempt - 1));
+                warn!(
+                    ?digest,
+                    ?parent_digest,
+                    attempt,
+                    ?delay,
+                    "parent snapshot not found, retrying"
+                );
+                ::tokio::time::sleep(delay).await;
+                parent_snapshot = state.parent_snapshot(parent_digest).await;
+                if parent_snapshot.is_some() {
+                    break;
+                }
+            }
+        }
+
+        if let Some(parent_snapshot) = parent_snapshot {
             let block_context = provider.context(block);
             let execution =
                 BlockExecution::execute(&parent_snapshot, executor, &block_context, &block.txs)
@@ -534,16 +561,14 @@ mod mempool_tests {
 mod finalize_error_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use alloy_consensus::{Header, SignableTransaction as _, TxEip1559};
-    use alloy_eips::eip2718::Encodable2718 as _;
-    use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
+    use alloy_consensus::Header;
+    use alloy_primitives::{Address, B256, Bytes, U256};
     use commonware_runtime::Runner as _;
     use commonware_utils::acknowledgement::{Acknowledgement as _, Exact};
     use k256::ecdsa::SigningKey;
-    use kora_domain::{StateRoot, Tx};
+    use kora_domain::{StateRoot, evm::Evm};
     use kora_executor::ExecutionError;
     use kora_ledger::LedgerView;
-    use sha3::{Digest as _, Keccak256};
 
     use super::*;
 
@@ -552,30 +577,6 @@ mod finalize_error_tests {
     fn next_partition(prefix: &str) -> String {
         let id = PARTITION_COUNTER.fetch_add(1, Ordering::Relaxed);
         format!("{prefix}-{id}")
-    }
-
-    fn signed_tx(chain_id: u64) -> Tx {
-        let mut secret = [0u8; 32];
-        secret[31] = 1;
-        let key = SigningKey::from_bytes((&secret).into()).expect("valid key");
-        let tx = TxEip1559 {
-            chain_id,
-            nonce: 0,
-            gas_limit: 21_000,
-            max_fee_per_gas: 1_000_000_000,
-            max_priority_fee_per_gas: 1_000_000,
-            to: TxKind::Call(Address::repeat_byte(0xbb)),
-            value: U256::ZERO,
-            access_list: Default::default(),
-            input: Bytes::new(),
-        };
-        let digest = Keccak256::new_with_prefix(tx.encoded_for_signing());
-        let (sig, recid) = key.sign_digest_recoverable(digest).expect("sign tx");
-        let envelope =
-            alloy_consensus::TxEnvelope::from(tx.into_signed(Signature::from((sig, recid))));
-        let mut raw = Vec::new();
-        envelope.encode_2718(&mut raw);
-        Tx::new(Bytes::from(raw))
     }
 
     /// A block executor that always returns an error.
@@ -638,7 +639,9 @@ mod finalize_error_tests {
             let genesis = service.genesis_block();
 
             // -- insert a transaction into the mempool --
-            let tx = signed_tx(1337);
+            let sender_key = SigningKey::from_bytes(&[1u8; 32].into()).expect("valid key");
+            let to = Address::repeat_byte(0xab);
+            let tx = Evm::sign_eip1559_transfer(&sender_key, 1, to, U256::ZERO, 0, 21_000, 0, 0);
             assert!(service.submit_tx(tx.clone()).await, "tx should be accepted into mempool");
             let pool = service.txpool().await;
             assert_eq!(pool.len(), 1, "mempool should contain the submitted tx");
@@ -689,9 +692,11 @@ mod finalize_success_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use alloy_consensus::Header;
-    use alloy_primitives::{B256, Bytes};
+    use alloy_primitives::{Address, B256, U256};
     use commonware_runtime::Runner as _;
     use commonware_utils::acknowledgement::{Acknowledgement as _, Exact};
+    use k256::ecdsa::SigningKey;
+    use kora_domain::evm::Evm;
     use kora_executor::ExecutionError;
     use kora_ledger::LedgerView;
 
@@ -761,7 +766,15 @@ mod finalize_success_tests {
             let genesis_root =
                 service.query_state_root(genesis_digest).await.expect("genesis state root");
 
-            // -- build a block with no state changes --
+            // -- insert a dummy tx into the mempool so we can verify pruning --
+            let sender_key = SigningKey::from_bytes(&[2u8; 32].into()).expect("valid key");
+            let to = Address::repeat_byte(0xcd);
+            let tx = Evm::sign_eip1559_transfer(&sender_key, 1, to, U256::ZERO, 0, 21_000, 0, 0);
+            assert!(service.submit_tx(tx.clone()).await, "tx should be accepted");
+            let pool = service.txpool().await;
+            assert_eq!(pool.len(), 1);
+
+            // -- build a block with no real txs but containing the dummy tx --
             // EmptySuccessExecutor ignores transactions and produces an empty
             // changeset, so the state root stays at genesis_root.
             let block = Block {
@@ -770,7 +783,7 @@ mod finalize_success_tests {
                 timestamp: 1,
                 prevrandao: B256::ZERO,
                 state_root: genesis_root,
-                txs: Vec::new(),
+                txs: vec![tx],
             };
 
             let (ack, waiter) = Exact::handle();
@@ -789,6 +802,9 @@ mod finalize_success_tests {
                 Update::Block(block.clone(), ack),
             )
             .await;
+
+            // -- assert: mempool was pruned --
+            assert_eq!(pool.len(), 0, "mempool must be pruned after successful finalization");
 
             // -- assert: acknowledgement was delivered --
             waiter.await.expect("ack must be called after successful finalization");
