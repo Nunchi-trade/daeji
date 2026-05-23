@@ -24,13 +24,13 @@
     - name: Export full logs per validator
       ansible.builtin.shell: |
         docker logs {{ compose_project_name }}-validator-node{{ item }}-1 \
-          --since {{ since }} 2>&1 > {{ output_dir }}/validator-node{{ item }}.log
+          --since {{ since }} > {{ output_dir }}/validator-node{{ item }}.log 2>&1
       loop: "{{ range(num_validators | int) | list }}"
 
     - name: Export secondary logs
       ansible.builtin.shell: |
         docker logs {{ compose_project_name }}-secondary-node0-1 \
-          --since {{ since }} 2>&1 > {{ output_dir }}/secondary-node0.log
+          --since {{ since }} > {{ output_dir }}/secondary-node0.log 2>&1
 
     - name: Extract warnings/errors summary
       ansible.builtin.shell: |
