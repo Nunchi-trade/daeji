@@ -490,6 +490,13 @@ impl LedgerView {
             }
         }
     }
+
+    /// Returns `true` if the snapshot for `digest` has been persisted to QMDB
+    /// (even if the in-memory snapshot data has since been evicted).
+    pub async fn is_snapshot_persisted(&self, digest: &ConsensusDigest) -> bool {
+        let inner = self.inner.lock().await;
+        inner.snapshots.is_persisted(digest)
+    }
 }
 
 /// Domain service that exposes high-level ledger commands.
@@ -642,6 +649,12 @@ impl LedgerService {
     pub async fn prune_stale_nonces(&self) {
         self.view.prune_stale_nonces().await;
     }
+
+    /// Returns `true` if the snapshot for `digest` has been persisted to QMDB
+    /// (even if the in-memory snapshot data has since been evicted).
+    pub async fn is_snapshot_persisted(&self, digest: &ConsensusDigest) -> bool {
+        self.view.is_snapshot_persisted(digest).await
+    }
 }
 
 #[cfg(test)]
@@ -653,6 +666,7 @@ mod tests {
     use commonware_cryptography::Committable as _;
     use commonware_runtime::{Runner, tokio};
     use k256::ecdsa::SigningKey;
+    use kora_config::INITIAL_BASE_FEE;
     use kora_domain::{Block, ConsensusDigest, Tx, evm::Evm};
     use kora_executor::{BlockContext, BlockExecutor, RevmExecutor};
     use kora_overlay::OverlayState;
@@ -717,7 +731,7 @@ mod tests {
             timestamp,
             gas_limit: 30_000_000,
             beneficiary: Address::ZERO,
-            base_fee_per_gas: Some(0),
+            base_fee_per_gas: Some(INITIAL_BASE_FEE),
             ..Default::default()
         };
         BlockContext::new(header, B256::ZERO, prevrandao)

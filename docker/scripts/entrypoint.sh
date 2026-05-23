@@ -93,6 +93,11 @@ case "$MODE" in
         [[ -f "${DATA_DIR}/share.key" ]] || error "share.key not found (run DKG first)"
         [[ -f "${DATA_DIR}/output.json" ]] || error "output.json not found (run DKG first)"
 
+        # Log key fingerprints so DKG key mismatches are immediately obvious
+        SHARE_KEY_HASH=$(sha256sum "${DATA_DIR}/share.key" 2>/dev/null | cut -c1-16)
+        OUTPUT_HASH=$(sha256sum "${DATA_DIR}/output.json" 2>/dev/null | cut -c1-16)
+        log "DKG key fingerprints: share.key=${SHARE_KEY_HASH} output.json=${OUTPUT_HASH}"
+
         cp "${SHARED_DIR}/genesis.json" "${DATA_DIR}/" 2>/dev/null || true
         touch "${DATA_DIR}/.ready"
 
@@ -116,10 +121,18 @@ case "$MODE" in
             done
         fi
 
+        TX_GOSSIP=${TX_GOSSIP:-false}
+        GOSSIP_FLAG=""
+        if [[ "$TX_GOSSIP" == "true" ]]; then
+            GOSSIP_FLAG="--tx-gossip"
+            log "Transaction gossip enabled"
+        fi
+
         exec /usr/local/bin/kora validator \
             --data-dir "$DATA_DIR" \
             --peers "${SHARED_DIR}/peers.json" \
             --chain-id "$CHAIN_ID" \
+            $GOSSIP_FLAG \
             "$@"
         ;;
 
