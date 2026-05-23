@@ -671,7 +671,9 @@ impl NodeRunner for ProductionRunner {
         } else {
             // Drop the gossip channel - we won't use it
             drop(transport.tx_gossip);
-            info!("Transaction gossip disabled (enable with network.tx_gossip = true or --tx-gossip)");
+            info!(
+                "Transaction gossip disabled (enable with network.tx_gossip = true or --tx-gossip)"
+            );
             (None, None)
         };
 
