@@ -96,6 +96,9 @@ struct Account {
     key: SigningKey,
     address: Address,
     nonce: AtomicU64,
+    /// The on-chain nonce when this run started. Used to compute per-run
+    /// confirmed counts during post-run verification.
+    starting_nonce: AtomicU64,
 }
 
 impl Account {
@@ -104,7 +107,7 @@ impl Account {
         secret[31] = seed;
         let key = SigningKey::from_bytes((&secret).into()).expect("valid key");
         let address = address_from_key(&key);
-        Self { key, nonce: AtomicU64::new(0), address }
+        Self { key, nonce: AtomicU64::new(0), starting_nonce: AtomicU64::new(0), address }
     }
 
     fn next_nonce(&self) -> u64 {
@@ -113,6 +116,14 @@ impl Account {
 
     fn set_nonce(&self, nonce: u64) {
         self.nonce.store(nonce, Ordering::Relaxed);
+    }
+
+    fn set_starting_nonce(&self, nonce: u64) {
+        self.starting_nonce.store(nonce, Ordering::Relaxed);
+    }
+
+    fn get_starting_nonce(&self) -> u64 {
+        self.starting_nonce.load(Ordering::Relaxed)
     }
 }
 
@@ -354,6 +365,7 @@ async fn main() -> Result<()> {
                 get_nonce_from_any(&clients, account.address).await.wrap_err_with(|| {
                     format!("failed to query nonce for {} from any RPC endpoint", account.address)
                 })?;
+            account.set_starting_nonce(nonce);
             account.set_nonce(nonce);
         }
     }
@@ -512,11 +524,19 @@ async fn main() -> Result<()> {
                                     // Transaction was already included on-chain
                                     // (e.g. via broadcast copy). Re-query chain
                                     // nonce and advance local counter.
-                                    if let Ok(chain_nonce) =
-                                        get_nonce_from_any(&clients, account.address).await
-                                    {
-                                        account.set_nonce(chain_nonce);
-                                        resyncs.fetch_add(1, Ordering::Relaxed);
+                                    match get_nonce_from_any(&clients, account.address).await {
+                                        Ok(chain_nonce) => {
+                                            account.set_nonce(chain_nonce);
+                                            resyncs.fetch_add(1, Ordering::Relaxed);
+                                        }
+                                        Err(resync_err) => {
+                                            warn!(
+                                                account = %account.address,
+                                                error = %resync_err,
+                                                "nonce resync failed after nonce-too-low, \
+                                                 keeping local nonce"
+                                            );
+                                        }
                                     }
                                     // The nonce was consumed on-chain; count as success.
                                     success.fetch_add(1, Ordering::Relaxed);
@@ -539,11 +559,21 @@ async fn main() -> Result<()> {
                                         "nonce gap detected, resyncing"
                                     );
                                     tokio::time::sleep(NONCE_GAP_DELAY).await;
-                                    if let Ok(chain_nonce) =
-                                        get_nonce_from_any(&clients, account.address).await
-                                    {
-                                        account.set_nonce(chain_nonce);
-                                        resyncs.fetch_add(1, Ordering::Relaxed);
+                                    match get_nonce_from_any(&clients, account.address).await {
+                                        Ok(chain_nonce) => {
+                                            account.set_nonce(chain_nonce);
+                                            resyncs.fetch_add(1, Ordering::Relaxed);
+                                        }
+                                        Err(resync_err) => {
+                                            warn!(
+                                                account = %account.address,
+                                                error = %resync_err,
+                                                "nonce resync failed during gap recovery, \
+                                                 will retry on next iteration"
+                                            );
+                                            // Brief backoff before the outer loop retries
+                                            tokio::time::sleep(NONCE_GAP_DELAY).await;
+                                        }
                                     }
                                     // Do NOT increment `sent` -- this nonce was never
                                     // consumed. Break inner loop and let the outer
@@ -620,9 +650,11 @@ async fn main() -> Result<()> {
 
         for account in &accounts {
             let expected_nonce = account.nonce.load(Ordering::Relaxed);
+            let starting_nonce = account.get_starting_nonce();
             match get_nonce_from_any(&clients, account.address).await {
                 Ok(chain_nonce) => {
                     let gap = expected_nonce.saturating_sub(chain_nonce);
+                    let confirmed_this_run = chain_nonce.saturating_sub(starting_nonce);
                     if gap > 0 {
                         warn!(
                             account = %account.address,
@@ -632,7 +664,7 @@ async fn main() -> Result<()> {
                             "account has unconfirmed transactions"
                         );
                     }
-                    total_confirmed += chain_nonce;
+                    total_confirmed += confirmed_this_run;
                     total_pending += gap;
                 }
                 Err(e) => {
