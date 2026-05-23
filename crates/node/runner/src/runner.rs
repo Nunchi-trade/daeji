@@ -722,7 +722,7 @@ impl NodeRunner for ProductionRunner {
                     if ledger.submit_tx(tx).await {
                         debug!(?tx_id, "rpc submit: tx inserted into mempool");
                         // Forward to gossip if enabled.
-                        if let (Some(ref gossip), Some(ref seen)) = (&gossip, &seen) {
+                        if let (Some(gossip), Some(seen)) = (&gossip, &seen) {
                             let hash = keccak256(&data);
                             mark_seen(seen, hash);
                             if let Err(e) = gossip.try_send(data) {
