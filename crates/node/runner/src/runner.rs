@@ -79,7 +79,7 @@ struct ResolvedSimplexTiming {
     skip_timeout: ViewDelta,
 }
 
-fn resolve_simplex_timing(
+const fn resolve_simplex_timing(
     config: &kora_config::ConsensusSimplexConfig,
 ) -> ResolvedSimplexTiming {
     ResolvedSimplexTiming {
