@@ -477,7 +477,10 @@ impl LedgerView {
         for sender in senders {
             let finalized_nonce = match qmdb_state.nonce(&sender).await {
                 Ok(n) => n,
-                Err(_) => continue,
+                Err(err) => {
+                    tracing::warn!(%sender, error = ?err, "failed to query nonce during stale-nonce pruning");
+                    continue;
+                }
             };
 
             // The finalized nonce is the *next* nonce to be used, so all
