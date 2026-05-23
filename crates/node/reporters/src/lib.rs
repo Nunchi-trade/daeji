@@ -676,8 +676,10 @@ mod finalize_error_tests {
                 None,
                 None,
                 None,
+                None,
                 1,
                 Arc::new(Mutex::new(Vec::new())),
+                None,
                 Update::Block(block, ack),
             )
             .await;
@@ -803,6 +805,7 @@ mod finalize_success_tests {
                 None,
                 1,
                 Arc::new(Mutex::new(Vec::new())),
+                None,
                 Update::Block(block.clone(), ack),
             )
             .await;
@@ -869,6 +872,7 @@ mod finalize_success_tests {
                 None,
                 1,
                 Arc::new(Mutex::new(Vec::new())),
+                None,
                 Update::Block(block, ack),
             )
             .await;
