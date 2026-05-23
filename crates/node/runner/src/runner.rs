@@ -638,7 +638,7 @@ impl NodeRunner for ProductionRunner {
                         continue;
                     }
 
-                    let data = alloy_primitives::Bytes::copy_from_slice(&raw);
+                    let data = alloy_primitives::Bytes::copy_from_slice(raw.as_ref());
                     let tx = Tx::new(data);
                     let tx_id = tx.id();
 
@@ -656,11 +656,7 @@ impl NodeRunner for ProductionRunner {
                     if gossip_ledger.submit_tx(tx).await {
                         debug!(?tx_id, ?peer, "tx gossip: accepted transaction from peer");
                     } else {
-                        trace!(
-                            ?tx_id,
-                            ?peer,
-                            "tx gossip: ledger rejected transaction (duplicate)"
-                        );
+                        trace!(?tx_id, ?peer, "tx gossip: ledger rejected transaction (duplicate)");
                     }
                 }
             });
