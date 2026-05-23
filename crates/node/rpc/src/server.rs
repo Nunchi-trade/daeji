@@ -990,8 +990,7 @@ mod tests {
         };
 
         // eth_subscribe should be rewritten from -32603 to -32004.
-        let sub_req =
-            RpcRequest::new(Cow::Borrowed("eth_subscribe"), None, Id::Number(1));
+        let sub_req = RpcRequest::new(Cow::Borrowed("eth_subscribe"), None, Id::Number(1));
         let response = service.call(sub_req).await;
         assert_eq!(response.as_error_code(), Some(codes::METHOD_NOT_SUPPORTED));
         assert!(response.as_result().contains("Subscriptions are not available over HTTP"));
@@ -1001,11 +1000,9 @@ mod tests {
     async fn subscription_over_ws_passes_through() {
         // When the inner service returns success (WebSocket case), the
         // middleware must not interfere.
-        let service =
-            RateLimitedRpcService { service: AlwaysOkRpcService, rate_limiter: None };
+        let service = RateLimitedRpcService { service: AlwaysOkRpcService, rate_limiter: None };
 
-        let sub_req =
-            RpcRequest::new(Cow::Borrowed("eth_subscribe"), None, Id::Number(1));
+        let sub_req = RpcRequest::new(Cow::Borrowed("eth_subscribe"), None, Id::Number(1));
         let response = service.call(sub_req).await;
         assert!(response.is_success());
     }
