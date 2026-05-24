@@ -916,7 +916,6 @@ impl NodeRunner for ProductionRunner {
                 let seen = seen.clone();
                 let gossip_ledger = ledger.clone();
                 let gossip_chain_id = self.chain_id;
-                let gossip_state = state.qmdb_state().await;
                 let gossip_pool = txpool.clone();
                 let mut receiver = tx_gossip_receiver;
                 let in_metrics = app_metrics.clone();
@@ -941,9 +940,14 @@ impl NodeRunner for ProductionRunner {
                         let tx = Tx::new(data);
                         let tx_id = tx.id();
 
+                        // Fetch the latest state on each validation so nonce
+                        // and balance checks reflect finalized blocks.  The
+                        // previous code captured state once at startup, making
+                        // gossip validation increasingly stale.
+                        let current_state = gossip_ledger.latest_state().await;
                         let validator = TransactionValidator::new(
                             gossip_chain_id,
-                            gossip_state.clone(),
+                            current_state,
                             PoolConfig::default(),
                         )
                         .with_pool(gossip_pool.clone());
