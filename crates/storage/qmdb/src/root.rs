@@ -28,7 +28,15 @@ impl StateRoot {
             return parent_root;
         }
 
-        let mut buf = Vec::new();
+        // Pre-allocate: namespace(27) + parent(32) + count(8) + per-account overhead.
+        // Each account contributes at minimum: address(20) + flags(2) + nonce(8) +
+        // balance(32) + code_hash(32) + code_flag(1) + storage_count(8) = 103 bytes,
+        // plus 64 bytes per storage slot.
+        let estimated = KORA_TRANSITION_ROOT_NAMESPACE.len()
+            + 32
+            + 8
+            + changes.accounts.len() * 128;
+        let mut buf = Vec::with_capacity(estimated);
         buf.extend_from_slice(KORA_TRANSITION_ROOT_NAMESPACE);
         buf.extend_from_slice(parent_root.as_slice());
         buf.extend_from_slice(&(changes.accounts.len() as u64).to_be_bytes());
