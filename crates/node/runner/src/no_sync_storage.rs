@@ -56,10 +56,26 @@ where
 /// Blob backed either by scratch memory or by the underlying persistent runtime.
 #[derive(Clone, Debug)]
 pub(crate) enum NoSyncBlob<B> {
-    Memory { content: Arc<RwLock<Vec<u8>>>, pool: BufferPool },
-    Persistent { blob: B, shadow: Arc<RwLock<Vec<u8>>>, checkpoint_interval: u64 },
+    Memory {
+        content: Arc<RwLock<Vec<u8>>>,
+        pool: BufferPool,
+    },
+    /// Direct passthrough to underlying blob — no shadow, no interception.
+    Passthrough(B),
 }
 
+/// Returns `true` if this partition MUST be written to disk.
+///
+/// The marshal's application-metadata partition is the only one that needs
+/// durability through NoSyncStorage — it tracks the last acknowledged height
+/// so the marshal knows which blocks to redeliver on restart.  Everything
+/// else (consensus caches, marshal freezer data, journals) can live in memory
+/// because it is either reconstructed from the finalized block archive on
+/// startup or is transient consensus state.
+///
+/// The finalized block archives and QMDB bypass NoSyncStorage entirely (they
+/// use the raw runtime context), so durability of actual block data and state
+/// is not affected by this function.
 fn is_durable_partition(partition: &str) -> bool {
     partition.ends_with("-application-metadata")
 }
@@ -237,20 +253,7 @@ where
         if is_durable_partition(partition) {
             let (blob, size, version) =
                 self.inner.open_versioned(partition, name, versions).await?;
-            let shadow = if size == 0 {
-                Vec::new()
-            } else {
-                blob.read_at(0, size as usize).await?.coalesce().as_ref().to_vec()
-            };
-            return Ok((
-                NoSyncBlob::Persistent {
-                    blob,
-                    shadow: Arc::new(RwLock::new(shadow)),
-                    checkpoint_interval: self.checkpoint_interval,
-                },
-                size,
-                version,
-            ));
+            return Ok((NoSyncBlob::Passthrough(blob), size, version));
         }
 
         let mut partitions = self.partitions.lock().expect("scratch storage mutex poisoned");
@@ -314,20 +317,19 @@ where
         bufs: impl Into<iobuf::IoBufsMut> + Send,
     ) -> impl Future<Output = Result<IoBufsMut, Error>> + Send {
         async move {
-            let Self::Memory { content, .. } = self else {
-                return match self {
-                    Self::Persistent { blob, .. } => blob.read_at_buf(offset, len, bufs).await,
-                    Self::Memory { .. } => unreachable!(),
-                };
-            };
-            let offset: usize = offset.try_into().map_err(|_| Error::OffsetOverflow)?;
-            let content = content.read().expect("scratch blob lock poisoned");
-            let end = offset.checked_add(len).ok_or(Error::OffsetOverflow)?;
-            if end > content.len() {
-                return Err(Error::BlobInsufficientLength);
+            match self {
+                Self::Memory { content, .. } => {
+                    let offset: usize = offset.try_into().map_err(|_| Error::OffsetOverflow)?;
+                    let content = content.read().expect("scratch blob lock poisoned");
+                    let end = offset.checked_add(len).ok_or(Error::OffsetOverflow)?;
+                    if end > content.len() {
+                        return Err(Error::BlobInsufficientLength);
+                    }
+                    let _: iobuf::IoBufsMut = bufs.into();
+                    Ok(content[offset..end].to_vec().into())
+                }
+                Self::Passthrough(blob) => blob.read_at_buf(offset, len, bufs).await,
             }
-            let _: iobuf::IoBufsMut = bufs.into();
-            Ok(content[offset..end].to_vec().into())
         }
     }
 
@@ -339,7 +341,7 @@ where
         async move {
             match self {
                 Self::Memory { pool, .. } => self.read_at_buf(offset, len, pool.alloc(len)).await,
-                Self::Persistent { blob, .. } => blob.read_at(offset, len).await,
+                Self::Passthrough(blob) => blob.read_at(offset, len).await,
             }
         }
     }
@@ -350,82 +352,40 @@ where
         bufs: impl Into<IoBufs> + Send,
     ) -> impl Future<Output = Result<(), Error>> + Send {
         async move {
-            let Self::Memory { content, .. } = self else {
-                return match self {
-                    Self::Persistent { blob, shadow, .. } => {
-                        let buf = bufs.into().coalesce();
-                        let offset_usize: usize =
-                            offset.try_into().map_err(|_| Error::OffsetOverflow)?;
-                        let end =
-                            offset_usize.checked_add(buf.len()).ok_or(Error::OffsetOverflow)?;
-                        {
-                            let mut shadow = shadow.write().expect("metadata shadow lock poisoned");
-                            if end > shadow.len() {
-                                shadow.resize(end, 0);
-                            }
-                            shadow[offset_usize..end].copy_from_slice(buf.as_ref());
-                        }
-                        blob.write_at(offset, buf).await
+            match self {
+                Self::Memory { content, .. } => {
+                    let buf = bufs.into().coalesce();
+                    let offset: usize = offset.try_into().map_err(|_| Error::OffsetOverflow)?;
+                    let end = offset.checked_add(buf.len()).ok_or(Error::OffsetOverflow)?;
+                    let mut content = content.write().expect("scratch blob lock poisoned");
+                    if end > content.len() {
+                        content.resize(end, 0);
                     }
-                    Self::Memory { .. } => unreachable!(),
-                };
-            };
-            let buf = bufs.into().coalesce();
-            let offset: usize = offset.try_into().map_err(|_| Error::OffsetOverflow)?;
-            let end = offset.checked_add(buf.len()).ok_or(Error::OffsetOverflow)?;
-            let mut content = content.write().expect("scratch blob lock poisoned");
-            if end > content.len() {
-                content.resize(end, 0);
+                    content[offset..end].copy_from_slice(buf.as_ref());
+                    Ok(())
+                }
+                Self::Passthrough(blob) => blob.write_at(offset, bufs).await,
             }
-            content[offset..end].copy_from_slice(buf.as_ref());
-            Ok(())
         }
     }
 
     fn resize(&self, len: u64) -> impl Future<Output = Result<(), Error>> + Send {
         async move {
-            let Self::Memory { content, .. } = self else {
-                return match self {
-                    Self::Persistent { blob, shadow, .. } => {
-                        let len_usize: usize = len.try_into().map_err(|_| Error::OffsetOverflow)?;
-                        shadow.write().expect("metadata shadow lock poisoned").resize(len_usize, 0);
-                        blob.resize(len).await
-                    }
-                    Self::Memory { .. } => unreachable!(),
-                };
-            };
-            let len: usize = len.try_into().map_err(|_| Error::OffsetOverflow)?;
-            content.write().expect("scratch blob lock poisoned").resize(len, 0);
-            Ok(())
+            match self {
+                Self::Memory { content, .. } => {
+                    let len: usize = len.try_into().map_err(|_| Error::OffsetOverflow)?;
+                    content.write().expect("scratch blob lock poisoned").resize(len, 0);
+                    Ok(())
+                }
+                Self::Passthrough(blob) => blob.resize(len).await,
+            }
         }
     }
 
     async fn sync(&self) -> Result<(), Error> {
         match self {
             Self::Memory { .. } => Ok(()),
-            Self::Persistent { blob, shadow, checkpoint_interval } => {
-                let height = {
-                    let shadow = shadow.read().expect("metadata shadow lock poisoned");
-                    application_metadata_height(&shadow)
-                };
-                if height.is_some_and(|height| {
-                    *checkpoint_interval <= 1 || height % *checkpoint_interval == 0
-                }) {
-                    blob.sync().await
-                } else {
-                    Ok(())
-                }
-            }
+            Self::Passthrough(blob) => blob.sync().await,
         }
     }
-}
-
-fn application_metadata_height(data: &[u8]) -> Option<u64> {
-    // Commonware metadata encodes: version(u64), key(U64), value(Height), crc32.
-    // The marshal application metadata partition stores only the latest processed height.
-    let value_start = 16;
-    let value_end = value_start + 8;
-    (data.len() >= value_end + 4).then(|| {
-        u64::from_be_bytes(data[value_start..value_end].try_into().expect("slice length checked"))
-    })
 }

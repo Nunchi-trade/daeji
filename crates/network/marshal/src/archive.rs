@@ -1,4 +1,5 @@
-//! Contains the [`ArchiveInitializer`] which initializes immutable archive storage.
+//! Contains the [`ArchiveInitializer`] which initializes archive storage, and
+//! the [`CheckpointedArchive`] wrapper that batches syncs to checkpoint boundaries.
 
 use std::num::{NonZeroU16, NonZeroU64, NonZeroUsize};
 
@@ -11,11 +12,40 @@ use commonware_consensus::{
 };
 use commonware_cryptography::{Digest, Digestible, certificate::Scheme};
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
-use commonware_storage::archive::{
-    Archive as ArchiveTrait, Error as ArchiveError, Identifier,
-    immutable::{Archive, Config},
+use commonware_storage::{
+    archive::{
+        Archive as ArchiveTrait, Error as ArchiveError, Identifier,
+        immutable::{Archive, Config},
+        prunable::{Archive as PrunableArchive, Config as PrunableConfig},
+    },
+    translator::{EightCap, Translator},
 };
 use commonware_utils::{NZU16, NZU64, NZUsize, sequence::Array};
+use tracing::warn;
+
+/// Trait for archive backends that support pruning old entries.
+///
+/// This enables [`CheckpointedArchive`] to forward `prune` calls from the
+/// marshal's [`Blocks`] and [`Certificates`] stores to the underlying archive.
+pub trait Prunable {
+    /// Remove all entries with index strictly below `min`.
+    fn prune(
+        &mut self,
+        min: u64,
+    ) -> impl std::future::Future<Output = Result<(), ArchiveError>> + Send;
+}
+
+impl<T, E, K, V> Prunable for PrunableArchive<T, E, K, V>
+where
+    T: Translator,
+    E: BufferPooler + Storage + Metrics + Send,
+    K: Array,
+    V: Codec + Send + Sync,
+{
+    async fn prune(&mut self, min: u64) -> Result<(), ArchiveError> {
+        Self::prune(self, min).await
+    }
+}
 
 /// Immutable archive wrapper that only durably syncs on checkpoint boundaries.
 ///
@@ -31,8 +61,14 @@ pub struct CheckpointedArchive<A> {
 
 impl<A> CheckpointedArchive<A> {
     /// Create a checkpointed archive around an existing archive.
+    ///
+    /// A `checkpoint_interval` of 0 is clamped to 1 to prevent
+    /// division-by-zero in [`should_sync`].  This matches the guards in
+    /// `NoSyncStorage::new()` (`.max(1)`) and
+    /// `FinalizedReporter::with_checkpoint_interval()` (`if 0 then 1`).
     pub const fn new(inner: A, checkpoint_interval: u64) -> Self {
-        Self { inner, checkpoint_interval, highest_dirty: None }
+        let interval = if checkpoint_interval == 0 { 1 } else { checkpoint_interval };
+        Self { inner, checkpoint_interval: interval, highest_dirty: None }
     }
 
     fn mark_dirty(&mut self, height: u64) {
@@ -47,7 +83,15 @@ impl<A> CheckpointedArchive<A> {
         match self.highest_dirty {
             Some(height) if self.checkpoint_interval <= 1 => self.is_contiguous_through(height),
             Some(height) => {
-                height % self.checkpoint_interval == 0 && self.is_contiguous_through(height)
+                // Compute the highest checkpoint boundary at or below the
+                // dirty height.  This handles out-of-order insertion: even if
+                // highest_dirty overshoots a boundary (e.g. 65 with interval
+                // 64), we recognise that the boundary at 64 has been reached
+                // and sync when the archive is contiguous through it.  The
+                // inner archive's sync() flushes ALL in-memory data, so
+                // blocks above the boundary are also persisted.
+                let boundary = (height / self.checkpoint_interval) * self.checkpoint_interval;
+                boundary > 0 && self.is_contiguous_through(boundary)
             }
             None => false,
         }
@@ -155,7 +199,7 @@ where
 
 impl<A, B, C, S> Certificates for CheckpointedArchive<A>
 where
-    A: ArchiveTrait<Key = B, Value = Finalization<S, C>> + Send + Sync + 'static,
+    A: ArchiveTrait<Key = B, Value = Finalization<S, C>> + Prunable + Send + Sync + 'static,
     B: Digest,
     C: Digest,
     S: Scheme,
@@ -185,8 +229,8 @@ where
         ArchiveTrait::get(self, id).await
     }
 
-    async fn prune(&mut self, _: Height) -> Result<(), Self::Error> {
-        Ok(())
+    async fn prune(&mut self, min: Height) -> Result<(), Self::Error> {
+        self.inner.prune(min.get()).await
     }
 
     fn last_index(&self) -> Option<Height> {
@@ -201,7 +245,7 @@ where
 
 impl<A, B> Blocks for CheckpointedArchive<A>
 where
-    A: ArchiveTrait<Key = B::Digest, Value = B> + Send + Sync + 'static,
+    A: ArchiveTrait<Key = B::Digest, Value = B> + Prunable + Send + Sync + 'static,
     B: Block,
 {
     type Block = B;
@@ -222,8 +266,8 @@ where
         ArchiveTrait::get(self, id).await
     }
 
-    async fn prune(&mut self, _: Height) -> Result<(), Self::Error> {
-        Ok(())
+    async fn prune(&mut self, min: Height) -> Result<(), Self::Error> {
+        self.inner.prune(min.get()).await
     }
 
     fn missing_items(&self, start: Height, max: usize) -> Vec<Height> {
@@ -240,7 +284,14 @@ where
     }
 }
 
-/// Initializes immutable archive storage with sensible defaults.
+/// Initializes archive storage with sensible defaults.
+///
+/// Provides both immutable (append-only) and prunable archive backends.
+/// Production deployments should use the prunable variants
+/// ([`init_prunable`](Self::init_prunable),
+/// [`init_prunable_checkpointed`](Self::init_prunable_checkpointed))
+/// so the marshal can reclaim disk space for old finalized blocks and
+/// certificates via the [`Prunable`] trait.
 #[derive(Debug, Clone, Copy)]
 pub struct ArchiveInitializer;
 
@@ -262,6 +313,13 @@ impl ArchiveInitializer {
 
     /// The default items per section.
     pub const DEFAULT_ITEMS_PER_SECTION: NonZeroU64 = NZU64!(262_144);
+
+    /// The default prunable items per section.
+    ///
+    /// Pruning operates at section granularity -- items are only freed when an
+    /// entire section falls below the retention window. A smaller section size
+    /// (256) makes pruning more responsive and reduces peak disk usage.
+    pub const DEFAULT_PRUNABLE_ITEMS_PER_SECTION: NonZeroU64 = NZU64!(256);
 
     /// The default write buffer size.
     pub const DEFAULT_WRITE_BUFFER: NonZeroUsize = NZUsize!(1024 * 1024);
@@ -374,6 +432,137 @@ impl ArchiveInitializer {
     {
         Self::init(ctx, Self::DEFAULT_BLOCKS_PREFIX, codec_config).await
     }
+
+    /// Initializes a prunable archive with a custom partition prefix.
+    ///
+    /// Unlike [`init`](Self::init), this creates a [`prunable::Archive`] that
+    /// supports removing old entries via [`Prunable::prune`]. Uses [`EightCap`]
+    /// as the key translator, which takes the first 8 bytes of each key digest
+    /// for hash-table indexing.
+    ///
+    /// [`prunable::Archive`]: commonware_storage::archive::prunable::Archive
+    pub async fn init_prunable<E, K, V>(
+        ctx: E,
+        partition_prefix: impl Into<String>,
+        codec_config: V::Cfg,
+    ) -> Result<PrunableArchive<EightCap, E, K, V>, commonware_storage::archive::Error>
+    where
+        E: BufferPooler + Spawner + Storage + Metrics + Clock + Clone,
+        K: Array,
+        V: Codec + Send + Sync,
+    {
+        let prefix = partition_prefix.into();
+        let config = PrunableConfig {
+            translator: EightCap,
+            key_partition: format!("{prefix}-key"),
+            key_page_cache: CacheRef::from_pooler(
+                &ctx,
+                Self::DEFAULT_PAGE_SIZE,
+                Self::DEFAULT_PAGE_CACHE_SIZE,
+            ),
+            value_partition: format!("{prefix}-value"),
+            compression: Self::DEFAULT_COMPRESSION_LEVEL,
+            codec_config,
+            items_per_section: Self::DEFAULT_PRUNABLE_ITEMS_PER_SECTION,
+            key_write_buffer: Self::DEFAULT_WRITE_BUFFER,
+            value_write_buffer: Self::DEFAULT_WRITE_BUFFER,
+            replay_buffer: Self::DEFAULT_REPLAY_BUFFER,
+        };
+        PrunableArchive::init(ctx, config).await
+    }
+
+    /// Initializes a prunable archive wrapped with checkpointed sync behavior.
+    ///
+    /// Combines [`init_prunable`](Self::init_prunable) with
+    /// [`CheckpointedArchive`] so that syncs are batched to `checkpoint_interval`
+    /// boundaries while pruning remains fully functional.
+    pub async fn init_prunable_checkpointed<E, K, V>(
+        ctx: E,
+        partition_prefix: impl Into<String>,
+        codec_config: V::Cfg,
+        checkpoint_interval: u64,
+    ) -> Result<
+        CheckpointedArchive<PrunableArchive<EightCap, E, K, V>>,
+        commonware_storage::archive::Error,
+    >
+    where
+        E: BufferPooler + Spawner + Storage + Metrics + Clock + Clone,
+        K: Array,
+        V: Codec + Send + Sync,
+    {
+        let archive = Self::init_prunable(ctx, partition_prefix, codec_config).await?;
+        Ok(CheckpointedArchive::new(archive, checkpoint_interval))
+    }
+
+    /// Partition suffixes used by the old `immutable::Archive` backend.
+    ///
+    /// When migrating from immutable to prunable archives, these partitions
+    /// contain orphaned data that will never be read by the new backend.
+    const LEGACY_IMMUTABLE_SUFFIXES: &'static [&'static str] =
+        &["-metadata", "-freezer-table", "-freezer-key", "-freezer-value", "-ordinal"];
+
+    /// Detect and remove legacy immutable archive partitions for a given prefix.
+    ///
+    /// The old `immutable::Archive` backend used five partitions per archive
+    /// (`{prefix}-metadata`, `{prefix}-freezer-table`, `{prefix}-freezer-key`,
+    /// `{prefix}-freezer-value`, `{prefix}-ordinal`). The new `prunable::Archive`
+    /// backend uses different partition names (`{prefix}-key`, `{prefix}-value`),
+    /// so upgrading silently orphans the old data on disk.
+    ///
+    /// This method scans for legacy partitions and removes any that contain
+    /// data, logging a warning for each one removed. Call this before
+    /// [`init_prunable`](Self::init_prunable) or
+    /// [`init_prunable_checkpointed`](Self::init_prunable_checkpointed) to
+    /// ensure a clean migration.
+    ///
+    /// Returns the number of legacy partitions that were detected and removed.
+    pub async fn migrate_from_immutable<E>(ctx: &E, partition_prefix: &str) -> usize
+    where
+        E: Storage,
+    {
+        let mut removed = 0;
+        for suffix in Self::LEGACY_IMMUTABLE_SUFFIXES {
+            let partition_name = format!("{partition_prefix}{suffix}");
+            match ctx.scan(&partition_name).await {
+                Ok(blobs) if !blobs.is_empty() => {
+                    warn!(
+                        partition = %partition_name,
+                        blobs = blobs.len(),
+                        "removing legacy immutable archive partition \
+                         (replaced by prunable backend)"
+                    );
+                    if let Err(e) = ctx.remove(&partition_name, None).await {
+                        warn!(
+                            partition = %partition_name,
+                            error = %e,
+                            "failed to remove legacy immutable archive partition"
+                        );
+                    } else {
+                        removed += 1;
+                    }
+                }
+                Ok(_) => {
+                    // Partition exists but is empty, or doesn't exist -- nothing to do.
+                }
+                Err(e) => {
+                    warn!(
+                        partition = %partition_name,
+                        error = %e,
+                        "failed to scan for legacy immutable archive partition"
+                    );
+                }
+            }
+        }
+        if removed > 0 {
+            warn!(
+                prefix = %partition_prefix,
+                removed,
+                "cleaned up legacy immutable archive partitions; \
+                 archive history has been reset with the new prunable backend"
+            );
+        }
+        removed
+    }
 }
 
 #[cfg(test)]
@@ -453,6 +642,7 @@ mod tests {
         assert_eq!(ArchiveInitializer::DEFAULT_FREEZER_VALUE_TARGET_SIZE, 1024 * 1024 * 1024);
         assert_eq!(ArchiveInitializer::DEFAULT_COMPRESSION_LEVEL, Some(3));
         assert_eq!(ArchiveInitializer::DEFAULT_ITEMS_PER_SECTION.get(), 262_144);
+        assert_eq!(ArchiveInitializer::DEFAULT_PRUNABLE_ITEMS_PER_SECTION.get(), 256);
         assert_eq!(ArchiveInitializer::DEFAULT_WRITE_BUFFER.get(), 1024 * 1024);
         assert_eq!(ArchiveInitializer::DEFAULT_REPLAY_BUFFER.get(), 8 * 1024 * 1024);
         assert_eq!(ArchiveInitializer::DEFAULT_PAGE_SIZE.get(), 4_096);
@@ -493,5 +683,40 @@ mod tests {
 
         archive.mark_dirty(64);
         assert!(!archive.should_sync());
+    }
+
+    #[test]
+    fn checkpointed_archive_syncs_when_dirty_past_boundary() {
+        // Simulate out-of-order: block 65 arrives, then 64.
+        // highest_dirty = 65, but the boundary at 64 should still trigger sync.
+        let inner = FakeArchive { ranges: vec![(1, 65)] };
+        let mut archive = CheckpointedArchive::new(inner, 64);
+
+        archive.mark_dirty(65);
+        // 65 is past the boundary at 64, and archive is contiguous through 64
+        assert!(archive.should_sync());
+    }
+
+    #[test]
+    fn checkpointed_archive_no_sync_before_first_boundary() {
+        let inner = FakeArchive { ranges: vec![(1, 63)] };
+        let mut archive = CheckpointedArchive::new(inner, 64);
+
+        archive.mark_dirty(63);
+        // 63 / 64 = 0, boundary = 0, which is not > 0
+        assert!(!archive.should_sync());
+    }
+
+    #[test]
+    fn checkpointed_archive_zero_interval_behaves_as_one() {
+        let inner = FakeArchive { ranges: vec![(1, 3)] };
+        let mut archive_zero = CheckpointedArchive::new(inner, 0);
+        archive_zero.mark_dirty(3);
+        assert!(archive_zero.should_sync());
+
+        let inner = FakeArchive { ranges: vec![(1, 3)] };
+        let mut archive_one = CheckpointedArchive::new(inner, 1);
+        archive_one.mark_dirty(3);
+        assert!(archive_one.should_sync());
     }
 }

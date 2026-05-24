@@ -33,7 +33,7 @@ use kora_consensus::BlockExecution;
 use kora_domain::{Block, BlockCfg, BootstrapConfig, ConsensusDigest, LedgerEvent, Tx, TxCfg};
 use kora_executor::{BlockContext, RevmExecutor};
 use kora_indexer::{BlockIndex, IndexedBlock};
-use kora_ledger::{LedgerService, LedgerView};
+use kora_ledger::{LedgerService, LedgerView, LiveState};
 use kora_marshal::{ArchiveInitializer, BroadcastInitializer, PeerInitializer};
 use kora_metrics::AppMetrics;
 use kora_reporters::{BlockContextProvider, FinalizedReporter, NodeStateReporter, SeedReporter};
@@ -170,6 +170,7 @@ fn seed_genesis_block_index(index: &BlockIndex, genesis: &Block, gas_limit: u64)
             gas_limit,
             gas_used: 0,
             base_fee_per_gas: Some(kora_config::INITIAL_BASE_FEE),
+            mix_hash: genesis.prevrandao,
             transaction_hashes: Vec::new(),
         },
         Vec::new(),
@@ -197,6 +198,7 @@ fn index_recovered_block(
         gas_limit: block_context.header.gas_limit,
         gas_used: 0,
         base_fee_per_gas: block_context.header.base_fee_per_gas,
+        mix_hash: block.prevrandao,
         transaction_hashes,
     };
     index.insert_block(indexed_block, Vec::new(), Vec::new());
@@ -205,7 +207,13 @@ fn index_recovered_block(
 /// Number of recent blocks to restore during startup to pre-populate the
 /// snapshot cache. This ensures that blocks arriving shortly after restart
 /// can find their parent snapshot without entering catch-up mode.
-const SNAPSHOT_PREPOPULATE_COUNT: u64 = 16;
+///
+/// A larger window (64 blocks) means the node can survive outages where
+/// the network advances up to 64 blocks before the node restarts.  Blocks
+/// within this window are resolved from the local archive without needing
+/// catch-up trust.  Beyond this window, the catch-up mechanism in
+/// `RevmApplication::verify_block` handles the gap.
+const SNAPSHOT_PREPOPULATE_COUNT: u64 = 64;
 
 async fn recover_finalized_state<FB, FC>(
     ledger: &LedgerService,
@@ -343,7 +351,37 @@ async fn restore_checkpoint_and_replay_tail(
             Ok((restored_height, replayed_tail))
         }
         None => {
-            validate_commit_marker(data_dir, head);
+            if let Some(marker) = marker_digest {
+                // A commit marker exists on disk but does not match any
+                // block in the archive.  QMDB was last committed at a
+                // height we cannot identify, so creating a snapshot from
+                // the archive head would produce inconsistent state.
+                let head_digest = head.commitment();
+                error!(
+                    marker_digest = %hex::encode(marker.as_ref()),
+                    head_digest = %hex::encode(head_digest.as_ref()),
+                    archive_head_height = head.height,
+                    "commit marker does not match any archived block; \
+                     QMDB state is at an unknown height.  Refusing to \
+                     start with potentially inconsistent state.  \
+                     Re-sync from a trusted snapshot or wipe state."
+                );
+                anyhow::bail!(
+                    "commit marker {} does not match any archived block; \
+                     cannot safely determine QMDB state height \
+                     (archive head is at height {})",
+                    hex::encode(marker.as_ref()),
+                    head.height,
+                );
+            }
+            // No commit marker at all -- fresh node or upgrade from a
+            // pre-marker build.  Safe to trust the archive head.
+            info!(
+                archive_head_height = head.height,
+                "no commit marker found; restoring archive head as initial \
+                 QMDB state (expected for fresh nodes or first startup \
+                 after upgrade)"
+            );
             ledger.restore_persisted_snapshot(head).await;
             Ok((head.height, false))
         }
@@ -370,7 +408,7 @@ async fn replay_finalized_block(
         .await
         .with_context(|| format!("failed to replay finalized block at height {}", block.height))?;
     let state_root = ledger
-        .compute_root_from_store(parent_digest, execution.outcome.changes.clone())
+        .compute_root_from_store(parent_digest, &execution.outcome.changes)
         .await
         .with_context(|| format!("failed to compute replay root at height {}", block.height))?;
     anyhow::ensure!(
@@ -455,43 +493,6 @@ async fn prepopulate_snapshot_cache<FB>(
             head_height,
             "pre-populated snapshot cache with recent finalized blocks"
         );
-    }
-}
-
-/// Compare the on-disk commit marker against the archive head block.
-///
-/// This is a best-effort diagnostic check. A missing marker (fresh node or
-/// upgrade from a pre-marker build) is benign and logged at info level. A
-/// mismatch means QMDB may not contain the state corresponding to the
-/// archive head and is logged as a warning so operators can investigate.
-fn validate_commit_marker(data_dir: &Path, archive_head: &Block) {
-    let marker_digest = crate::commit_marker::read_commit_marker(data_dir);
-    let head_digest = archive_head.commitment();
-
-    match marker_digest {
-        None => {
-            info!(
-                archive_head_height = archive_head.height,
-                "no commit marker found; this is expected for fresh nodes or \
-                 first startup after upgrade"
-            );
-        }
-        Some(marker) if marker == head_digest => {
-            info!(
-                archive_head_height = archive_head.height,
-                "commit marker matches archive head; QMDB state is consistent"
-            );
-        }
-        Some(marker) => {
-            warn!(
-                archive_head_height = archive_head.height,
-                marker_digest = %hex::encode(marker.as_ref()),
-                head_digest = %hex::encode(head_digest.as_ref()),
-                "commit marker does not match archive head; QMDB may be behind \
-                 or inconsistent. The node will proceed but state may diverge. \
-                 Consider re-syncing from a trusted snapshot if issues arise."
-            );
-        }
     }
 }
 
@@ -912,31 +913,48 @@ impl NodeRunner for ProductionRunner {
         let page_cache = default_page_cache(&context);
         let block_cfg = block_codec_cfg(&config.consensus.block_codec);
         let partition_prefix = &self.partition_prefix;
+        // Use a single Rayon worker thread for BLS signature verification.
+        // Rayon's work-stealing scheduler busy-waits (sched_yield) when idle,
+        // and BLS batches are small enough (~6-10 msgs at 30 blocks/s) that
+        // parallelism across 2 threads provides negligible speedup.  With
+        // Docker CPU limits (0.75-1.2 cores), the second idle thread wastes
+        // ~0.21 cores of CPU in spin loops and inflates involuntary context
+        // switches by 100K+/5min.
         let strategy = context
-            .create_strategy(NZUsize!(2))
+            .create_strategy(NZUsize!(1))
             .map_err(|e| anyhow::anyhow!("failed to create signature strategy: {e}"))?;
         let checkpoint_interval = checkpoint_interval();
         info!(checkpoint_interval, "configured finalized archive and QMDB checkpoint interval");
 
+        // Migrate any legacy immutable archive partitions left over from
+        // before the switch to prunable archives. The old backend used
+        // different partition names, so its data is silently orphaned on
+        // upgrade. This detects, warns, and removes the stale partitions.
+        let finalizations_prefix = format!("{partition_prefix}-finalizations-by-height");
+        let blocks_prefix = format!("{partition_prefix}-finalized-blocks");
+        ArchiveInitializer::migrate_from_immutable(&context, &finalizations_prefix).await;
+        ArchiveInitializer::migrate_from_immutable(&context, &blocks_prefix).await;
+
         <ThresholdScheme as commonware_cryptography::certificate::Scheme>::certificate_codec_config_unbounded();
         let finalizations_by_height =
-            ArchiveInitializer::init_checkpointed::<_, ConsensusDigest, CertArchive>(
+            ArchiveInitializer::init_prunable_checkpointed::<_, ConsensusDigest, CertArchive>(
                 context.with_label("finalizations_by_height"),
-                format!("{partition_prefix}-finalizations-by-height"),
+                finalizations_prefix,
                 (),
                 checkpoint_interval,
             )
             .await
             .context("init finalizations archive")?;
 
-        let finalized_blocks = ArchiveInitializer::init_checkpointed::<_, ConsensusDigest, Block>(
-            context.with_label("finalized_blocks"),
-            format!("{partition_prefix}-finalized-blocks"),
-            block_cfg,
-            checkpoint_interval,
-        )
-        .await
-        .context("init blocks archive")?;
+        let finalized_blocks =
+            ArchiveInitializer::init_prunable_checkpointed::<_, ConsensusDigest, Block>(
+                context.with_label("finalized_blocks"),
+                blocks_prefix,
+                block_cfg,
+                checkpoint_interval,
+            )
+            .await
+            .context("init blocks archive")?;
 
         let has_finalized_history = finalized_blocks.last_index().is_some();
         let state = LedgerView::init_with_genesis_options(
@@ -979,6 +997,7 @@ impl NodeRunner for ProductionRunner {
             {
                 let seen = seen.clone();
                 let mut sender = tx_gossip_sender;
+                let out_metrics = app_metrics.clone();
                 context.with_label("tx-gossip-out").shared(true).spawn(move |_| async move {
                     let mut rx = gossip_outbound_rx;
                     while let Some(raw) = rx.recv().await {
@@ -989,8 +1008,10 @@ impl NodeRunner for ProductionRunner {
                         let msg = bytes::Bytes::copy_from_slice(&raw);
                         if let Err(e) = sender.send(Recipients::All, msg, false).await {
                             warn!(error = %e, "tx gossip: failed to broadcast transaction");
+                            out_metrics.gossip_tx_broadcast_failed.inc();
                         } else {
                             trace!(?hash, "tx gossip: broadcast transaction to peers");
+                            out_metrics.gossip_tx_broadcast.inc();
                         }
                     }
                     debug!("tx gossip outbound channel closed");
@@ -1002,9 +1023,9 @@ impl NodeRunner for ProductionRunner {
                 let seen = seen.clone();
                 let gossip_ledger = ledger.clone();
                 let gossip_chain_id = self.chain_id;
-                let gossip_state = state.qmdb_state().await;
                 let gossip_pool = txpool.clone();
                 let mut receiver = tx_gossip_receiver;
+                let in_metrics = app_metrics.clone();
                 context.with_label("tx-gossip-in").shared(true).spawn(move |_| async move {
                     loop {
                         let (peer, raw) = match receiver.recv().await {
@@ -1015,6 +1036,7 @@ impl NodeRunner for ProductionRunner {
                             }
                         };
 
+                        in_metrics.gossip_tx_received.inc();
                         let hash = keccak256(&raw);
                         if !mark_seen(&seen, hash) {
                             trace!(?hash, ?peer, "tx gossip: skipping already-seen transaction");
@@ -1025,14 +1047,20 @@ impl NodeRunner for ProductionRunner {
                         let tx = Tx::new(data);
                         let tx_id = tx.id();
 
+                        // Fetch the latest state on each validation so nonce
+                        // and balance checks reflect finalized blocks.  The
+                        // previous code captured state once at startup, making
+                        // gossip validation increasingly stale.
+                        let current_state = gossip_ledger.latest_state().await;
                         let validator = TransactionValidator::new(
                             gossip_chain_id,
-                            gossip_state.clone(),
+                            current_state,
                             PoolConfig::default(),
                         )
                         .with_pool(gossip_pool.clone());
                         if let Err(e) = validator.validate(tx.clone()).await {
                             trace!(?tx_id, ?peer, error = %e, "tx gossip: peer tx failed validation");
+                            in_metrics.gossip_tx_invalid.inc();
                             continue;
                         }
 
@@ -1096,10 +1124,13 @@ impl NodeRunner for ProductionRunner {
                 node_state.set_finalized_height(last);
             }
 
-            let qmdb_state = state.qmdb_state().await;
+            // Use LiveState so RPC queries read from the latest in-memory
+            // overlay rather than the persisted QMDB checkpoint (which can lag
+            // up to 256 blocks behind head).
+            let live_state = LiveState::new(ledger.clone());
             let rpc_executor = Arc::new(RevmExecutor::new(self.chain_id));
             let indexed_provider =
-                kora_rpc::IndexedStateProvider::new(block_index.clone(), qmdb_state, rpc_executor);
+                kora_rpc::IndexedStateProvider::new(block_index.clone(), live_state, rpc_executor);
             let tx_ledger = ledger.clone();
             let chain_id = self.chain_id;
             let tx_pool = txpool.clone();

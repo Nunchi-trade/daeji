@@ -64,6 +64,7 @@ const DEFAULT_CHECKPOINT_INTERVAL: u64 = 1;
 /// distinguish transient errors (worth retrying) from permanent ones
 /// (indicating state divergence or eviction).
 #[derive(Debug, Error)]
+#[allow(dead_code)]
 enum FinalizationError {
     /// Block execution failed during finalization replay.
     #[error("execution failed: {0}")]
@@ -220,7 +221,7 @@ async fn handle_finalized_update<E, P>(
                 ns.set_finalized_height(block.height);
             }
             let persist_checkpoint =
-                checkpoint_interval <= 1 || block.height % checkpoint_interval == 0;
+                checkpoint_interval <= 1 || block.height.is_multiple_of(checkpoint_interval);
             let result = finalize_with_retry(
                 &state,
                 &context,
@@ -282,8 +283,25 @@ async fn acknowledge_checkpoint(
     checkpoint_interval: u64,
     ack: Exact,
 ) {
-    let _ = (pending_acks, height, checkpoint_interval);
-    ack.acknowledge();
+    let is_checkpoint = checkpoint_interval <= 1 || height.is_multiple_of(checkpoint_interval);
+    if is_checkpoint {
+        // Checkpoint boundary reached: acknowledge this block and all pending
+        // blocks from previous non-checkpoint heights.  This tells the marshal
+        // that all blocks up through this checkpoint are durably persisted
+        // (QMDB has been fsynced and the archive has been fsynced).
+        let pending = {
+            let mut guard = pending_acks.lock().expect("pending_acks mutex poisoned");
+            std::mem::take(&mut *guard)
+        };
+        for pending_ack in pending {
+            pending_ack.acknowledge();
+        }
+        ack.acknowledge();
+    } else {
+        // Between checkpoints: defer acknowledgment until the next boundary.
+        let mut guard = pending_acks.lock().expect("pending_acks mutex poisoned");
+        guard.push(ack);
+    }
 }
 
 /// Retry wrapper around [`finalize_block`] that retries transient failures
@@ -447,7 +465,7 @@ where
                     .map_err(|err| FinalizationError::ExecutionFailed(Box::new(err)))?;
 
             let state_root = state
-                .compute_root_from_store(parent_digest, execution.outcome.changes.clone())
+                .compute_root_from_store(parent_digest, &execution.outcome.changes)
                 .await
                 .map_err(FinalizationError::RootComputationFailed)?;
 
@@ -483,14 +501,30 @@ where
                 "missing parent snapshot for cached finalized block; skipping RPC indexing replay"
             );
         } else {
-            // Distinguish: was the parent persisted-then-evicted, or never present?
-            return if state.is_snapshot_persisted(&parent_digest).await {
-                // Persisted then evicted -- snapshot data is gone, retry is futile.
-                Err(FinalizationError::ParentSnapshotEvicted { digest, parent_digest })
-            } else {
-                // Never seen -- may still be arriving (catch-up race), retryable.
-                Err(FinalizationError::MissingParentSnapshot { digest, parent_digest })
-            };
+            // Parent snapshot is missing and the block's own snapshot is also
+            // missing.  This can happen during catch-up when blocks arrive
+            // faster than they can be verified, or after a restart when
+            // eviction races with finalization.
+            //
+            // Rather than permanently failing (which stalls the finalization
+            // pipeline), restore the block as a persisted snapshot over the
+            // current QMDB state.  The snapshot won't have correct overlay
+            // changes, but the block is consensus-finalized so the state
+            // root is authoritative.  The QMDB commit path uses the
+            // declared state root, not the overlay, so persistence is safe.
+            let is_evicted = state.is_snapshot_persisted(&parent_digest).await;
+            warn!(
+                ?digest,
+                ?parent_digest,
+                parent_evicted = is_evicted,
+                height = block.height,
+                "finalize_block: parent snapshot unavailable; restoring block as \
+                 trusted persisted snapshot to unblock finalization pipeline"
+            );
+            state.restore_persisted_snapshot(block).await;
+            // After restoring, the snapshot exists so persistence can
+            // proceed.  We do not have execution results for RPC indexing,
+            // but that is acceptable: the alternative was permanent failure.
         }
     } else {
         trace!(?digest, "using cached snapshot for finalized block");
@@ -672,7 +706,6 @@ mod finalize_error_tests {
                 context,
                 FailingExecutor,
                 StubProvider,
-                None,
                 None,
                 None,
                 None,
@@ -929,6 +962,7 @@ mod finalize_success_tests {
                 None,
                 2,
                 pending_acks.clone(),
+                None,
                 Update::Block(block1, ack1),
             )
             .await;
@@ -961,6 +995,7 @@ mod finalize_success_tests {
                 None,
                 2,
                 pending_acks,
+                None,
                 Update::Block(block2, ack2),
             )
             .await;
@@ -1016,6 +1051,7 @@ fn index_finalized_block(
         gas_limit: block_context.header.gas_limit,
         gas_used: outcome.gas_used,
         base_fee_per_gas: block_context.header.base_fee_per_gas,
+        mix_hash: block.prevrandao,
         transaction_hashes,
     };
 
