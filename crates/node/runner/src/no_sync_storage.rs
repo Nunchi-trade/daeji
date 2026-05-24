@@ -69,11 +69,16 @@ fn is_ephemeral_partition(partition: &str) -> bool {
     // Consensus scratch partitions created by commonware simplex.
     // These contain votes, views, journals, and certificates that are
     // reconstructed from the finalized block archive on startup.
+    //
+    // Note: use `-finalization-` (with trailing dash) to avoid matching
+    // the finalization archive (`*-finalizations-by-height-*`), which
+    // must remain durable even though it is currently initialized with
+    // the raw context (not NoSyncStorage).
     partition.contains("-cache-")
         || partition.contains("-verified")
         || partition.contains("-notarized")
-        || partition.contains("-notarization")
-        || partition.contains("-finalization")
+        || partition.contains("-notarization-")
+        || partition.contains("-finalization-")
         || partition.contains("-journal")
         || partition.contains("-views-")
 }
