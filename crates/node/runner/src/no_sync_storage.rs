@@ -56,7 +56,10 @@ where
 /// Blob backed either by scratch memory or by the underlying persistent runtime.
 #[derive(Clone, Debug)]
 pub(crate) enum NoSyncBlob<B> {
-    Memory { content: Arc<RwLock<Vec<u8>>>, pool: BufferPool },
+    Memory {
+        content: Arc<RwLock<Vec<u8>>>,
+        pool: BufferPool,
+    },
     /// Direct passthrough to underlying blob — no shadow, no interception.
     Passthrough(B),
 }
