@@ -27,7 +27,7 @@ pub struct LiveState {
 impl LiveState {
     /// Create a new live state adapter from a ledger service handle.
     #[must_use]
-    pub fn new(ledger: LedgerService) -> Self {
+    pub const fn new(ledger: LedgerService) -> Self {
         Self { ledger }
     }
 }
