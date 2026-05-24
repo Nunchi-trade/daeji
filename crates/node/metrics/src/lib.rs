@@ -113,8 +113,11 @@ impl AppMetrics {
             "Current number of queued (future-nonce) transactions",
             self.txpool_queued.clone(),
         );
+        // NOTE: Do not add a `_total` suffix to counter names here.
+        // The prometheus_client crate automatically appends `_total` to
+        // counters per the OpenMetrics specification.
         registry.register(
-            "kora_txpool_rejected_total",
+            "kora_txpool_rejected",
             "Total rejected transactions by reason",
             self.txpool_rejected.clone(),
         );
@@ -129,12 +132,12 @@ impl AppMetrics {
             self.block_txs_included.clone(),
         );
         registry.register(
-            "kora_proposal_snapshot_misses_total",
+            "kora_proposal_snapshot_misses",
             "Proposals skipped due to missing parent snapshot",
             self.proposal_snapshot_misses.clone(),
         );
         registry.register(
-            "kora_proposal_lag_skips_total",
+            "kora_proposal_lag_skips",
             "Proposals skipped due to finalization lag guard",
             self.proposal_lag_skips.clone(),
         );
@@ -144,12 +147,12 @@ impl AppMetrics {
             self.snapshot_poll_wait.clone(),
         );
         registry.register(
-            "kora_finalization_failures_total",
+            "kora_finalization_failures",
             "Total finalization failures",
             self.finalization_failures.clone(),
         );
         registry.register(
-            "kora_blocks_finalized_total",
+            "kora_blocks_finalized",
             "Total blocks successfully finalized",
             self.blocks_finalized.clone(),
         );

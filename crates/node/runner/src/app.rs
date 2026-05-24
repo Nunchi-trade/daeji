@@ -55,9 +55,9 @@ const SNAPSHOT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// The previous value of 8 was too tight for CPU-contended environments:
 /// transient finalization stalls would trip the guard and force every leader
 /// to skip, producing a cascade of nullifications that could stall the
-/// entire network.  A value of 16 gives finalization more breathing room
+/// entire network.  A value of 64 gives finalization more breathing room
 /// while still bounding the unfinalized chain length.
-const MAX_PROPOSAL_LAG: u64 = 16;
+const MAX_PROPOSAL_LAG: u64 = 64;
 
 fn unix_timestamp_secs<Env: Clock>(env: &Env) -> u64 {
     env.current().duration_since(UNIX_EPOCH).map(|duration| duration.as_secs()).unwrap_or(0)
@@ -279,8 +279,7 @@ where
 
         let root_start = Instant::now();
         let state_root =
-            match self.ledger.compute_root_from_store(parent_digest, outcome.changes.clone()).await
-            {
+            match self.ledger.compute_root_from_store(parent_digest, &outcome.changes).await {
                 Ok(root) => root,
                 Err(err) => {
                     error!(
@@ -402,7 +401,7 @@ where
         let root_start = Instant::now();
         let state_root = match self
             .ledger
-            .compute_root_from_store(parent_digest, execution.outcome.changes.clone())
+            .compute_root_from_store(parent_digest, &execution.outcome.changes)
             .await
         {
             Ok(root) => root,
