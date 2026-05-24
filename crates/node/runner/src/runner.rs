@@ -491,43 +491,6 @@ async fn prepopulate_snapshot_cache<FB>(
     }
 }
 
-/// Compare the on-disk commit marker against the archive head block.
-///
-/// This is a best-effort diagnostic check. A missing marker (fresh node or
-/// upgrade from a pre-marker build) is benign and logged at info level. A
-/// mismatch means QMDB may not contain the state corresponding to the
-/// archive head and is logged as a warning so operators can investigate.
-fn validate_commit_marker(data_dir: &Path, archive_head: &Block) {
-    let marker_digest = crate::commit_marker::read_commit_marker(data_dir);
-    let head_digest = archive_head.commitment();
-
-    match marker_digest {
-        None => {
-            info!(
-                archive_head_height = archive_head.height,
-                "no commit marker found; this is expected for fresh nodes or \
-                 first startup after upgrade"
-            );
-        }
-        Some(marker) if marker == head_digest => {
-            info!(
-                archive_head_height = archive_head.height,
-                "commit marker matches archive head; QMDB state is consistent"
-            );
-        }
-        Some(marker) => {
-            warn!(
-                archive_head_height = archive_head.height,
-                marker_digest = %hex::encode(marker.as_ref()),
-                head_digest = %hex::encode(head_digest.as_ref()),
-                "commit marker does not match archive head; QMDB may be behind \
-                 or inconsistent. The node will proceed but state may diverge. \
-                 Consider re-syncing from a trusted snapshot if issues arise."
-            );
-        }
-    }
-}
-
 #[derive(Clone)]
 struct ConstantSchemeProvider(Arc<ThresholdScheme>);
 
