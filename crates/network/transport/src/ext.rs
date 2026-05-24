@@ -89,6 +89,13 @@ impl NetworkConfigExt for NetworkConfig {
 type Bootstrappers = Vec<(ed25519::PublicKey, Ingress)>;
 
 /// Parse network config into transport construction parameters.
+///
+/// When `dialable_addr` is not set and `listen_addr` binds to `0.0.0.0`
+/// (the wildcard), the function resolves the system hostname and advertises
+/// `hostname:port` as the dialable address.  This is essential inside Docker
+/// containers where `0.0.0.0` is not reachable from other containers but
+/// the container hostname (set via `hostname:` in compose) resolves to the
+/// correct bridge-network IP.
 fn parse_network_config(
     config: &NetworkConfig,
 ) -> Result<(SocketAddr, Ingress, Bootstrappers), TransportError> {
@@ -98,10 +105,23 @@ fn parse_network_config(
         .map_err(|_| TransportError::InvalidListenAddr(config.listen_addr.clone()))?;
 
     let dialable = if let Some(ref dialable_addr) = config.dialable_addr {
-        let addr: SocketAddr = dialable_addr
-            .parse()
-            .map_err(|_| TransportError::InvalidListenAddr(dialable_addr.clone()))?;
-        Ingress::Socket(addr)
+        TransportParsing::parse_ingress(dialable_addr)?
+    } else if listen_addr.ip().is_unspecified() {
+        // 0.0.0.0 is not dialable from other hosts.  Resolve the system
+        // hostname so peers can reach us via DNS (works in Docker where
+        // the compose `hostname:` directive sets a resolvable name).
+        match std::env::var("HOSTNAME") {
+            Ok(name) if !name.is_empty() => {
+                let dialable_str = format!("{}:{}", name, listen_addr.port());
+                tracing::info!(
+                    dialable_addr = %dialable_str,
+                    "listen_addr is 0.0.0.0; using HOSTNAME as dialable address"
+                );
+                TransportParsing::parse_ingress(&dialable_str)
+                    .unwrap_or_else(|_| Ingress::Socket(listen_addr))
+            }
+            _ => Ingress::Socket(listen_addr),
+        }
     } else {
         Ingress::Socket(listen_addr)
     };
