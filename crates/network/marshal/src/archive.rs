@@ -47,6 +47,18 @@ where
     }
 }
 
+impl<E, K, V> Prunable for Archive<E, K, V>
+where
+    E: BufferPooler + Storage + Metrics + Clock + Send,
+    K: Array,
+    V: Codec + Send + Sync,
+{
+    async fn prune(&mut self, _min: u64) -> Result<(), ArchiveError> {
+        // Immutable archives do not support pruning; this is a no-op.
+        Ok(())
+    }
+}
+
 /// Immutable archive wrapper that only durably syncs on checkpoint boundaries.
 ///
 /// `put` still updates the in-memory archive immediately, so marshal can serve
