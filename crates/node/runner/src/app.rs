@@ -258,8 +258,7 @@ where
 
         let root_start = Instant::now();
         let state_root =
-            match self.ledger.compute_root_from_store(parent_digest, &outcome.changes).await
-            {
+            match self.ledger.compute_root_from_store(parent_digest, &outcome.changes).await {
                 Ok(root) => root,
                 Err(err) => {
                     error!(

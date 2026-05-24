@@ -810,10 +810,8 @@ mod tests {
             executor.execute(&parent_snapshot.state, &context, &txs_bytes).expect("execute txs");
         let merged_changes = parent_snapshot.state.merge_changes(outcome.changes.clone());
         let parent_digest = parent.commitment();
-        let root = service
-            .compute_root(parent_digest, &outcome.changes)
-            .await
-            .expect("compute root");
+        let root =
+            service.compute_root(parent_digest, &outcome.changes).await.expect("compute root");
         let block = Block {
             parent: parent.id(),
             height,
