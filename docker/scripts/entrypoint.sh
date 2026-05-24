@@ -12,19 +12,12 @@ BARRIER_DIR=${BARRIER_DIR:-/barrier}
 
 RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
 
-# Limit Tokio's default worker thread count.  Tokio defaults to num_cpus
-# which, inside Docker, reads the *host* CPU count (e.g. 12) rather than
-# the cgroup limit (e.g. 0.75-1.2).  This creates dozens of idle threads
-# that compete for the CFS quota, inflating involuntary context switches
-# and triggering health-check timeouts under CPU pressure.
-# Four worker threads provides reasonable concurrency for consensus, networking,
-# and execution while avoiding the oversubscription from using all host CPUs.
-export TOKIO_WORKER_THREADS="${TOKIO_WORKER_THREADS:-4}"
-
-# Rayon also defaults to host CPU count for its global thread pool, used by
-# BLS verification and other CPU-bound parallel work.  Cap it to avoid the
-# same oversubscription problem.
-export RAYON_NUM_THREADS="${RAYON_NUM_THREADS:-4}"
+# Allow Tokio and Rayon to use their default thread counts (host CPU count).
+# Docker's CFS CPU quota (--cpus) already throttles actual CPU time, so
+# having more threads than CPUs just means they get timesliced rather than
+# starved.  Capping threads too aggressively (e.g. 4) prevents the consensus
+# engine from pipelining views and causes severe throughput regression.
+# Override via TOKIO_WORKER_THREADS / RAYON_NUM_THREADS env vars if needed.
 
 MODE="${1:-validator}"
 shift || true
