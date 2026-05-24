@@ -186,7 +186,7 @@ where
     }
 
     async fn prune(&mut self, min: Height) -> Result<(), Self::Error> {
-        tracing::warn!(
+        tracing::debug!(
             min_height = min.get(),
             "certificate archive prune requested but not implemented \
              (immutable archive does not support deletion)"
@@ -228,7 +228,7 @@ where
     }
 
     async fn prune(&mut self, min: Height) -> Result<(), Self::Error> {
-        tracing::warn!(
+        tracing::debug!(
             min_height = min.get(),
             "block archive prune requested but not implemented \
              (immutable archive does not support deletion)"
