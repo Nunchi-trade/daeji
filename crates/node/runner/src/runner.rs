@@ -897,6 +897,7 @@ impl NodeRunner for ProductionRunner {
             {
                 let seen = seen.clone();
                 let mut sender = tx_gossip_sender;
+                let out_metrics = app_metrics.clone();
                 context.with_label("tx-gossip-out").shared(true).spawn(move |_| async move {
                     let mut rx = gossip_outbound_rx;
                     while let Some(raw) = rx.recv().await {
@@ -907,8 +908,10 @@ impl NodeRunner for ProductionRunner {
                         let msg = bytes::Bytes::copy_from_slice(&raw);
                         if let Err(e) = sender.send(Recipients::All, msg, false).await {
                             warn!(error = %e, "tx gossip: failed to broadcast transaction");
+                            out_metrics.gossip_tx_broadcast_failed.inc();
                         } else {
                             trace!(?hash, "tx gossip: broadcast transaction to peers");
+                            out_metrics.gossip_tx_broadcast.inc();
                         }
                     }
                     debug!("tx gossip outbound channel closed");
@@ -923,6 +926,7 @@ impl NodeRunner for ProductionRunner {
                 let gossip_state = state.qmdb_state().await;
                 let gossip_pool = txpool.clone();
                 let mut receiver = tx_gossip_receiver;
+                let in_metrics = app_metrics.clone();
                 context.with_label("tx-gossip-in").shared(true).spawn(move |_| async move {
                     loop {
                         let (peer, raw) = match receiver.recv().await {
@@ -933,6 +937,7 @@ impl NodeRunner for ProductionRunner {
                             }
                         };
 
+                        in_metrics.gossip_tx_received.inc();
                         let hash = keccak256(&raw);
                         if !mark_seen(&seen, hash) {
                             trace!(?hash, ?peer, "tx gossip: skipping already-seen transaction");
@@ -951,6 +956,7 @@ impl NodeRunner for ProductionRunner {
                         .with_pool(gossip_pool.clone());
                         if let Err(e) = validator.validate(tx.clone()).await {
                             trace!(?tx_id, ?peer, error = %e, "tx gossip: peer tx failed validation");
+                            in_metrics.gossip_tx_invalid.inc();
                             continue;
                         }
 
