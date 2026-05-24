@@ -95,7 +95,7 @@ impl Block {
     /// Prefer this over struct-literal syntax; it initializes the internal
     /// hash cache so that the first call to [`Self::id`] is a no-op.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         parent: BlockId,
         height: u64,
         timestamp: u64,

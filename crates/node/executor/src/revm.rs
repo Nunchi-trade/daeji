@@ -373,8 +373,7 @@ impl<S: StateDb> BlockExecutor<S> for RevmExecutor {
         // low-load networks and avoids measurable setup overhead per
         // empty block.
         if !txs.is_empty() {
-            let adapter =
-                StateDbAdapter::new(state.clone(), context.recent_block_hashes.clone());
+            let adapter = StateDbAdapter::new(state.clone(), context.recent_block_hashes.clone());
 
             let db = State::builder().with_database_ref(adapter).build();
 

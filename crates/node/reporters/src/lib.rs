@@ -654,14 +654,7 @@ mod finalize_error_tests {
             // The block's own snapshot does NOT exist in the store, so
             // `finalize_block` will attempt execution (and our FailingExecutor
             // will cause it to return Err(FinalizationError::ExecutionFailed)).
-            let block = Block::new(
-                genesis.id(),
-                1,
-                1,
-                B256::ZERO,
-                StateRoot(B256::ZERO),
-                vec![tx],
-            );
+            let block = Block::new(genesis.id(), 1, 1, B256::ZERO, StateRoot(B256::ZERO), vec![tx]);
 
             // -- create an acknowledgement we can observe --
             let (ack, waiter) = Exact::handle();
@@ -783,14 +776,7 @@ mod finalize_success_tests {
             // -- build a block with no real txs but containing the dummy tx --
             // EmptySuccessExecutor ignores transactions and produces an empty
             // changeset, so the state root stays at genesis_root.
-            let block = Block::new(
-                genesis.id(),
-                1,
-                1,
-                B256::ZERO,
-                genesis_root,
-                vec![tx],
-            );
+            let block = Block::new(genesis.id(), 1, 1, B256::ZERO, genesis_root, vec![tx]);
 
             let (ack, waiter) = Exact::handle();
 
@@ -848,14 +834,7 @@ mod finalize_success_tests {
                 service.query_state_root(genesis_digest).await.expect("genesis state root");
 
             // Build an empty block whose state root matches genesis (no changes).
-            let block = Block::new(
-                genesis.id(),
-                1,
-                1,
-                B256::ZERO,
-                genesis_root,
-                Vec::new(),
-            );
+            let block = Block::new(genesis.id(), 1, 1, B256::ZERO, genesis_root, Vec::new());
             let block_hash = block.id().0;
 
             let index = Arc::new(BlockIndex::new());
@@ -905,14 +884,7 @@ mod finalize_success_tests {
             let genesis_root =
                 service.query_state_root(genesis_digest).await.expect("genesis state root");
 
-            let block1 = Block::new(
-                genesis.id(),
-                1,
-                1,
-                B256::ZERO,
-                genesis_root,
-                Vec::new(),
-            );
+            let block1 = Block::new(genesis.id(), 1, 1, B256::ZERO, genesis_root, Vec::new());
             let block1_digest = block1.commitment();
             let block1_id = block1.id();
             let (ack1, waiter1) = Exact::handle();
@@ -939,14 +911,7 @@ mod finalize_success_tests {
                 "height 1 should remain an in-memory snapshot before the checkpoint boundary"
             );
 
-            let block2 = Block::new(
-                block1_id,
-                2,
-                2,
-                B256::ZERO,
-                genesis_root,
-                Vec::new(),
-            );
+            let block2 = Block::new(block1_id, 2, 2, B256::ZERO, genesis_root, Vec::new());
             let block2_digest = block2.commitment();
             let (ack2, waiter2) = Exact::handle();
 
