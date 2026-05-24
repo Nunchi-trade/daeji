@@ -173,7 +173,10 @@ services:
     volumes:
       - shared_config:/shared:ro
       - data_node{{ i }}:/data
-      - runtime_node{{ i }}:/runtime
+      - type: tmpfs
+        target: /runtime
+        tmpfs:
+          size: 2147483648
       - startup_barrier:/barrier
     environment:
       - RUST_LOG=${RUST_LOG:-info}
