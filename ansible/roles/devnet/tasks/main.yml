@@ -12,10 +12,10 @@
     mode: "0644"
 
 - name: Stop existing validators
-  ansible.builtin.command:
-    cmd: >
-      docker compose -f {{ compose_file }} stop
-      {% for i in range(num_validators) %}validator-node{{ i }} {% endfor %}secondary-node0
+  ansible.builtin.shell: |
+    docker compose -f {{ compose_file }} stop \
+      $(for i in $(seq 0 {{ num_validators - 1 }}); do echo -n "validator-node${i} "; done) \
+      secondary-node0
   changed_when: true
   failed_when: false
 
@@ -53,10 +53,9 @@
   when: dkg_check.rc != 0 and dkg_mode == "interactive"
   block:
     - name: Start DKG nodes
-      ansible.builtin.command:
-        cmd: >
-          docker compose -f {{ compose_file }} --profile interactive-dkg up -d
-          {% for i in range(num_validators) %}dkg-node{{ i }} {% endfor %}
+      ansible.builtin.shell: |
+        docker compose -f {{ compose_file }} --profile interactive-dkg up -d \
+          $(for i in $(seq 0 {{ num_validators - 1 }}); do echo -n "dkg-node${i} "; done)
       changed_when: true
 
     - name: Wait for DKG ceremony to complete
@@ -76,23 +75,22 @@
       failed_when: dkg_result.rc == 1
 
     - name: Stop DKG containers
-      ansible.builtin.command:
-        cmd: >
-          docker compose -f {{ compose_file }} --profile interactive-dkg stop
-          {% for i in range(num_validators) %}dkg-node{{ i }} {% endfor %}
+      ansible.builtin.shell: |
+        docker compose -f {{ compose_file }} --profile interactive-dkg stop \
+          $(for i in $(seq 0 {{ num_validators - 1 }}); do echo -n "dkg-node${i} "; done)
       changed_when: true
       failed_when: false
 
 - name: Clear runtime state from data volumes
   ansible.builtin.shell: |
-    for volume in \
-{% for i in range(num_validators) %}
-      {{ compose_project_name }}_data_node{{ i }} \
-{% endfor %}
-      {{ compose_project_name }}_data_secondary0; do
+    for i in $(seq 0 {{ num_validators - 1 }}); do
+      volume="{{ compose_project_name }}_data_node${i}"
       docker volume inspect "$volume" >/dev/null 2>&1 || continue
       docker run --rm -v "${volume}:/data" alpine rm -rf /data/runtime 2>/dev/null || true
     done
+    volume="{{ compose_project_name }}_data_secondary0"
+    docker volume inspect "$volume" >/dev/null 2>&1 && \
+      docker run --rm -v "${volume}:/data" alpine rm -rf /data/runtime 2>/dev/null || true
   changed_when: true
 
 - name: Clear startup barrier
@@ -103,10 +101,10 @@
   changed_when: true
 
 - name: Start validators and secondary
-  ansible.builtin.command:
-    cmd: >
-      docker compose -f {{ compose_file }} up -d
-      {% for i in range(num_validators) %}validator-node{{ i }} {% endfor %}secondary-node0
+  ansible.builtin.shell: |
+    docker compose -f {{ compose_file }} up -d \
+      $(for i in $(seq 0 {{ num_validators - 1 }}); do echo -n "validator-node${i} "; done) \
+      secondary-node0
   environment:
     RUST_LOG: "{{ rust_log }}"
     CHAIN_ID: "{{ chain_id }}"
