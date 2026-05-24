@@ -12,12 +12,14 @@ use commonware_consensus::{
 };
 use commonware_cryptography::{Digest, Digestible, certificate::Scheme};
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
-use commonware_storage::archive::{
-    Archive as ArchiveTrait, Error as ArchiveError, Identifier,
-    immutable::{Archive, Config},
-    prunable::{Archive as PrunableArchive, Config as PrunableConfig},
+use commonware_storage::{
+    archive::{
+        Archive as ArchiveTrait, Error as ArchiveError, Identifier,
+        immutable::{Archive, Config},
+        prunable::{Archive as PrunableArchive, Config as PrunableConfig},
+    },
+    translator::{EightCap, Translator},
 };
-use commonware_storage::translator::{EightCap, Translator};
 use commonware_utils::{NZU16, NZU64, NZUsize, sequence::Array};
 
 /// Trait for archive backends that support pruning old entries.
@@ -40,7 +42,7 @@ where
     V: Codec + Send + Sync,
 {
     async fn prune(&mut self, min: u64) -> Result<(), ArchiveError> {
-        PrunableArchive::prune(self, min).await
+        Self::prune(self, min).await
     }
 }
 
@@ -436,7 +438,7 @@ impl ArchiveInitializer {
     {
         let prefix = partition_prefix.into();
         let config = PrunableConfig {
-            translator: EightCap::default(),
+            translator: EightCap,
             key_partition: format!("{prefix}-key"),
             key_page_cache: CacheRef::from_pooler(
                 &ctx,
