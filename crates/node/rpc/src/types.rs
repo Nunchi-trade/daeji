@@ -48,7 +48,7 @@ impl BlockNumberOrTag {
 
 /// Keccak-256 hash of an empty RLP list, used as the canonical
 /// `sha3Uncles` value for post-merge blocks.
-pub const EMPTY_UNCLE_HASH: B256 =
+pub(crate) const EMPTY_UNCLE_HASH: B256 =
     alloy_primitives::b256!("1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347");
 
 /// Rich block representation for JSON-RPC responses.

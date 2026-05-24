@@ -7,8 +7,6 @@
 
 mod live_state;
 
-pub use live_state::LiveState;
-
 use std::{collections::BTreeSet, fmt, sync::Arc};
 
 use alloy_primitives::{Address, B256, U256};
@@ -28,6 +26,7 @@ use kora_qmdb::StateRoot as QmdbStateRoot;
 use kora_qmdb_ledger::{Error as QmdbError, QmdbChangeSet, QmdbConfig, QmdbLedger, QmdbState};
 use kora_traits::{StateDbError, StateDbRead};
 use kora_txpool::{PoolConfig, TransactionPool};
+pub use live_state::LiveState;
 use thiserror::Error;
 
 /// Snapshot type used by the ledger.
