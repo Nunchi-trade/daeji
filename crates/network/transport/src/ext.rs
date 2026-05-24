@@ -117,8 +117,14 @@ fn parse_network_config(
                     dialable_addr = %dialable_str,
                     "listen_addr is 0.0.0.0; using HOSTNAME as dialable address"
                 );
-                TransportParsing::parse_ingress(&dialable_str)
-                    .unwrap_or_else(|_| Ingress::Socket(listen_addr))
+                TransportParsing::parse_ingress(&dialable_str).unwrap_or_else(|e| {
+                    tracing::warn!(
+                        hostname = %name,
+                        error = %e,
+                        "failed to parse HOSTNAME as dialable address; falling back to listen_addr"
+                    );
+                    Ingress::Socket(listen_addr)
+                })
             }
             _ => Ingress::Socket(listen_addr),
         }
