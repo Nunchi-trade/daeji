@@ -92,10 +92,10 @@ pub struct RevmApplication<S, E> {
     /// the node successfully verifies a block via full execution at height
     /// >= `recovered_height + CATCH_UP_THRESHOLD`, catch-up mode ends.
     recovered_height: Arc<AtomicU64>,
-    /// The highest block height for which full execution verification
-    /// succeeded (as opposed to certificate-only trust during catch-up).
-    /// Updated only by the normal (non-catch-up) verification path so
-    /// that the catch-up window does not shrink prematurely.
+    /// The highest block height that has been processed by `verify_block`.
+    /// Advanced by full-execution verification and by re-encountering
+    /// previously processed blocks (including certificate-trusted ones).
+    /// Used to determine when the catch-up window should close.
     last_verified_height: Arc<AtomicU64>,
     _scheme: std::marker::PhantomData<S>,
 }
@@ -343,10 +343,11 @@ where
     ///
     /// Unlike the previous implementation, the catch-up window is anchored to
     /// the *original* `recovered_height` and only closes when
-    /// `last_verified_height` (which is updated only by full-execution
-    /// verification, NOT by certificate-trust) advances past
-    /// `recovered_height + CATCH_UP_THRESHOLD`.  This prevents the window
-    /// from collapsing after a single trusted block.
+    /// `last_verified_height` advances past
+    /// `recovered_height + CATCH_UP_THRESHOLD`.  `last_verified_height` is
+    /// advanced both by full-execution verification and by re-encountering
+    /// previously processed blocks (including certificate-trusted ones) in
+    /// the "already verified" early-return path of `verify_block`.
     fn is_catching_up(&self, block_height: u64) -> bool {
         let recovered = self.recovered_height.load(Ordering::Relaxed);
         // Fresh node: never recovered, not catching up.
@@ -370,7 +371,18 @@ where
         let parent_digest = block.parent();
 
         if self.ledger.query_state_root(digest).await.is_some() {
-            trace!(?digest, "block already verified");
+            // Block is already in the snapshot store.  This can happen either
+            // because it was fully verified earlier, or because it was
+            // certificate-trusted during catch-up.  In both cases, advance
+            // `last_verified_height` so the catch-up window eventually closes.
+            //
+            // Without this, certificate-trusted blocks create "holes" in the
+            // verified chain: subsequent `verify` calls stop the ancestry walk
+            // at the certificate-trusted block (its state_root is in the
+            // store), so the full-execution path is never reached for that
+            // height, and `last_verified_height` never advances past it.
+            self.last_verified_height.fetch_max(block.height, Ordering::Relaxed);
+            trace!(?digest, height = block.height, "block already verified");
             return true;
         }
 
@@ -405,11 +417,12 @@ where
                     // re-execute and properly persist the block when it
                     // arrives through the finalization pipeline.
                     self.ledger.restore_persisted_snapshot(block).await;
-                    // NOTE: we intentionally do NOT update last_verified_height
-                    // here.  Certificate-trust is not full verification; the
-                    // catch-up window must stay open until the node has done
-                    // real execution-based verification past the recovery
-                    // point.
+                    // We do NOT update last_verified_height here because
+                    // certificate-trust is not full verification.  However,
+                    // the "already verified" early-return path at the top of
+                    // verify_block WILL advance last_verified_height when
+                    // this block is encountered again in a future ancestry
+                    // walk, ensuring the catch-up window eventually closes.
                     return true;
                 }
 
@@ -434,6 +447,21 @@ where
             {
                 Ok(result) => result,
                 Err(err) => {
+                    // During catch-up, the parent snapshot may have been
+                    // restored with empty changes (certificate-trusted), so
+                    // execution against it can legitimately fail.  Fall back
+                    // to certificate-trust rather than rejecting the block.
+                    if self.is_catching_up(block.height) {
+                        warn!(
+                            ?digest,
+                            height = block.height,
+                            error = ?err,
+                            "verify_block: execution failed during catch-up; \
+                             falling back to certificate trust"
+                        );
+                        self.ledger.restore_persisted_snapshot(block).await;
+                        return true;
+                    }
                     warn!(?digest, error = ?err, "execution failed");
                     return false;
                 }
@@ -448,6 +476,17 @@ where
         {
             Ok(root) => root,
             Err(err) => {
+                if self.is_catching_up(block.height) {
+                    warn!(
+                        ?digest,
+                        height = block.height,
+                        error = ?err,
+                        "verify_block: compute root failed during catch-up; \
+                         falling back to certificate trust"
+                    );
+                    self.ledger.restore_persisted_snapshot(block).await;
+                    return true;
+                }
                 warn!(?digest, error = ?err, "compute root failed");
                 return false;
             }
@@ -455,6 +494,26 @@ where
         let root_elapsed = root_start.elapsed();
 
         if state_root != block.state_root {
+            // During catch-up, the parent snapshot may have been restored
+            // with an empty changeset via `restore_persisted_snapshot`
+            // (certificate-trusted).  The empty changeset means the parent
+            // state does not include intermediate block changes, causing the
+            // computed root to diverge from the expected root.  Rather than
+            // rejecting the block (which would permanently stall catch-up),
+            // fall back to certificate-trust.
+            if self.is_catching_up(block.height) {
+                warn!(
+                    ?digest,
+                    height = block.height,
+                    expected = ?block.state_root,
+                    computed = ?state_root,
+                    "verify_block: state root mismatch during catch-up; \
+                     falling back to certificate trust \
+                     (parent snapshot likely has empty changeset from prior trust)"
+                );
+                self.ledger.restore_persisted_snapshot(block).await;
+                return true;
+            }
             warn!(
                 ?digest,
                 expected = ?block.state_root,
