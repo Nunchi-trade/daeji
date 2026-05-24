@@ -44,7 +44,7 @@ use kora_txpool::{PoolConfig, TransactionPool, TransactionValidator};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
-    RevmApplication, RunnerError, scheme::ThresholdScheme,
+    RevmApplication, RunnerError, no_sync_storage::NoSyncStorage, scheme::ThresholdScheme,
 };
 
 /// Adapter that bridges `kora_metrics::MetricsRegister` to the commonware
@@ -1193,9 +1193,10 @@ impl NodeRunner for ProductionRunner {
         );
         let broadcast_handle = broadcast_engine.start(transport.marshal.blocks);
 
+        let scratch_context = NoSyncStorage::new(context.clone(), checkpoint_interval);
         let (actor, marshal_mailbox, _last_processed_height) =
             kora_marshal::ActorInitializer::init_with_strategy::<_, Block, _, _, _, Exact, _>(
-                context.clone(),
+                scratch_context.clone(),
                 finalizations_by_height,
                 finalized_blocks,
                 scheme_provider,
@@ -1222,7 +1223,7 @@ impl NodeRunner for ProductionRunner {
             app = app.with_node_state(state.clone());
         }
         let marshaled = Inline::new(
-            context.with_label("marshaled"),
+            scratch_context.with_label("marshaled"),
             app,
             marshal_mailbox.clone(),
             epocher,
@@ -1244,7 +1245,7 @@ impl NodeRunner for ProductionRunner {
         }
 
         let engine = simplex::Engine::new(
-            context.with_label("engine"),
+            scratch_context.with_label("engine"),
             simplex::Config {
                 scheme: self.scheme.clone(),
                 elector: Random,
