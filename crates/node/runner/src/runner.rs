@@ -844,7 +844,7 @@ impl NodeRunner for ProductionRunner {
 
         <ThresholdScheme as commonware_cryptography::certificate::Scheme>::certificate_codec_config_unbounded();
         let finalizations_by_height =
-            ArchiveInitializer::init_checkpointed::<_, ConsensusDigest, CertArchive>(
+            ArchiveInitializer::init_prunable_checkpointed::<_, ConsensusDigest, CertArchive>(
                 context.with_label("finalizations_by_height"),
                 format!("{partition_prefix}-finalizations-by-height"),
                 (),
@@ -853,14 +853,15 @@ impl NodeRunner for ProductionRunner {
             .await
             .context("init finalizations archive")?;
 
-        let finalized_blocks = ArchiveInitializer::init_checkpointed::<_, ConsensusDigest, Block>(
-            context.with_label("finalized_blocks"),
-            format!("{partition_prefix}-finalized-blocks"),
-            block_cfg,
-            checkpoint_interval,
-        )
-        .await
-        .context("init blocks archive")?;
+        let finalized_blocks =
+            ArchiveInitializer::init_prunable_checkpointed::<_, ConsensusDigest, Block>(
+                context.with_label("finalized_blocks"),
+                format!("{partition_prefix}-finalized-blocks"),
+                block_cfg,
+                checkpoint_interval,
+            )
+            .await
+            .context("init blocks archive")?;
 
         let has_finalized_history = finalized_blocks.last_index().is_some();
         let state = LedgerView::init_with_genesis_options(
