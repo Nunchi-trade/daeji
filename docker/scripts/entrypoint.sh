@@ -17,8 +17,9 @@ RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
 # the cgroup limit (e.g. 0.75-1.2).  This creates dozens of idle threads
 # that compete for the CFS quota, inflating involuntary context switches
 # and triggering health-check timeouts under CPU pressure.
-# Two worker threads match what the commonware runtime already configures.
-export TOKIO_WORKER_THREADS="${TOKIO_WORKER_THREADS:-2}"
+# Four worker threads provides reasonable concurrency for consensus, networking,
+# and execution while avoiding the oversubscription from using all host CPUs.
+export TOKIO_WORKER_THREADS="${TOKIO_WORKER_THREADS:-4}"
 
 MODE="${1:-validator}"
 shift || true
