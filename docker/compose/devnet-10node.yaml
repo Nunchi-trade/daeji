@@ -1,0 +1,408 @@
+name: kora-devnet
+
+networks:
+  kora-net:
+    driver: bridge
+
+volumes:
+  data_node0:
+  data_node1:
+  data_node2:
+  data_node3:
+  data_node4:
+  data_node5:
+  data_node6:
+  data_node7:
+  data_node8:
+  data_node9:
+  runtime_node0:
+  runtime_node1:
+  runtime_node2:
+  runtime_node3:
+  runtime_node4:
+  runtime_node5:
+  runtime_node6:
+  runtime_node7:
+  runtime_node8:
+  runtime_node9:
+  shared_config:
+  startup_barrier:
+
+x-node-common: &node-common
+  image: kora:local
+  networks:
+    - kora-net
+  logging:
+    driver: json-file
+    options:
+      max-size: "50m"
+      max-file: "5"
+  environment:
+    - RUST_LOG=${RUST_LOG:-info}
+    - CHAIN_ID=${CHAIN_ID:-1337}
+
+x-validator-common: &validator-common
+  <<: *node-common
+  restart: unless-stopped
+  init: true
+  stop_grace_period: 5s
+  stop_signal: SIGTERM
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  ulimits:
+    nofile:
+      soft: 65536
+      hard: 65536
+    core: 0
+  deploy:
+    resources:
+      limits:
+        memory: 4G
+        cpus: "1.2"
+        pids: 4096
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  healthcheck:
+    test: ["CMD", "/scripts/healthcheck.sh"]
+    interval: 30s
+    timeout: 10s
+    retries: 6
+    start_period: 120s
+  environment:
+    - RUST_LOG=${RUST_LOG:-info}
+    - CHAIN_ID=${CHAIN_ID:-1337}
+    - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
+    - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
+    - TX_GOSSIP=${TX_GOSSIP:-true}
+    - HEALTHCHECK_MODE=ready
+
+services:
+  init-config:
+    <<: *node-common
+    user: root
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        if [ -f /shared/node0/share.key ] && [ -f /shared/node0/output.json ]; then
+            echo "[init] DKG already completed, skipping"
+            exit 0
+        fi
+        echo "[init] Clearing startup barrier from previous runs..." && \
+        rm -f /barrier/*.ready && \
+        echo "[init] Running keygen setup..." && \
+        /usr/local/bin/keygen setup \
+          --validators=10 \
+          --secondary-peers=0 \
+          --chain-id=${CHAIN_ID:-1337} \
+          --output-dir=/shared && \
+        echo "[init] Running trusted dealer DKG..." && \
+        /usr/local/bin/keygen dkg-deal \
+          --validators=10 \
+          --output-dir=/shared && \
+        echo "[init] Setting permissions..." && \
+        chown -R 1000:1000 /shared/node0 /shared/node1 /shared/node2 /shared/node3 /shared/node4 /shared/node5 /shared/node6 /shared/node7 /shared/node8 /shared/node9 /barrier && \
+        echo "[init] Init complete"
+    volumes:
+      - shared_config:/shared
+      - data_node0:/shared/node0
+      - data_node1:/shared/node1
+      - data_node2:/shared/node2
+      - data_node3:/shared/node3
+      - data_node4:/shared/node4
+      - data_node5:/shared/node5
+      - data_node6:/shared/node6
+      - data_node7:/shared/node7
+      - data_node8:/shared/node8
+      - data_node9:/shared/node9
+      - startup_barrier:/barrier
+
+  validator-node0:
+    <<: *validator-common
+    hostname: node0
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
+    entrypoint: ["/scripts/entrypoint.sh", "validator"]
+    volumes:
+      - shared_config:/shared:ro
+      - data_node0:/data
+      - runtime_node0:/runtime
+      - startup_barrier:/barrier
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - CHAIN_ID=${CHAIN_ID:-1337}
+      - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
+      - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
+      - TX_GOSSIP=${TX_GOSSIP:-true}
+      - VALIDATOR_INDEX=0
+      - VALIDATOR_COUNT=10
+      - IS_BOOTSTRAP=true
+      - PEER_NODES=node0,node1,node2,node3,node4,node5,node6,node7,node8,node9
+      - HEALTHCHECK_MODE=ready
+    ports:
+      - "30400:30303"
+      - "127.0.0.1:8545:8545"
+      - "127.0.0.1:9000:9002"
+
+  validator-node1:
+    <<: *validator-common
+    hostname: node1
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
+    entrypoint: ["/scripts/entrypoint.sh", "validator"]
+    volumes:
+      - shared_config:/shared:ro
+      - data_node1:/data
+      - runtime_node1:/runtime
+      - startup_barrier:/barrier
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - CHAIN_ID=${CHAIN_ID:-1337}
+      - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
+      - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
+      - TX_GOSSIP=${TX_GOSSIP:-true}
+      - VALIDATOR_INDEX=1
+      - VALIDATOR_COUNT=10
+      - IS_BOOTSTRAP=true
+      - PEER_NODES=node0,node1,node2,node3,node4,node5,node6,node7,node8,node9
+      - HEALTHCHECK_MODE=ready
+    ports:
+      - "30401:30303"
+      - "127.0.0.1:8546:8545"
+      - "127.0.0.1:9001:9002"
+
+  validator-node2:
+    <<: *validator-common
+    hostname: node2
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
+    entrypoint: ["/scripts/entrypoint.sh", "validator"]
+    volumes:
+      - shared_config:/shared:ro
+      - data_node2:/data
+      - runtime_node2:/runtime
+      - startup_barrier:/barrier
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - CHAIN_ID=${CHAIN_ID:-1337}
+      - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
+      - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
+      - TX_GOSSIP=${TX_GOSSIP:-true}
+      - VALIDATOR_INDEX=2
+      - VALIDATOR_COUNT=10
+      - IS_BOOTSTRAP=false
+      - BOOTSTRAP_PEERS=node0:30303,node1:30303
+      - PEER_NODES=node0,node1,node2,node3,node4,node5,node6,node7,node8,node9
+      - HEALTHCHECK_MODE=ready
+    ports:
+      - "30402:30303"
+      - "127.0.0.1:8547:8545"
+      - "127.0.0.1:9002:9002"
+
+  validator-node3:
+    <<: *validator-common
+    hostname: node3
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
+    entrypoint: ["/scripts/entrypoint.sh", "validator"]
+    volumes:
+      - shared_config:/shared:ro
+      - data_node3:/data
+      - runtime_node3:/runtime
+      - startup_barrier:/barrier
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - CHAIN_ID=${CHAIN_ID:-1337}
+      - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
+      - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
+      - TX_GOSSIP=${TX_GOSSIP:-true}
+      - VALIDATOR_INDEX=3
+      - VALIDATOR_COUNT=10
+      - IS_BOOTSTRAP=false
+      - BOOTSTRAP_PEERS=node0:30303,node1:30303
+      - PEER_NODES=node0,node1,node2,node3,node4,node5,node6,node7,node8,node9
+      - HEALTHCHECK_MODE=ready
+    ports:
+      - "30403:30303"
+      - "127.0.0.1:8548:8545"
+      - "127.0.0.1:9003:9002"
+
+  validator-node4:
+    <<: *validator-common
+    hostname: node4
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
+    entrypoint: ["/scripts/entrypoint.sh", "validator"]
+    volumes:
+      - shared_config:/shared:ro
+      - data_node4:/data
+      - runtime_node4:/runtime
+      - startup_barrier:/barrier
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - CHAIN_ID=${CHAIN_ID:-1337}
+      - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
+      - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
+      - TX_GOSSIP=${TX_GOSSIP:-true}
+      - VALIDATOR_INDEX=4
+      - VALIDATOR_COUNT=10
+      - IS_BOOTSTRAP=false
+      - BOOTSTRAP_PEERS=node0:30303,node1:30303
+      - PEER_NODES=node0,node1,node2,node3,node4,node5,node6,node7,node8,node9
+      - HEALTHCHECK_MODE=ready
+    ports:
+      - "30404:30303"
+      - "127.0.0.1:8549:8545"
+      - "127.0.0.1:9004:9002"
+
+  validator-node5:
+    <<: *validator-common
+    hostname: node5
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
+    entrypoint: ["/scripts/entrypoint.sh", "validator"]
+    volumes:
+      - shared_config:/shared:ro
+      - data_node5:/data
+      - runtime_node5:/runtime
+      - startup_barrier:/barrier
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - CHAIN_ID=${CHAIN_ID:-1337}
+      - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
+      - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
+      - TX_GOSSIP=${TX_GOSSIP:-true}
+      - VALIDATOR_INDEX=5
+      - VALIDATOR_COUNT=10
+      - IS_BOOTSTRAP=false
+      - BOOTSTRAP_PEERS=node0:30303,node1:30303
+      - PEER_NODES=node0,node1,node2,node3,node4,node5,node6,node7,node8,node9
+      - HEALTHCHECK_MODE=ready
+    ports:
+      - "30405:30303"
+      - "127.0.0.1:8550:8545"
+      - "127.0.0.1:9005:9002"
+
+  validator-node6:
+    <<: *validator-common
+    hostname: node6
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
+    entrypoint: ["/scripts/entrypoint.sh", "validator"]
+    volumes:
+      - shared_config:/shared:ro
+      - data_node6:/data
+      - runtime_node6:/runtime
+      - startup_barrier:/barrier
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - CHAIN_ID=${CHAIN_ID:-1337}
+      - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
+      - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
+      - TX_GOSSIP=${TX_GOSSIP:-true}
+      - VALIDATOR_INDEX=6
+      - VALIDATOR_COUNT=10
+      - IS_BOOTSTRAP=false
+      - BOOTSTRAP_PEERS=node0:30303,node1:30303
+      - PEER_NODES=node0,node1,node2,node3,node4,node5,node6,node7,node8,node9
+      - HEALTHCHECK_MODE=ready
+    ports:
+      - "30406:30303"
+      - "127.0.0.1:8551:8545"
+      - "127.0.0.1:9006:9002"
+
+  validator-node7:
+    <<: *validator-common
+    hostname: node7
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
+    entrypoint: ["/scripts/entrypoint.sh", "validator"]
+    volumes:
+      - shared_config:/shared:ro
+      - data_node7:/data
+      - runtime_node7:/runtime
+      - startup_barrier:/barrier
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - CHAIN_ID=${CHAIN_ID:-1337}
+      - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
+      - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
+      - TX_GOSSIP=${TX_GOSSIP:-true}
+      - VALIDATOR_INDEX=7
+      - VALIDATOR_COUNT=10
+      - IS_BOOTSTRAP=false
+      - BOOTSTRAP_PEERS=node0:30303,node1:30303
+      - PEER_NODES=node0,node1,node2,node3,node4,node5,node6,node7,node8,node9
+      - HEALTHCHECK_MODE=ready
+    ports:
+      - "30407:30303"
+      - "127.0.0.1:8552:8545"
+      - "127.0.0.1:9007:9002"
+
+  validator-node8:
+    <<: *validator-common
+    hostname: node8
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
+    entrypoint: ["/scripts/entrypoint.sh", "validator"]
+    volumes:
+      - shared_config:/shared:ro
+      - data_node8:/data
+      - runtime_node8:/runtime
+      - startup_barrier:/barrier
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - CHAIN_ID=${CHAIN_ID:-1337}
+      - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
+      - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
+      - TX_GOSSIP=${TX_GOSSIP:-true}
+      - VALIDATOR_INDEX=8
+      - VALIDATOR_COUNT=10
+      - IS_BOOTSTRAP=false
+      - BOOTSTRAP_PEERS=node0:30303,node1:30303
+      - PEER_NODES=node0,node1,node2,node3,node4,node5,node6,node7,node8,node9
+      - HEALTHCHECK_MODE=ready
+    ports:
+      - "30408:30303"
+      - "127.0.0.1:8553:8545"
+      - "127.0.0.1:9008:9002"
+
+  validator-node9:
+    <<: *validator-common
+    hostname: node9
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
+    entrypoint: ["/scripts/entrypoint.sh", "validator"]
+    volumes:
+      - shared_config:/shared:ro
+      - data_node9:/data
+      - runtime_node9:/runtime
+      - startup_barrier:/barrier
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - CHAIN_ID=${CHAIN_ID:-1337}
+      - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
+      - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
+      - TX_GOSSIP=${TX_GOSSIP:-true}
+      - VALIDATOR_INDEX=9
+      - VALIDATOR_COUNT=10
+      - IS_BOOTSTRAP=false
+      - BOOTSTRAP_PEERS=node0:30303,node1:30303
+      - PEER_NODES=node0,node1,node2,node3,node4,node5,node6,node7,node8,node9
+      - HEALTHCHECK_MODE=ready
+    ports:
+      - "30409:30303"
+      - "127.0.0.1:8554:8545"
+      - "127.0.0.1:9009:9002"

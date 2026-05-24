@@ -141,3 +141,17 @@ reqwest = { version = "0.12", features = ["json"] }
 # Testing
 rstest = "0.24"
 tempfile = "3"
+
+[patch.crates-io]
+commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", branch = "main" }
+commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", branch = "main" }
+commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", branch = "main" }
+commonware-stream = { git = "https://github.com/commonwarexyz/monorepo", branch = "main" }
+commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", branch = "main" }
+commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", branch = "main" }
+commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", branch = "main" }
+commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", branch = "main" }
+commonware-parallel = { git = "https://github.com/commonwarexyz/monorepo", branch = "main" }
+commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", branch = "main" }
+commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", branch = "main" }
+commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", branch = "main" }

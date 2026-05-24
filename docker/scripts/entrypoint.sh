@@ -12,6 +12,18 @@ BARRIER_DIR=${BARRIER_DIR:-/barrier}
 
 RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
 
+# Generate a config file with the correct dialable_addr for P2P discovery.
+# In Docker, nodes listen on 0.0.0.0:30303 but must advertise their container
+# hostname so other nodes can dial them. Without this, nodes advertise 0.0.0.0
+# which is unreachable, causing incomplete P2P mesh and massive nullification.
+DIALABLE_ADDR="${KORA_DIALABLE_ADDR:-$(hostname):30303}"
+CONFIG_FILE="${DATA_DIR}/config.toml"
+cat > "$CONFIG_FILE" <<EOF
+[network]
+listen_addr = "0.0.0.0:30303"
+dialable_addr = "${DIALABLE_ADDR}"
+EOF
+
 # Cap Tokio and Rayon thread counts to avoid oversubscription.
 # Inside Docker, Tokio/Rayon read the HOST CPU count (e.g. 12) rather than
 # the cgroup limit (e.g. 2 CPUs), creating massive context switching overhead.
@@ -142,7 +154,7 @@ case "$MODE" in
             wait_for_any_bootstrap "$BOOTSTRAP_PEERS"
         fi
 
-        exec /usr/local/bin/kora dkg \
+        exec /usr/local/bin/kora --config "$CONFIG_FILE" dkg \
             --data-dir "$DATA_DIR" \
             --peers "${SHARED_DIR}/peers.json" \
             --chain-id "$CHAIN_ID" \
@@ -197,7 +209,7 @@ case "$MODE" in
             log "Transaction gossip DISABLED (set TX_GOSSIP=true to enable)"
         fi
 
-        exec /usr/local/bin/kora validator \
+        exec /usr/local/bin/kora --config "$CONFIG_FILE" validator \
             --data-dir "$DATA_DIR" \
             --peers "${SHARED_DIR}/peers.json" \
             --chain-id "$CHAIN_ID" \
@@ -224,7 +236,7 @@ case "$MODE" in
 
         touch "${DATA_DIR}/.ready"
 
-        exec /usr/local/bin/kora secondary \
+        exec /usr/local/bin/kora --config "$CONFIG_FILE" secondary \
             --data-dir "$DATA_DIR" \
             --peers "${SHARED_DIR}/peers.json" \
             --chain-id "$CHAIN_ID" \
