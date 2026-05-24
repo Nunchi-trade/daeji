@@ -13,9 +13,12 @@
 
 - name: Stop existing validators
   ansible.builtin.shell: |
-    docker compose -f {{ compose_file }} stop \
-      $(for i in $(seq 0 {{ num_validators - 1 }}); do echo -n "validator-node${i} "; done) \
-      secondary-node0
+    services=""
+    for i in $(seq 0 {{ num_validators - 1 }}); do
+      services="$services validator-node${i}"
+    done
+    services="$services secondary-node0"
+    docker compose -f {{ compose_file }} stop $services
   changed_when: true
   failed_when: false
 
@@ -54,8 +57,11 @@
   block:
     - name: Start DKG nodes
       ansible.builtin.shell: |
-        docker compose -f {{ compose_file }} --profile interactive-dkg up -d \
-          $(for i in $(seq 0 {{ num_validators - 1 }}); do echo -n "dkg-node${i} "; done)
+        services=""
+        for i in $(seq 0 {{ num_validators - 1 }}); do
+          services="$services dkg-node${i}"
+        done
+        docker compose -f {{ compose_file }} --profile interactive-dkg up -d $services
       changed_when: true
 
     - name: Wait for DKG ceremony to complete
@@ -76,8 +82,11 @@
 
     - name: Stop DKG containers
       ansible.builtin.shell: |
-        docker compose -f {{ compose_file }} --profile interactive-dkg stop \
-          $(for i in $(seq 0 {{ num_validators - 1 }}); do echo -n "dkg-node${i} "; done)
+        services=""
+        for i in $(seq 0 {{ num_validators - 1 }}); do
+          services="$services dkg-node${i}"
+        done
+        docker compose -f {{ compose_file }} --profile interactive-dkg stop $services
       changed_when: true
       failed_when: false
 
@@ -86,11 +95,15 @@
     for i in $(seq 0 {{ num_validators - 1 }}); do
       volume="{{ compose_project_name }}_data_node${i}"
       docker volume inspect "$volume" >/dev/null 2>&1 || continue
-      docker run --rm -v "${volume}:/data" alpine rm -rf /data/runtime 2>/dev/null || true
+      docker run --rm -v "${volume}:/data" alpine sh -c \
+        'rm -rf /data/runtime /data/last_committed_digest /data/.ready /data/.bootstrap_done' \
+        2>/dev/null || true
     done
     volume="{{ compose_project_name }}_data_secondary0"
-    docker volume inspect "$volume" >/dev/null 2>&1 && \
-      docker run --rm -v "${volume}:/data" alpine rm -rf /data/runtime 2>/dev/null || true
+    docker volume inspect "$volume" >/dev/null 2>&1 || exit 0
+    docker run --rm -v "${volume}:/data" alpine sh -c \
+      'rm -rf /data/runtime /data/last_committed_digest /data/.ready /data/.bootstrap_done' \
+      2>/dev/null || true
   changed_when: true
 
 - name: Clear startup barrier
@@ -102,9 +115,12 @@
 
 - name: Start validators and secondary
   ansible.builtin.shell: |
-    docker compose -f {{ compose_file }} up -d \
-      $(for i in $(seq 0 {{ num_validators - 1 }}); do echo -n "validator-node${i} "; done) \
-      secondary-node0
+    services=""
+    for i in $(seq 0 {{ num_validators - 1 }}); do
+      services="$services validator-node${i}"
+    done
+    services="$services secondary-node0"
+    docker compose -f {{ compose_file }} up -d $services
   environment:
     RUST_LOG: "{{ rust_log }}"
     CHAIN_ID: "{{ chain_id }}"
@@ -117,17 +133,6 @@
     [[ "$HEALTHY" -ge {{ num_validators }} ]]
   register: health_result
   until: health_result.rc == 0
-  retries: "{{ health_retries }}"
-  delay: "{{ health_delay }}"
-  changed_when: false
-
-- name: Wait for secondary peer to become healthy
-  ansible.builtin.shell: |
-    HEALTH=$(docker compose -f {{ compose_file }} ps --format json 2>/dev/null | \
-      jq -r 'select(.Service == "secondary-node0") | .Health' 2>/dev/null)
-    [[ "$HEALTH" == "healthy" ]]
-  register: secondary_health
-  until: secondary_health.rc == 0
   retries: "{{ health_retries }}"
   delay: "{{ health_delay }}"
   changed_when: false
