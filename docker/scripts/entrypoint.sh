@@ -21,6 +21,11 @@ RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
 # and execution while avoiding the oversubscription from using all host CPUs.
 export TOKIO_WORKER_THREADS="${TOKIO_WORKER_THREADS:-4}"
 
+# Rayon also defaults to host CPU count for its global thread pool, used by
+# BLS verification and other CPU-bound parallel work.  Cap it to avoid the
+# same oversubscription problem.
+export RAYON_NUM_THREADS="${RAYON_NUM_THREADS:-4}"
+
 MODE="${1:-validator}"
 shift || true
 
