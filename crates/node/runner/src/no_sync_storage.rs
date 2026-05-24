@@ -61,22 +61,20 @@ pub(crate) enum NoSyncBlob<B> {
     Passthrough(B),
 }
 
-/// Returns `true` if this partition is known to contain only scratch data
-/// that can be reconstructed from finalized blocks.  Unknown partitions
-/// default to **durable** (written to disk) for safety -- the cost of an
-/// unnecessary fsync is latency, while the cost of accidentally ephemeral
-/// storage is silent permanent data loss.
-fn is_ephemeral_partition(partition: &str) -> bool {
-    // Consensus scratch partitions created by commonware simplex.
-    // These contain votes, views, journals, and certificates that are
-    // reconstructed from the finalized block archive on startup.
-    partition.contains("-cache-")
-        || partition.contains("-verified")
-        || partition.contains("-notarized")
-        || partition.contains("-notarization")
-        || partition.contains("-finalization")
-        || partition.contains("-journal")
-        || partition.contains("-views-")
+/// Returns `true` if this partition MUST be written to disk.
+///
+/// The marshal's application-metadata partition is the only one that needs
+/// durability through NoSyncStorage — it tracks the last acknowledged height
+/// so the marshal knows which blocks to redeliver on restart.  Everything
+/// else (consensus caches, marshal freezer data, journals) can live in memory
+/// because it is either reconstructed from the finalized block archive on
+/// startup or is transient consensus state.
+///
+/// The finalized block archives and QMDB bypass NoSyncStorage entirely (they
+/// use the raw runtime context), so durability of actual block data and state
+/// is not affected by this function.
+fn is_durable_partition(partition: &str) -> bool {
+    partition.ends_with("-application-metadata")
 }
 
 impl<C> Spawner for NoSyncStorage<C>
@@ -249,7 +247,7 @@ where
         name: &[u8],
         versions: RangeInclusive<u16>,
     ) -> Result<(Self::Blob, u64, u16), Error> {
-        if !is_ephemeral_partition(partition) {
+        if is_durable_partition(partition) {
             let (blob, size, version) =
                 self.inner.open_versioned(partition, name, versions).await?;
             return Ok((NoSyncBlob::Passthrough(blob), size, version));
@@ -272,7 +270,7 @@ where
     }
 
     async fn remove(&self, partition: &str, name: Option<&[u8]>) -> Result<(), Error> {
-        if !is_ephemeral_partition(partition) {
+        if is_durable_partition(partition) {
             return self.inner.remove(partition, name).await;
         }
 
@@ -291,7 +289,7 @@ where
     }
 
     async fn scan(&self, partition: &str) -> Result<Vec<Vec<u8>>, Error> {
-        if !is_ephemeral_partition(partition) {
+        if is_durable_partition(partition) {
             return self.inner.scan(partition).await;
         }
 
