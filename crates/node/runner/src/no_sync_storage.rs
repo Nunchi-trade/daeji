@@ -440,22 +440,20 @@ fn application_metadata_height(data: &[u8]) -> Option<u64> {
     //   bytes  8..16: key     (u64, big-endian) -- metadata key
     //   bytes 16..24: value   (u64, big-endian) -- block height (what we need)
     //   bytes 24..28: crc32   (u32, big-endian) -- CRC-32 over bytes 0..24
+    //
+    // This function is called for ALL persistent blobs during sync(), not just
+    // application metadata.  Non-metadata blobs (archives, block data, etc.)
+    // will have different sizes -- silently return None for those.
     const EXPECTED_LEN: usize = 28;
-    if data.len() < EXPECTED_LEN {
+    if data.len() != EXPECTED_LEN {
         return None;
     }
 
-    // Validate the version field.  The current commonware versioned-blob
-    // format uses version 0.  Reject obviously bogus values (> 1024) as a
-    // corruption signal rather than hard-coding a single expected version,
-    // which gives commonware room for minor version bumps without breaking
-    // this check.
     let version =
         u64::from_be_bytes(data[0..8].try_into().expect("slice length checked by EXPECTED_LEN"));
     if version > 1024 {
         tracing::warn!(
             version,
-            data_len = data.len(),
             "application metadata has unexpected version; skipping checkpoint-interval sync decision"
         );
         return None;
