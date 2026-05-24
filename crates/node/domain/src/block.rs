@@ -92,8 +92,9 @@ impl Eq for Block {}
 impl Block {
     /// Construct a new block.
     ///
-    /// Prefer this over struct-literal syntax; it initializes the internal
-    /// hash cache so that the first call to [`Self::id`] is a no-op.
+    /// Prefer this over struct-literal syntax; it properly initializes the
+    /// internal [`OnceLock`] cache (lazily populated on first call to
+    /// [`Self::id`]).
     #[must_use]
     pub const fn new(
         parent: BlockId,
