@@ -56,6 +56,11 @@ pub struct CheckpointedArchive<A> {
     inner: A,
     checkpoint_interval: u64,
     highest_dirty: Option<u64>,
+    /// The last boundary that was successfully synced.  Prevents redundant
+    /// syncs when blocks between two boundaries arrive (e.g. 65-127 with
+    /// interval 64 would all round down to boundary 64, causing every-block
+    /// sync after the first boundary flush).
+    last_synced_boundary: u64,
 }
 
 impl<A> CheckpointedArchive<A> {
@@ -67,7 +72,7 @@ impl<A> CheckpointedArchive<A> {
     /// `FinalizedReporter::with_checkpoint_interval()` (`if 0 then 1`).
     pub const fn new(inner: A, checkpoint_interval: u64) -> Self {
         let interval = if checkpoint_interval == 0 { 1 } else { checkpoint_interval };
-        Self { inner, checkpoint_interval: interval, highest_dirty: None }
+        Self { inner, checkpoint_interval: interval, highest_dirty: None, last_synced_boundary: 0 }
     }
 
     fn mark_dirty(&mut self, height: u64) {
@@ -89,8 +94,13 @@ impl<A> CheckpointedArchive<A> {
                 // and sync when the archive is contiguous through it.  The
                 // inner archive's sync() flushes ALL in-memory data, so
                 // blocks above the boundary are also persisted.
+                //
+                // We only sync if this is a NEW boundary (greater than the
+                // last one we synced).  Without this check, every block
+                // between two boundaries (e.g. 65-127) would round down to
+                // the same boundary (64) and trigger a redundant sync.
                 let boundary = (height / self.checkpoint_interval) * self.checkpoint_interval;
-                boundary > 0 && self.is_contiguous_through(boundary)
+                boundary > self.last_synced_boundary && self.is_contiguous_through(boundary)
             }
             None => false,
         }
@@ -185,6 +195,13 @@ where
 
     async fn sync(&mut self) -> Result<(), ArchiveError> {
         if self.should_sync() {
+            // Record the boundary we're syncing at BEFORE flushing, so
+            // subsequent blocks that round to the same boundary are skipped.
+            if let Some(height) = self.highest_dirty {
+                let boundary =
+                    (height / self.checkpoint_interval) * self.checkpoint_interval;
+                self.last_synced_boundary = boundary;
+            }
             self.inner.sync().await?;
             self.highest_dirty = None;
         }
@@ -647,5 +664,41 @@ mod tests {
         let mut archive_one = CheckpointedArchive::new(inner, 1);
         archive_one.mark_dirty(3);
         assert!(archive_one.should_sync());
+    }
+
+    #[test]
+    fn checkpointed_archive_no_redundant_sync_after_boundary() {
+        // After syncing at boundary 64, blocks 65-127 should NOT trigger
+        // another sync (they all round down to the same boundary=64).
+        let inner = FakeArchive { ranges: vec![(1, 65)] };
+        let mut archive = CheckpointedArchive::new(inner, 64);
+
+        archive.mark_dirty(64);
+        assert!(archive.should_sync());
+
+        // Simulate a successful sync: record the boundary and clear dirty.
+        archive.last_synced_boundary = 64;
+        archive.highest_dirty = None;
+
+        // Block 65 arrives — rounds down to boundary 64 (already synced).
+        archive.mark_dirty(65);
+        assert!(!archive.should_sync());
+
+        // Block 100 arrives — still rounds to boundary 64.
+        archive.mark_dirty(100);
+        assert!(!archive.should_sync());
+    }
+
+    #[test]
+    fn checkpointed_archive_syncs_at_next_boundary() {
+        // After syncing at boundary 64, reaching boundary 128 should sync.
+        let inner = FakeArchive { ranges: vec![(1, 128)] };
+        let mut archive = CheckpointedArchive::new(inner, 64);
+
+        // Simulate prior sync at boundary 64.
+        archive.last_synced_boundary = 64;
+
+        archive.mark_dirty(128);
+        assert!(archive.should_sync());
     }
 }
