@@ -220,7 +220,7 @@ async fn handle_finalized_update<E, P>(
                 ns.set_finalized_height(block.height);
             }
             let persist_checkpoint =
-                checkpoint_interval <= 1 || block.height % checkpoint_interval == 0;
+                checkpoint_interval <= 1 || block.height.is_multiple_of(checkpoint_interval);
             let result = finalize_with_retry(
                 &state,
                 &context,
@@ -282,7 +282,7 @@ async fn acknowledge_checkpoint(
     checkpoint_interval: u64,
     ack: Exact,
 ) {
-    let is_checkpoint = checkpoint_interval <= 1 || height % checkpoint_interval == 0;
+    let is_checkpoint = checkpoint_interval <= 1 || height.is_multiple_of(checkpoint_interval);
     if is_checkpoint {
         // Checkpoint boundary reached: acknowledge this block and all pending
         // blocks from previous non-checkpoint heights.  This tells the marshal

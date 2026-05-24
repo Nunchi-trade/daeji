@@ -423,7 +423,7 @@ where
                     application_metadata_height(&shadow)
                 };
                 if height.is_some_and(|height| {
-                    *checkpoint_interval <= 1 || height % *checkpoint_interval == 0
+                    *checkpoint_interval <= 1 || height.is_multiple_of(*checkpoint_interval)
                 }) {
                     blob.sync().await
                 } else {

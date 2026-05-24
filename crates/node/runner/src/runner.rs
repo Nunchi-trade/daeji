@@ -340,12 +340,11 @@ async fn restore_checkpoint_and_replay_tail(
             Ok((restored_height, replayed_tail))
         }
         None => {
-            if marker_digest.is_some() {
+            if let Some(marker) = marker_digest {
                 // A commit marker exists on disk but does not match any
                 // block in the archive.  QMDB was last committed at a
                 // height we cannot identify, so creating a snapshot from
                 // the archive head would produce inconsistent state.
-                let marker = marker_digest.expect("checked is_some above");
                 let head_digest = head.commitment();
                 error!(
                     marker_digest = %hex::encode(marker.as_ref()),
