@@ -21,6 +21,7 @@ use commonware_storage::{
     translator::{EightCap, Translator},
 };
 use commonware_utils::{NZU16, NZU64, NZUsize, sequence::Array};
+use tracing::warn;
 
 /// Trait for archive backends that support pruning old entries.
 ///
@@ -508,6 +509,76 @@ impl ArchiveInitializer {
     {
         let archive = Self::init_prunable(ctx, partition_prefix, codec_config).await?;
         Ok(CheckpointedArchive::new(archive, checkpoint_interval))
+    }
+
+    /// Partition suffixes used by the old `immutable::Archive` backend.
+    ///
+    /// When migrating from immutable to prunable archives, these partitions
+    /// contain orphaned data that will never be read by the new backend.
+    const LEGACY_IMMUTABLE_SUFFIXES: &'static [&'static str] =
+        &["-metadata", "-freezer-table", "-freezer-key", "-freezer-value", "-ordinal"];
+
+    /// Detect and remove legacy immutable archive partitions for a given prefix.
+    ///
+    /// The old `immutable::Archive` backend used five partitions per archive
+    /// (`{prefix}-metadata`, `{prefix}-freezer-table`, `{prefix}-freezer-key`,
+    /// `{prefix}-freezer-value`, `{prefix}-ordinal`). The new `prunable::Archive`
+    /// backend uses different partition names (`{prefix}-key`, `{prefix}-value`),
+    /// so upgrading silently orphans the old data on disk.
+    ///
+    /// This method scans for legacy partitions and removes any that contain
+    /// data, logging a warning for each one removed. Call this before
+    /// [`init_prunable`](Self::init_prunable) or
+    /// [`init_prunable_checkpointed`](Self::init_prunable_checkpointed) to
+    /// ensure a clean migration.
+    ///
+    /// Returns the number of legacy partitions that were detected and removed.
+    pub async fn migrate_from_immutable<E>(ctx: &E, partition_prefix: &str) -> usize
+    where
+        E: Storage,
+    {
+        let mut removed = 0;
+        for suffix in Self::LEGACY_IMMUTABLE_SUFFIXES {
+            let partition_name = format!("{partition_prefix}{suffix}");
+            match ctx.scan(&partition_name).await {
+                Ok(blobs) if !blobs.is_empty() => {
+                    warn!(
+                        partition = %partition_name,
+                        blobs = blobs.len(),
+                        "removing legacy immutable archive partition \
+                         (replaced by prunable backend)"
+                    );
+                    if let Err(e) = ctx.remove(&partition_name, None).await {
+                        warn!(
+                            partition = %partition_name,
+                            error = %e,
+                            "failed to remove legacy immutable archive partition"
+                        );
+                    } else {
+                        removed += 1;
+                    }
+                }
+                Ok(_) => {
+                    // Partition exists but is empty, or doesn't exist -- nothing to do.
+                }
+                Err(e) => {
+                    warn!(
+                        partition = %partition_name,
+                        error = %e,
+                        "failed to scan for legacy immutable archive partition"
+                    );
+                }
+            }
+        }
+        if removed > 0 {
+            warn!(
+                prefix = %partition_prefix,
+                removed,
+                "cleaned up legacy immutable archive partitions; \
+                 archive history has been reset with the new prunable backend"
+            );
+        }
+        removed
     }
 }
 
