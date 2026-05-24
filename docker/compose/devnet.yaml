@@ -69,6 +69,7 @@ x-validator-common: &validator-common
     - CHAIN_ID=${CHAIN_ID:-1337}
     - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
     - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
+    - KORA_BOOTSTRAP_TOPOLOGY=${KORA_BOOTSTRAP_TOPOLOGY:-lower}
     - TX_GOSSIP=${TX_GOSSIP:-true}
     - HEALTHCHECK_MODE=ready
 
@@ -88,7 +89,7 @@ services:
           --chain-id=${CHAIN_ID:-1337} \
           --output-dir=/shared && \
         echo "[init] Setting permissions..." && \
-        chown -R 1000:1000 /shared/node0 /shared/node1 /shared/node2 /shared/node3 /shared/secondary0 /barrier && \
+        chown -R 1000:1000 /shared/node0 /shared/node1 /shared/node2 /shared/node3 /shared/secondary0 && \
         echo "[init] Setup complete (run DKG ceremony next)"
     volumes:
       - shared_config:/shared
@@ -107,6 +108,9 @@ services:
       - |
         if [ -f /shared/node0/share.key ] && [ -f /shared/node0/output.json ]; then
             echo "[init] DKG already completed, skipping"
+            echo "[init] Preparing startup barrier..." && \
+            rm -f /barrier/*.ready && \
+            chown -R 1000:1000 /barrier && \
             exit 0
         fi
         echo "[init] Clearing startup barrier from previous runs..." && \
@@ -239,6 +243,7 @@ services:
       - CHAIN_ID=${CHAIN_ID:-1337}
       - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
       - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
+      - KORA_BOOTSTRAP_TOPOLOGY=${KORA_BOOTSTRAP_TOPOLOGY:-lower}
       - VALIDATOR_INDEX=0
       - VALIDATOR_COUNT=4
       - IS_BOOTSTRAP=true
@@ -266,6 +271,7 @@ services:
       - CHAIN_ID=${CHAIN_ID:-1337}
       - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
       - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
+      - KORA_BOOTSTRAP_TOPOLOGY=${KORA_BOOTSTRAP_TOPOLOGY:-lower}
       - VALIDATOR_INDEX=1
       - VALIDATOR_COUNT=4
       - IS_BOOTSTRAP=false
@@ -294,6 +300,7 @@ services:
       - CHAIN_ID=${CHAIN_ID:-1337}
       - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
       - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
+      - KORA_BOOTSTRAP_TOPOLOGY=${KORA_BOOTSTRAP_TOPOLOGY:-lower}
       - VALIDATOR_INDEX=2
       - VALIDATOR_COUNT=4
       - IS_BOOTSTRAP=false
@@ -322,6 +329,7 @@ services:
       - CHAIN_ID=${CHAIN_ID:-1337}
       - KORA_RUNTIME_DIR=${KORA_RUNTIME_DIR:-/runtime}
       - KORA_CHECKPOINT_INTERVAL=${KORA_CHECKPOINT_INTERVAL:-256}
+      - KORA_BOOTSTRAP_TOPOLOGY=${KORA_BOOTSTRAP_TOPOLOGY:-lower}
       - VALIDATOR_INDEX=3
       - VALIDATOR_COUNT=4
       - IS_BOOTSTRAP=false

@@ -12,8 +12,9 @@ pub use bundle::TransportBundle;
 
 mod channels;
 pub use channels::{
-    CHANNEL_BACKFILL, CHANNEL_BLOCKS, CHANNEL_CERTS, CHANNEL_RESOLVER, CHANNEL_TX_GOSSIP,
-    CHANNEL_VOTES, MarshalChannels, Receiver, Sender, SimplexChannels, TxGossipChannel,
+    CHANNEL_BACKFILL, CHANNEL_BLOCKS, CHANNEL_CERTS, CHANNEL_PEER_PROBE, CHANNEL_RESOLVER,
+    CHANNEL_TX_GOSSIP, CHANNEL_VOTES, MarshalChannels, PeerProbeChannel, Receiver, Sender,
+    SimplexChannels, TxGossipChannel,
 };
 
 mod config;

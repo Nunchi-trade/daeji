@@ -3,10 +3,19 @@ set -eo pipefail
 
 # Parse arguments
 INTERACTIVE_DKG=false
+NUM_VALIDATORS=4
 while [[ $# -gt 0 ]]; do
     case $1 in
         --interactive-dkg)
             INTERACTIVE_DKG=true
+            shift
+            ;;
+        --nodes)
+            NUM_VALIDATORS="$2"
+            shift 2
+            ;;
+        --nodes=*)
+            NUM_VALIDATORS="${1#*=}"
             shift
             ;;
         *)
@@ -14,6 +23,35 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if ! [[ "$NUM_VALIDATORS" =~ ^[0-9]+$ ]] || [[ "$NUM_VALIDATORS" -lt 1 ]]; then
+    echo "num_validators must be a positive integer" >&2
+    exit 1
+fi
+
+THRESHOLD=$((NUM_VALIDATORS - (NUM_VALIDATORS - 1) / 3))
+
+if [[ "$NUM_VALIDATORS" -eq 4 ]]; then
+    COMPOSE_FILE="compose/devnet.yaml"
+else
+    COMPOSE_FILE="compose/devnet.generated.yaml"
+fi
+
+validator_services() {
+    local services=""
+    for ((i = 0; i < NUM_VALIDATORS; i++)); do
+        services+="validator-node${i} "
+    done
+    echo -n "$services"
+}
+
+dkg_services() {
+    local services=""
+    for ((i = 0; i < NUM_VALIDATORS; i++)); do
+        services+="dkg-node${i} "
+    done
+    echo -n "$services"
+}
 
 # Colors
 RED='\033[0;31m'
@@ -83,7 +121,7 @@ print_header() {
     fi
     echo -e "${BOLD}${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -e "  ${DIM}Chain ID:${NC} ${CHAIN_ID:-1337}  ${DIM}│${NC}  ${DIM}Validators:${NC} 4  ${DIM}│${NC}  ${DIM}Threshold:${NC} 3"
+    echo -e "  ${DIM}Chain ID:${NC} ${CHAIN_ID:-1337}  ${DIM}│${NC}  ${DIM}Validators:${NC} ${NUM_VALIDATORS}  ${DIM}│${NC}  ${DIM}Threshold:${NC} ${THRESHOLD}"
     echo ""
 }
 
@@ -106,9 +144,12 @@ print_error() {
 }
 
 print_endpoints() {
+    local last_p2p=$((30400 + NUM_VALIDATORS - 1))
+    local last_rpc=$((8545 + NUM_VALIDATORS - 1))
     echo ""
     echo -e "${BOLD}Endpoints${NC}"
-    echo -e "  ${DIM}P2P:${NC}        localhost:30400-30403"
+    echo -e "  ${DIM}P2P:${NC}        localhost:30400-${last_p2p}"
+    echo -e "  ${DIM}RPC:${NC}        localhost:8545-${last_rpc}"
     echo -e "  ${DIM}Secondary:${NC}  localhost:30500"
     echo -e "  ${DIM}Prometheus:${NC} http://localhost:9090"
     echo -e "  ${DIM}Grafana:${NC}    http://localhost:3000"
@@ -120,7 +161,7 @@ print_endpoints() {
 check_dkg_outputs() {
     local expected_checksum=""
 
-    for i in 0 1 2 3; do
+    for ((i = 0; i < NUM_VALIDATORS; i++)); do
         local volume="kora-devnet_data_node${i}"
 
         if ! docker volume inspect "$volume" >/dev/null 2>&1; then
@@ -151,7 +192,7 @@ check_dkg_outputs() {
 }
 
 clear_dkg_outputs() {
-    for i in 0 1 2 3; do
+    for ((i = 0; i < NUM_VALIDATORS; i++)); do
         local volume="kora-devnet_data_node${i}"
         docker volume inspect "$volume" >/dev/null 2>&1 || continue
         docker run --rm -v "${volume}:/data" alpine \
@@ -160,12 +201,15 @@ clear_dkg_outputs() {
 }
 
 clear_runtime_state() {
-    for volume in \
-        kora-devnet_runtime_node0 \
-        kora-devnet_runtime_node1 \
-        kora-devnet_runtime_node2 \
-        kora-devnet_runtime_node3 \
-        kora-devnet_runtime_secondary0; do
+    local volume
+    for ((i = 0; i < NUM_VALIDATORS; i++)); do
+        volume="kora-devnet_runtime_node${i}"
+        docker volume inspect "$volume" >/dev/null 2>&1 || continue
+        docker run --rm -v "${volume}:/runtime" alpine \
+            sh -c 'rm -rf /runtime/* /runtime/.[!.]* /runtime/..?*' >/dev/null 2>&1 || true
+    done
+
+    for volume in kora-devnet_runtime_secondary0; do
         docker volume inspect "$volume" >/dev/null 2>&1 || continue
         docker run --rm -v "${volume}:/runtime" alpine \
             sh -c 'rm -rf /runtime/* /runtime/.[!.]* /runtime/..?*' >/dev/null 2>&1 || true
@@ -176,10 +220,14 @@ clear_startup_barrier() {
     local volume="kora-devnet_startup_barrier"
     docker volume inspect "$volume" >/dev/null 2>&1 || return 0
     docker run --rm -v "${volume}:/barrier" alpine \
-        sh -c 'rm -f /barrier/*.ready' >/dev/null 2>&1 || true
+        sh -c 'rm -f /barrier/*.ready && chown -R 1000:1000 /barrier' >/dev/null 2>&1 || true
 }
 
 cd "$(dirname "$0")/.."
+
+if [[ "$COMPOSE_FILE" != "compose/devnet.yaml" ]]; then
+    ./scripts/generate-devnet-compose.sh "$NUM_VALIDATORS" > "$COMPOSE_FILE"
+fi
 
 print_header
 
@@ -196,11 +244,21 @@ fi
 CONFIG_EXISTS=false
 SHARES_EXIST=false
 
-docker volume inspect kora-devnet_shared_config >/dev/null 2>&1 && \
+cached_validator_count() {
+    docker volume inspect kora-devnet_shared_config >/dev/null 2>&1 || return 1
+    docker run --rm -v kora-devnet_shared_config:/shared alpine \
+        cat /shared/peers.json 2>/dev/null | jq -r '.validators // empty' 2>/dev/null
+}
+
+if docker volume inspect kora-devnet_shared_config >/dev/null 2>&1 && \
     docker run --rm -v kora-devnet_shared_config:/shared alpine test -f /shared/peers.json 2>/dev/null && \
     docker volume inspect kora-devnet_data_secondary0 >/dev/null 2>&1 && \
-    docker run --rm -v kora-devnet_data_secondary0:/data alpine test -f /data/validator.key 2>/dev/null && \
-    CONFIG_EXISTS=true
+    docker run --rm -v kora-devnet_data_secondary0:/data alpine test -f /data/validator.key 2>/dev/null; then
+    cached_count="$(cached_validator_count)"
+    if [[ "$cached_count" == "$NUM_VALIDATORS" ]]; then
+        CONFIG_EXISTS=true
+    fi
+fi
 
 if check_dkg_outputs; then
     SHARES_EXIST=true
@@ -215,7 +273,7 @@ print_phase "1/3" "Configuration"
 if [[ "$CONFIG_EXISTS" != "true" ]]; then
     if [[ "$INTERACTIVE_DKG" == "true" ]]; then
         # Interactive DKG: only run setup (no dkg-deal)
-        if run_with_spinner "Generating peer configuration..." docker compose -f compose/devnet.yaml run --rm init-setup; then
+        if run_with_spinner "Generating peer configuration..." docker compose -f "$COMPOSE_FILE" run --rm init-setup; then
             print_success "Generated peer configuration"
         else
             print_error "Configuration failed"
@@ -223,7 +281,7 @@ if [[ "$CONFIG_EXISTS" != "true" ]]; then
         fi
     else
         # Trusted dealer: run setup + dkg-deal
-        if run_with_spinner "Generating peer configuration..." docker compose -f compose/devnet.yaml run --rm init-config; then
+        if run_with_spinner "Generating peer configuration..." docker compose -f "$COMPOSE_FILE" run --rm init-config; then
             print_success "Generated peer configuration"
         else
             print_error "Configuration failed"
@@ -241,12 +299,11 @@ if [[ "$INTERACTIVE_DKG" == "true" ]]; then
 
         # DKG jobs use the same node0..node3 hostnames as validators. Stop validators first so
         # Docker DNS cannot route ceremony traffic to stale validator containers.
-        docker compose -f compose/devnet.yaml stop \
-            validator-node0 validator-node1 validator-node2 validator-node3 >/dev/null 2>&1 || true
+        docker compose -f "$COMPOSE_FILE" stop $(validator_services) >/dev/null 2>&1 || true
         
         # Start DKG nodes
-        run_with_spinner "Starting DKG nodes..." docker compose -f compose/devnet.yaml --profile interactive-dkg up -d \
-            dkg-node0 dkg-node1 dkg-node2 dkg-node3
+        run_with_spinner "Starting DKG nodes..." docker compose -f "$COMPOSE_FILE" --profile interactive-dkg up -d \
+            $(dkg_services)
         
         # Wait for DKG completion
         start_time=$(date +%s)
@@ -254,10 +311,10 @@ if [[ "$INTERACTIVE_DKG" == "true" ]]; then
         
         while true; do
             # Check if all DKG containers have exited successfully (use -a to include stopped containers)
-            EXITED=$(docker compose -f compose/devnet.yaml ps -a --format json 2>/dev/null | \
+            EXITED=$(docker compose -f "$COMPOSE_FILE" ps -a --format json 2>/dev/null | \
                 jq -r 'select(.Service | startswith("dkg-")) | select(.State == "exited") | select(.ExitCode == 0) | .Service' 2>/dev/null | wc -l | tr -d ' ')
             
-            FAILED=$(docker compose -f compose/devnet.yaml ps -a --format json 2>/dev/null | \
+            FAILED=$(docker compose -f "$COMPOSE_FILE" ps -a --format json 2>/dev/null | \
                 jq -r 'select(.Service | startswith("dkg-")) | select(.State == "exited") | select(.ExitCode != 0) | .Service' 2>/dev/null | wc -l | tr -d ' ')
             
             elapsed=$(($(date +%s) - start_time))
@@ -267,11 +324,11 @@ if [[ "$INTERACTIVE_DKG" == "true" ]]; then
                 print_error "DKG ceremony failed"
                 echo ""
                 echo -e "${RED}DKG node logs:${NC}"
-                docker compose -f compose/devnet.yaml logs dkg-node0 dkg-node1 dkg-node2 dkg-node3 --tail=50
+                docker compose -f "$COMPOSE_FILE" logs $(dkg_services) --tail=50
                 exit 1
             fi
             
-            if [[ "$EXITED" -ge 4 ]]; then
+            if [[ "$EXITED" -ge "$NUM_VALIDATORS" ]]; then
                 clear_line
                 print_success "Interactive DKG ceremony completed"
                 break
@@ -288,7 +345,7 @@ if [[ "$INTERACTIVE_DKG" == "true" ]]; then
         done
         
         # Stop DKG containers (they should already be stopped)
-        docker compose -f compose/devnet.yaml --profile interactive-dkg stop dkg-node0 dkg-node1 dkg-node2 dkg-node3 2>/dev/null || true
+        docker compose -f "$COMPOSE_FILE" --profile interactive-dkg stop $(dkg_services) 2>/dev/null || true
     else
         print_skip "DKG shares exist"
     fi
@@ -297,7 +354,7 @@ else
         echo ""
         print_phase "1.5/3" "Trusted Dealer DKG"
 
-        if run_with_spinner "Generating threshold shares..." docker compose -f compose/devnet.yaml run --rm init-config; then
+        if run_with_spinner "Generating threshold shares..." docker compose -f "$COMPOSE_FILE" run --rm init-config; then
             print_success "Threshold shares generated"
         else
             print_error "Trusted dealer DKG failed"
@@ -313,18 +370,18 @@ echo ""
 # Phase 2: Validators and secondary peers
 print_phase "2/3" "Starting validators and secondary peers"
 
-docker compose -f compose/devnet.yaml stop \
-    validator-node0 validator-node1 validator-node2 validator-node3 secondary-node0 >/dev/null 2>&1 || true
+docker compose -f "$COMPOSE_FILE" stop \
+    $(validator_services) secondary-node0 >/dev/null 2>&1 || true
 clear_runtime_state
 clear_startup_barrier
 
 if [[ "${COMPOSE_PROFILES:-}" == *observability* ]]; then
-    run_with_spinner "Launching validator, secondary, and observability containers..." docker compose -f compose/devnet.yaml --profile observability up -d \
-        validator-node0 validator-node1 validator-node2 validator-node3 secondary-node0 \
+    run_with_spinner "Launching validator, secondary, and observability containers..." docker compose -f "$COMPOSE_FILE" --profile observability up -d \
+        $(validator_services) secondary-node0 \
         prometheus grafana loki promtail
 else
-    run_with_spinner "Launching validator and secondary containers..." docker compose -f compose/devnet.yaml up -d \
-        validator-node0 validator-node1 validator-node2 validator-node3 secondary-node0
+    run_with_spinner "Launching validator and secondary containers..." docker compose -f "$COMPOSE_FILE" up -d \
+        $(validator_services) secondary-node0
 fi
 
 # Wait for validators with spinner
@@ -332,14 +389,14 @@ start_time=$(date +%s)
 timeout=120
 
 while true; do
-    HEALTHY=$(docker compose -f compose/devnet.yaml ps --format json 2>/dev/null | \
+    HEALTHY=$(docker compose -f "$COMPOSE_FILE" ps --format json 2>/dev/null | \
         jq -r 'select(.Service | startswith("validator-")) | select(.Health == "healthy") | .Service' 2>/dev/null | wc -l | tr -d ' ')
     
     elapsed=$(($(date +%s) - start_time))
     
-    if [[ "$HEALTHY" -ge 4 ]]; then
+    if [[ "$HEALTHY" -ge "$NUM_VALIDATORS" ]]; then
         clear_line
-        print_success "All 4 validators healthy"
+        print_success "All ${NUM_VALIDATORS} validators healthy"
         break
     fi
     
@@ -349,7 +406,7 @@ while true; do
         exit 1
     fi
     
-    spinner "Waiting for validators... (${HEALTHY}/4 healthy, ${elapsed}s)"
+    spinner "Waiting for validators... (${HEALTHY}/${NUM_VALIDATORS} healthy, ${elapsed}s)"
     sleep 0.15
 done
 
@@ -357,7 +414,7 @@ start_time=$(date +%s)
 timeout=120
 
 while true; do
-    SECONDARY_HEALTH=$(docker compose -f compose/devnet.yaml ps --format json 2>/dev/null | \
+    SECONDARY_HEALTH=$(docker compose -f "$COMPOSE_FILE" ps --format json 2>/dev/null | \
         jq -r 'select(.Service == "secondary-node0") | .Health' 2>/dev/null || echo "unknown")
 
     elapsed=$(($(date +%s) - start_time))
@@ -388,8 +445,8 @@ echo -e "  ${GREEN}┌────────────┬──────�
 echo -e "  ${GREEN}│${NC} ${BOLD}Node${NC}       ${GREEN}│${NC} ${BOLD}Status${NC}     ${GREEN}│${NC} ${BOLD}Port${NC}    ${GREEN}│${NC}"
 echo -e "  ${GREEN}├────────────┼────────────┼─────────┤${NC}"
 
-for i in 0 1 2 3; do
-    status=$(docker compose -f compose/devnet.yaml ps --format json 2>/dev/null | \
+for ((i = 0; i < NUM_VALIDATORS; i++)); do
+    status=$(docker compose -f "$COMPOSE_FILE" ps --format json 2>/dev/null | \
         jq -r "select(.Service == \"validator-node$i\") | .Health" 2>/dev/null || echo "unknown")
     
     if [[ "$status" == "healthy" ]]; then
@@ -398,10 +455,11 @@ for i in 0 1 2 3; do
         status_str="${YELLOW}${status}${NC}"
     fi
     
-    printf "  ${GREEN}│${NC} node%-6s ${GREEN}│${NC} %b ${GREEN}│${NC} 3040%-3s ${GREEN}│${NC}\n" "$i" "$status_str" "$i"
+    p2p_port=$((30400 + i))
+    printf "  ${GREEN}│${NC} node%-6s ${GREEN}│${NC} %b ${GREEN}│${NC} %-7s ${GREEN}│${NC}\n" "$i" "$status_str" "$p2p_port"
 done
 
-secondary_status=$(docker compose -f compose/devnet.yaml ps --format json 2>/dev/null | \
+secondary_status=$(docker compose -f "$COMPOSE_FILE" ps --format json 2>/dev/null | \
     jq -r 'select(.Service == "secondary-node0") | .Health' 2>/dev/null || echo "unknown")
 
 if [[ "$secondary_status" == "healthy" ]]; then

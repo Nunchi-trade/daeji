@@ -14,9 +14,20 @@ NC='\033[0m'
 
 REFRESH_INTERVAL=${1:-0.3}
 CHAIN_ID="${CHAIN_ID:-1337}"
-RPC_PORTS=(8545 8546 8547 8548)
+COMPOSE_PROJECT="${COMPOSE_PROJECT_NAME:-kora-devnet}"
+COMPOSE_FILE="${DEVNET_COMPOSE_FILE:-compose/devnet.yaml}"
+RPC_TIMEOUT="${RPC_TIMEOUT:-0.3}"
+NODE_STATUS_PAYLOAD='{"jsonrpc":"2.0","method":"kora_nodeStatus","params":[],"id":1}'
 FOLLOWER_SERVICE="secondary-node0"
-FOLLOWER_P2P_PORT=30500
+FOLLOWER_P2P_PORT="-"
+VALIDATOR_COUNT=0
+CONSENSUS_THRESHOLD=0
+declare -a NODE_IDS=()
+declare -a SERVICE_NAMES=()
+declare -a CONTAINER_NAMES=()
+declare -a RPC_PORTS=()
+declare -a P2P_PORTS=()
+declare -a METRICS_PORTS=()
 declare -a PREV_FINALIZED=()
 declare -a PREV_SAMPLE_MS=()
 
@@ -47,26 +58,155 @@ format_uptime() {
     else printf "%ds" $s; fi
 }
 
+compose_ps_json() {
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" ps -a --format json 2>/dev/null | \
+        jq -s 'map(if type == "array" then .[] else . end)' 2>/dev/null || echo "[]"
+}
+
+discover_topology() {
+    local ps_json rows idx service container rpc p2p metrics
+
+    ps_json=$(compose_ps_json)
+    NODE_IDS=()
+    SERVICE_NAMES=()
+    CONTAINER_NAMES=()
+    RPC_PORTS=()
+    P2P_PORTS=()
+    METRICS_PORTS=()
+
+    rows=$(echo "$ps_json" | jq -r '
+        .[]
+        | select(.Service | test("^validator-node[0-9]+$"))
+        | (.Service | capture("validator-node(?<idx>[0-9]+)$").idx | tonumber) as $idx
+        | [
+            $idx,
+            .Service,
+            (.Name // .Names // "-"),
+            (([.Publishers[]? | select(.TargetPort == 8545 and .PublishedPort != 0) | .PublishedPort] | unique | first) // "-"),
+            (([.Publishers[]? | select(.TargetPort == 30303 and .PublishedPort != 0) | .PublishedPort] | unique | first) // "-"),
+            (([.Publishers[]? | select(.TargetPort == 9002 and .PublishedPort != 0) | .PublishedPort] | unique | first) // "-")
+        ] | @tsv
+    ' 2>/dev/null | sort -n)
+
+    while IFS=$'\t' read -r idx service container rpc p2p metrics; do
+        [[ -n "${idx:-}" ]] || continue
+        NODE_IDS+=("$idx")
+        SERVICE_NAMES+=("${service:-validator-node$idx}")
+        CONTAINER_NAMES+=("${container:-"-"}")
+        RPC_PORTS+=("${rpc:-"-"}")
+        P2P_PORTS+=("${p2p:-"-"}")
+        METRICS_PORTS+=("${metrics:-"-"}")
+    done <<< "$rows"
+
+    VALIDATOR_COUNT=${#NODE_IDS[@]}
+    if [[ "$VALIDATOR_COUNT" -gt 0 ]]; then
+        CONSENSUS_THRESHOLD=$((VALIDATOR_COUNT - (VALIDATOR_COUNT - 1) / 3))
+    else
+        CONSENSUS_THRESHOLD=0
+    fi
+
+    FOLLOWER_P2P_PORT=$(echo "$ps_json" | jq -r "
+        .[]
+        | select(.Service == \"$FOLLOWER_SERVICE\")
+        | (([.Publishers[]? | select(.TargetPort == 30303 and .PublishedPort != 0) | .PublishedPort] | unique | first) // \"-\")
+    " 2>/dev/null | head -n 1)
+    FOLLOWER_P2P_PORT="${FOLLOWER_P2P_PORT:-"-"}"
+}
+
+format_ports() {
+    local ports=("$@")
+    local sorted=()
+    local port
+
+    for port in "${ports[@]}"; do
+        [[ "$port" =~ ^[0-9]+$ ]] && sorted+=("$port")
+    done
+
+    if [[ ${#sorted[@]} -eq 0 ]]; then
+        printf "none"
+        return
+    fi
+
+    mapfile -t sorted < <(printf "%s\n" "${sorted[@]}" | sort -n)
+
+    local start="${sorted[0]}"
+    local prev="${sorted[0]}"
+    local out=""
+    for port in "${sorted[@]:1}"; do
+        if [[ "$port" -eq $((prev + 1)) ]]; then
+            prev="$port"
+            continue
+        fi
+
+        if [[ -n "$out" ]]; then
+            out+=","
+        fi
+        if [[ "$start" == "$prev" ]]; then
+            out+="$start"
+        else
+            out+="${start}-${prev}"
+        fi
+        start="$port"
+        prev="$port"
+    done
+
+    if [[ -n "$out" ]]; then
+        out+=","
+    fi
+    if [[ "$start" == "$prev" ]]; then
+        out+="$start"
+    else
+        out+="${start}-${prev}"
+    fi
+
+    printf "%s" "$out"
+}
+
+query_node_status() {
+    local port=$1
+    local container=$2
+    local status=""
+
+    if [[ "$port" =~ ^[0-9]+$ ]]; then
+        status=$(curl -s --max-time "$RPC_TIMEOUT" -X POST -H "Content-Type: application/json" \
+            -d "$NODE_STATUS_PAYLOAD" "http://127.0.0.1:${port}" 2>/dev/null | \
+            jq -c '.result // empty' 2>/dev/null || true)
+    fi
+
+    if [[ -z "$status" && -n "$container" && "$container" != "-" ]]; then
+        status=$(docker exec "$container" sh -lc \
+            "curl -s --max-time $RPC_TIMEOUT -X POST -H 'Content-Type: application/json' -d '$NODE_STATUS_PAYLOAD' http://127.0.0.1:8545" 2>/dev/null | \
+            jq -c '.result // empty' 2>/dev/null || true)
+    fi
+
+    [[ -n "$status" ]] || status="{}"
+    printf "%s\n" "$status"
+}
+
 # Fetch all node statuses in parallel
 fetch_all_statuses() {
     local tmpdir=$(mktemp -d)
+    local row idx port container
     
     # Launch parallel fetches using JSON-RPC POST to get node status.
-    for i in 0 1 2 3; do
+    for row in "${!NODE_IDS[@]}"; do
+        idx="${NODE_IDS[$row]}"
+        port="${RPC_PORTS[$row]}"
+        container="${CONTAINER_NAMES[$row]}"
         (
-            status=$(curl -s --max-time 0.2 -X POST -H "Content-Type: application/json" \
-                -d '{"jsonrpc":"2.0","method":"kora_nodeStatus","params":[],"id":1}' \
-                "http://localhost:${RPC_PORTS[$i]}" 2>/dev/null | \
-                jq -c '.result // {}' 2>/dev/null || true)
-            [[ -n "$status" ]] || status="{}"
-            printf "%s\n" "$status" > "$tmpdir/$i"
+            query_node_status "$port" "$container" > "$tmpdir/$idx"
         ) &
     done
     wait
     
     # Read results
-    for i in 0 1 2 3; do
-        cat "$tmpdir/$i"
+    for row in "${!NODE_IDS[@]}"; do
+        idx="${NODE_IDS[$row]}"
+        if [[ -f "$tmpdir/$idx" ]]; then
+            cat "$tmpdir/$idx"
+        else
+            echo "{}"
+        fi
         echo  # newline separator
     done
     
@@ -74,8 +214,7 @@ fetch_all_statuses() {
 }
 
 fetch_follower_info() {
-    docker compose -f compose/devnet.yaml ps --format json 2>/dev/null | \
-        jq -r "select(.Service == \"$FOLLOWER_SERVICE\") | [
+    compose_ps_json | jq -r ".[] | select(.Service == \"$FOLLOWER_SERVICE\") | [
             .Health // .State // \"unknown\",
             .State // \"unknown\",
             (.RunningFor // \"-\"),
@@ -85,6 +224,7 @@ fetch_follower_info() {
 }
 
 render() {
+    discover_topology
     tput cup 0 0
     local now=$(date "+%H:%M:%S")
     
@@ -93,6 +233,16 @@ render() {
     echo -e "${BOLD}${BLUE}╚══════════════════════════════════════════════════════════════════════════════════════════╝${NC}"
     echo -e "  ${DIM}$now${NC}  │  ${DIM}Chain:${NC} ${CYAN}$CHAIN_ID${NC}  │  ${DIM}Refresh:${NC} ${REFRESH_INTERVAL}s  │  ${DIM}Ctrl+C to exit${NC}"
     echo ""
+
+    if [[ "$VALIDATOR_COUNT" -eq 0 ]]; then
+        echo -e "${YELLOW}No validator containers found for Compose project '${COMPOSE_PROJECT}'.${NC}"
+        echo ""
+        echo -e "${DIM}Start a devnet with 'just devnet' or 'just trusted-devnet'.${NC}"
+        for _ in {1..18}; do
+            printf "%-90s\n" ""
+        done
+        return
+    fi
     
     echo -e "${BOLD}${CYAN}Node Status${NC}"
     echo -e "┌───────┬──────────┬────────────┬──────────┬────────────┬────────────┬────────────┬────────────┬────────┐"
@@ -119,10 +269,11 @@ render() {
     local sample_ms
     sample_ms=$(millis)
     
-    local i=0
+    local row=0
     while IFS= read -r status; do
         # Skip empty lines (separators between node outputs)
         [[ -z "$status" ]] && continue
+        local node_id="${NODE_IDS[$row]:-$row}"
         
         if [[ "$status" != "{}" ]]; then
             # Parse with single jq call
@@ -132,7 +283,7 @@ render() {
             if [[ -n "$parsed" ]]; then
                 read -r validator_index uptime view finalized nullified proposed leader <<< "$parsed"
                 
-                validator_index="${validator_index:-$i}"
+                validator_index="${validator_index:-$node_id}"
                 uptime="${uptime:-0}"
                 view="${view:-0}"
                 finalized="${finalized:-0}"
@@ -141,7 +292,7 @@ render() {
                 
                 [[ $uptime -gt $max_uptime ]] && max_uptime=$uptime
                 [[ $view -gt $max_view ]] && max_view=$view
-                total_finalized=$finalized
+                [[ $finalized -gt $total_finalized ]] && total_finalized=$finalized
                 ((++rpc_count))
                 
                 local uptime_str=$(format_uptime "$uptime")
@@ -157,9 +308,9 @@ render() {
                 
                 # Calculate live finalized blocks per second since the previous refresh.
                 local blocks_per_sec_str="-"
-                if [[ -n "${PREV_FINALIZED[$i]:-}" && -n "${PREV_SAMPLE_MS[$i]:-}" ]]; then
-                    local delta_blocks=$((finalized - PREV_FINALIZED[$i]))
-                    local delta_ms=$((sample_ms - PREV_SAMPLE_MS[$i]))
+                if [[ -n "${PREV_FINALIZED[$node_id]:-}" && -n "${PREV_SAMPLE_MS[$node_id]:-}" ]]; then
+                    local delta_blocks=$((finalized - PREV_FINALIZED[$node_id]))
+                    local delta_ms=$((sample_ms - PREV_SAMPLE_MS[$node_id]))
                     if [[ $delta_blocks -ge 0 && $delta_ms -gt 0 ]]; then
                         local blocks_per_sec
                         blocks_per_sec=$(awk -v blocks="$delta_blocks" -v ms="$delta_ms" 'BEGIN {printf "%.2f", blocks * 1000 / ms}')
@@ -169,20 +320,20 @@ render() {
                         [[ $blocks_per_sec_int -gt $max_blocks_per_sec ]] && max_blocks_per_sec=$blocks_per_sec_int
                     fi
                 fi
-                PREV_FINALIZED[$i]=$finalized
-                PREV_SAMPLE_MS[$i]=$sample_ms
+                PREV_FINALIZED[$node_id]=$finalized
+                PREV_SAMPLE_MS[$node_id]=$sample_ms
                 
                 printf "│ ${CYAN}%-5s${NC} │ %b │ %-10s │ %-8s │ %-10s │ %-10s │ %-10s │ %-10s │   %b    │\n" \
-                    "$validator_index" "$rpc_status" "$uptime_str" "$view" "$finalized" "$nullified" "$proposed" "$blocks_per_sec_str" "$leader_str"
+                    "$node_id" "$rpc_status" "$uptime_str" "$view" "$finalized" "$nullified" "$proposed" "$blocks_per_sec_str" "$leader_str"
             else
-                unset "PREV_FINALIZED[$i]" "PREV_SAMPLE_MS[$i]"
-                printf "│ ${CYAN}%-5s${NC} │ ${RED}offline${NC}  │ -          │ -        │ -          │ -          │ -          │ -          │   -    │\n" "$i"
+                unset "PREV_FINALIZED[$node_id]" "PREV_SAMPLE_MS[$node_id]"
+                printf "│ ${CYAN}%-5s${NC} │ ${RED}offline${NC}  │ -          │ -        │ -          │ -          │ -          │ -          │   -    │\n" "$node_id"
             fi
         else
-            unset "PREV_FINALIZED[$i]" "PREV_SAMPLE_MS[$i]"
-            printf "│ ${CYAN}%-5s${NC} │ ${RED}offline${NC}  │ -          │ -        │ -          │ -          │ -          │ -          │   -    │\n" "$i"
+            unset "PREV_FINALIZED[$node_id]" "PREV_SAMPLE_MS[$node_id]"
+            printf "│ ${CYAN}%-5s${NC} │ ${RED}offline${NC}  │ -          │ -        │ -          │ -          │ -          │ -          │   -    │\n" "$node_id"
         fi
-        ((++i))
+        ((++row))
     done <<< "$all_status"
 
     local follower_info
@@ -225,11 +376,11 @@ render() {
     echo -e "${BOLD}${CYAN}Summary${NC}"
     
     local health_color=$GREEN
-    [[ $healthy_count -lt 4 ]] && health_color=$YELLOW
-    [[ $healthy_count -lt 3 ]] && health_color=$RED
+    [[ $healthy_count -lt "$VALIDATOR_COUNT" ]] && health_color=$YELLOW
+    [[ $healthy_count -lt "$CONSENSUS_THRESHOLD" ]] && health_color=$RED
     
     local threshold="${GREEN}✓ Met${NC}"
-    [[ $healthy_count -lt 3 ]] && threshold="${RED}✗ Not met${NC}"
+    [[ $healthy_count -lt "$CONSENSUS_THRESHOLD" ]] && threshold="${RED}✗ Not met${NC}"
     
     local uptime_str="0s"
     [[ $max_uptime -gt 0 ]] && uptime_str=$(format_uptime "$max_uptime")
@@ -240,7 +391,7 @@ render() {
         blocks_per_sec_str=$(awk -v bps="$max_blocks_per_sec" 'BEGIN {printf "%.2f b/s", bps / 100}')
     fi
     
-    echo -e "  ${DIM}Consensus:${NC} ${health_color}${healthy_count}/4${NC}  │  ${DIM}RPC:${NC} ${GREEN}${rpc_count}/4${NC}  │  ${DIM}Follower:${NC} ${follower_color}${follower_status}${NC}  │  ${DIM}Stalled:${NC} ${YELLOW}${stalled_count}${NC}  │  ${DIM}Threshold:${NC} $threshold  │  ${DIM}View:${NC} ${CYAN}$max_view${NC}  │  ${DIM}Finalized:${NC} ${GREEN}$total_finalized${NC}  │  ${DIM}Blocks/s:${NC} ${CYAN}$blocks_per_sec_str${NC}  │  ${DIM}Uptime:${NC} $uptime_str"
+    echo -e "  ${DIM}Consensus:${NC} ${health_color}${healthy_count}/${VALIDATOR_COUNT}${NC}  │  ${DIM}RPC:${NC} ${GREEN}${rpc_count}/${VALIDATOR_COUNT}${NC}  │  ${DIM}Follower:${NC} ${follower_color}${follower_status}${NC}  │  ${DIM}Stalled:${NC} ${YELLOW}${stalled_count}${NC}  │  ${DIM}Threshold:${NC} $threshold ${DIM}(${CONSENSUS_THRESHOLD}/${VALIDATOR_COUNT})${NC}  │  ${DIM}View:${NC} ${CYAN}$max_view${NC}  │  ${DIM}Finalized:${NC} ${GREEN}$total_finalized${NC}  │  ${DIM}Blocks/s:${NC} ${CYAN}$blocks_per_sec_str${NC}  │  ${DIM}Uptime:${NC} $uptime_str"
 
     echo ""
     echo -e "${BOLD}${CYAN}Follower Node${NC}"
@@ -250,7 +401,7 @@ render() {
     # Endpoints
     echo ""
     echo -e "${BOLD}${CYAN}Endpoints${NC}"
-    echo -e "  ${DIM}P2P:${NC} 30400-30403    ${DIM}Follower P2P:${NC} $FOLLOWER_P2P_PORT    ${DIM}RPC:${NC} 8545-8548    ${DIM}Metrics:${NC} 9000-9003"
+    echo -e "  ${DIM}P2P:${NC} $(format_ports "${P2P_PORTS[@]}")    ${DIM}Follower P2P:${NC} $FOLLOWER_P2P_PORT    ${DIM}RPC:${NC} $(format_ports "${RPC_PORTS[@]}")    ${DIM}Metrics:${NC} $(format_ports "${METRICS_PORTS[@]}")"
     
     # Clear extra lines
     for _ in {1..5}; do

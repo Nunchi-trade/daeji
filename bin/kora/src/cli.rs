@@ -1,11 +1,15 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use commonware_cryptography::Signer as _;
 use kora_config::NodeConfig;
 use kora_domain::BootstrapConfig;
 use kora_rpc::NodeState;
 use kora_runner::{ProductionRunner, load_threshold_scheme, runtime_storage_directory};
 use kora_service::LegacyNodeService;
+
+const BOOTSTRAP_TOPOLOGY_ENV: &str = "KORA_BOOTSTRAP_TOPOLOGY";
+const BOOTSTRAP_TOPOLOGY_LOWER: &str = "lower";
 
 #[derive(Parser, Debug)]
 #[command(name = "kora")]
@@ -164,7 +168,11 @@ impl Cli {
         let mut secondary_participants = Vec::new();
         if let Some(ref peers_path) = args.peers {
             let peers = load_peers(peers_path)?;
-            config.network.bootstrap_peers = format_bootstrappers(&peers.bootstrappers);
+            let identity_key = config.validator_key()?;
+            let local_pk = identity_key.public_key();
+            configure_validator_dialable_addr(&mut config, &peers, &local_pk)?;
+            let bootstrappers = validator_bootstrappers(&peers, &local_pk)?;
+            config.network.bootstrap_peers = format_bootstrappers(&bootstrappers);
             tracing::info!(
                 bootstrap_peers = config.network.bootstrap_peers.len(),
                 "Loaded bootstrap peers from peers.json"
@@ -354,6 +362,59 @@ fn format_bootstrappers(
         .iter()
         .map(|(pk, addr)| format!("{}@{}", hex::encode(pk.as_ref()), addr))
         .collect()
+}
+
+fn validator_bootstrappers(
+    peers: &PeersInfo,
+    local_pk: &commonware_cryptography::ed25519::PublicKey,
+) -> eyre::Result<Vec<(commonware_cryptography::ed25519::PublicKey, String)>> {
+    if std::env::var(BOOTSTRAP_TOPOLOGY_ENV).as_deref() != Ok(BOOTSTRAP_TOPOLOGY_LOWER) {
+        return Ok(peers.bootstrappers.clone());
+    }
+
+    let local_index =
+        peers.participants.iter().position(|participant| participant == local_pk).ok_or_else(
+            || eyre::eyre!("validator identity is not listed in peers.json participants"),
+        )?;
+
+    let mut bootstrappers = Vec::with_capacity(local_index);
+    for participant in peers.participants.iter().take(local_index) {
+        let Some((pk, address)) = peers.bootstrappers.iter().find(|(pk, _)| pk == participant)
+        else {
+            tracing::warn!(
+                public_key = %hex::encode(participant.as_ref()),
+                "participant missing from peers.json bootstrappers"
+            );
+            continue;
+        };
+        bootstrappers.push((pk.clone(), address.clone()));
+    }
+
+    tracing::info!(
+        topology = BOOTSTRAP_TOPOLOGY_LOWER,
+        bootstrappers = bootstrappers.len(),
+        "Filtered validator bootstrap peers"
+    );
+    Ok(bootstrappers)
+}
+
+fn configure_validator_dialable_addr(
+    config: &mut NodeConfig,
+    peers: &PeersInfo,
+    local_pk: &commonware_cryptography::ed25519::PublicKey,
+) -> eyre::Result<()> {
+    if let Some(dialable_addr) = &config.network.dialable_addr {
+        tracing::info!(dialable_addr, "Using configured validator dialable address");
+        return Ok(());
+    }
+
+    let Some((_, address)) = peers.bootstrappers.iter().find(|(pk, _)| pk == local_pk) else {
+        return Err(eyre::eyre!("validator identity is not listed in peers.json bootstrappers"));
+    };
+
+    config.network.dialable_addr = Some(address.clone());
+    tracing::info!(dialable_addr = address, "Loaded validator dialable address from peers.json");
+    Ok(())
 }
 
 fn load_peers(path: &PathBuf) -> eyre::Result<PeersInfo> {

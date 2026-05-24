@@ -64,6 +64,20 @@ wait_for_barrier() {
     done
 }
 
+stagger_validator_start() {
+    local seconds="${KORA_STARTUP_STAGGER_SECONDS:-1}"
+    if ! [[ "$seconds" =~ ^[0-9]+$ ]] || [[ "$seconds" -le 0 ]]; then
+        return 0
+    fi
+    if [[ "$VALIDATOR_INDEX" -le 0 ]]; then
+        return 0
+    fi
+
+    local delay=$((VALIDATOR_INDEX * seconds))
+    log "Startup stagger: sleeping ${delay}s before starting validator"
+    sleep "$delay"
+}
+
 case "$MODE" in
     setup)
         log "Running setup mode..."
@@ -147,6 +161,8 @@ case "$MODE" in
                 done
                 log "Bootstrap peer reachable"
             fi
+
+            stagger_validator_start
         fi
 
         touch "${DATA_DIR}/.ready"

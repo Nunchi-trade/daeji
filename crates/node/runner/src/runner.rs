@@ -69,6 +69,9 @@ const PARTITION_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 const RUNTIME_DIR_ENV: &str = "KORA_RUNTIME_DIR";
 const CHECKPOINT_INTERVAL_ENV: &str = "KORA_CHECKPOINT_INTERVAL";
 const DEFAULT_CHECKPOINT_INTERVAL: u64 = 256;
+const PEER_STARTUP_PROBE_INTERVAL: Duration = Duration::from_millis(250);
+const PEER_STARTUP_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+const PEER_STARTUP_PROBE_PAYLOAD: &[u8] = b"kora-peer-probe";
 
 /// Maximum number of transaction hashes retained in the gossip seen-set.
 /// When the set exceeds this size it is cleared to avoid unbounded memory
@@ -702,6 +705,88 @@ fn spawn_task_watchdog(context: &cw_tokio::Context, name: &'static str, handle: 
     });
 }
 
+fn spawn_peer_probe_drain(
+    context: cw_tokio::Context,
+    mut receiver: kora_transport::Receiver<Peer>,
+) {
+    context.with_label("peer-probe-drain").shared(true).spawn(move |_| async move {
+        loop {
+            match receiver.recv().await {
+                Ok((peer, _)) => trace!(?peer, "received startup peer probe"),
+                Err(error) => {
+                    debug!(?error, "startup peer probe receiver closed");
+                    break;
+                }
+            }
+        }
+    });
+}
+
+fn connected_validator_peer_count(
+    sent_peers: &[Peer],
+    validators: &Set<Peer>,
+    local_peer: &Peer,
+) -> usize {
+    sent_peers
+        .iter()
+        .filter(|peer| *peer != local_peer && validators.position(*peer).is_some())
+        .count()
+}
+
+async fn wait_for_validator_peer_connections(
+    context: &cw_tokio::Context,
+    sender: &mut kora_transport::Sender<Peer, cw_tokio::Context>,
+    validators: &Set<Peer>,
+    local_peer: &Peer,
+) {
+    let expected = validators.iter().filter(|candidate| *candidate != local_peer).count();
+    if expected == 0 {
+        return;
+    }
+
+    let deadline = std::time::Instant::now() + PEER_STARTUP_WAIT_TIMEOUT;
+    let mut best_connected = 0usize;
+
+    loop {
+        let connected = match sender
+            .send(Recipients::All, bytes::Bytes::from_static(PEER_STARTUP_PROBE_PAYLOAD), false)
+            .await
+        {
+            Ok(sent_peers) => connected_validator_peer_count(&sent_peers, validators, local_peer),
+            Err(error) => {
+                warn!(?error, "failed to send startup peer probe");
+                0
+            }
+        };
+
+        best_connected = best_connected.max(connected);
+        if connected >= expected {
+            info!(
+                connected,
+                expected, "validator peer connections established before consensus startup"
+            );
+            return;
+        }
+
+        if std::time::Instant::now() >= deadline {
+            warn!(
+                connected,
+                best_connected,
+                expected,
+                timeout_secs = PEER_STARTUP_WAIT_TIMEOUT.as_secs(),
+                "starting consensus before all validator peers are connected"
+            );
+            return;
+        }
+
+        debug!(
+            connected,
+            expected, "waiting for validator peer connections before consensus startup"
+        );
+        context.sleep(PEER_STARTUP_PROBE_INTERVAL).await;
+    }
+}
+
 /// Production validator node runner.
 #[derive(Clone, Debug)]
 pub struct ProductionRunner {
@@ -810,10 +895,14 @@ impl NodeRunner for ProductionRunner {
 
         info!(chain_id = self.chain_id, "Starting production validator");
 
+        let validator_key = config
+            .validator_key()
+            .map_err(|e| anyhow::anyhow!("failed to load validator key: {}", e))?;
+        let my_pk = commonware_cryptography::Signer::public_key(&validator_key);
         let validators = self.scheme.participants().clone();
         let secondary = Set::from_iter_dedup(self.secondary_peers.iter().cloned());
         let secondary_count = secondary.len();
-        transport.oracle.track(0, TrackedPeers::new(validators, secondary)).await;
+        transport.oracle.track(0, TrackedPeers::new(validators.clone(), secondary)).await;
         info!(
             validators = self.scheme.participants().len(),
             secondary_peers = secondary_count,
@@ -1110,10 +1199,10 @@ impl NodeRunner for ProductionRunner {
             });
         }
 
-        let validator_key = config
-            .validator_key()
-            .map_err(|e| anyhow::anyhow!("failed to load validator key: {}", e))?;
-        let my_pk = commonware_cryptography::Signer::public_key(&validator_key);
+        let (mut peer_probe_sender, peer_probe_receiver) = transport.peer_probe.channel;
+        spawn_peer_probe_drain(context.clone(), peer_probe_receiver);
+        wait_for_validator_peer_connections(&context, &mut peer_probe_sender, &validators, &my_pk)
+            .await;
 
         let finalized_executor = RevmExecutor::new(self.chain_id);
         let mut finalized_reporter = FinalizedReporter::new(
