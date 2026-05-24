@@ -46,6 +46,7 @@ const SNAPSHOT_WAIT_TIMEOUT: Duration = Duration::from_millis(50);
 /// and force every leader to skip, producing a cascade of nullifications
 /// that could stall the entire network.  64 is permissive enough to survive
 /// any realistic finalization stall without cascading nullifications.
+/// At ~30 blocks/s, a gap of 64 represents roughly 2 seconds of blocks.
 const MAX_PROPOSAL_LAG: u64 = 64;
 
 fn unix_timestamp_secs<Env: Clock>(env: &Env) -> u64 {
