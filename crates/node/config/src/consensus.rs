@@ -29,17 +29,16 @@ pub const DEFAULT_SIMPLEX_WRITE_BUFFER_BYTES: usize = 16 * 1024 * 1024;
 
 /// Default Simplex leader timeout in seconds.
 ///
-/// Healthy views complete in ~7ms, so 2 seconds provides ample margin.
+/// Healthy views complete in ~7ms, so 1 second provides ample margin.
 /// A lower timeout limits the throughput penalty when a dead leader's turn
 /// is reached in the round-robin schedule.
-pub const DEFAULT_SIMPLEX_LEADER_TIMEOUT_SECS: u64 = 2;
+pub const DEFAULT_SIMPLEX_LEADER_TIMEOUT_SECS: u64 = 1;
 
 /// Default Simplex certification timeout in seconds.
 ///
-/// With 10+ validators, vote collection tail latency can reach hundreds
-/// of milliseconds. 5 seconds provides enough margin for stragglers
-/// while avoiding the 10-second default stall on certification failure.
-pub const DEFAULT_SIMPLEX_CERTIFICATION_TIMEOUT_SECS: u64 = 5;
+/// Healthy views complete in ~7ms, so 2 seconds provides a generous margin
+/// for stragglers while avoiding 10-second stalls when certification fails.
+pub const DEFAULT_SIMPLEX_CERTIFICATION_TIMEOUT_SECS: u64 = 2;
 
 /// Default Simplex nullification retry timeout in seconds.
 ///
