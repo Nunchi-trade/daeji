@@ -167,6 +167,7 @@ fn seed_genesis_block_index(index: &BlockIndex, genesis: &Block, gas_limit: u64)
             gas_limit,
             gas_used: 0,
             base_fee_per_gas: Some(kora_config::INITIAL_BASE_FEE),
+            mix_hash: genesis.prevrandao,
             transaction_hashes: Vec::new(),
         },
         Vec::new(),
@@ -194,6 +195,7 @@ fn index_recovered_block(
         gas_limit: block_context.header.gas_limit,
         gas_used: 0,
         base_fee_per_gas: block_context.header.base_fee_per_gas,
+        mix_hash: block.prevrandao,
         transaction_hashes,
     };
     index.insert_block(indexed_block, Vec::new(), Vec::new());
