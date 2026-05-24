@@ -128,22 +128,22 @@ impl AppMetrics {
             self.blocks_finalized.clone(),
         );
         registry.register(
-            "kora_gossip_tx_broadcast_total",
+            "kora_gossip_tx_broadcast",
             "Total transactions broadcast to peers via gossip",
             self.gossip_tx_broadcast.clone(),
         );
         registry.register(
-            "kora_gossip_tx_received_total",
+            "kora_gossip_tx_received",
             "Total transactions received from peers via gossip",
             self.gossip_tx_received.clone(),
         );
         registry.register(
-            "kora_gossip_tx_broadcast_failed_total",
+            "kora_gossip_tx_broadcast_failed",
             "Total gossip broadcast failures",
             self.gossip_tx_broadcast_failed.clone(),
         );
         registry.register(
-            "kora_gossip_tx_invalid_total",
+            "kora_gossip_tx_invalid",
             "Total gossip transactions that failed validation",
             self.gossip_tx_invalid.clone(),
         );
