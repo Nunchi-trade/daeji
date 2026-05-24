@@ -27,7 +27,7 @@ impl Default for PoolConfig {
             max_pending_txs: 4096,
             max_queued_txs: 1024,
             max_txs_per_sender: 256,
-            max_tx_size: 128 * 1024, // 128 KB
+            max_tx_size: 128 * 1024,      // 128 KB
             min_gas_price: 1_000_000_000, // 1 gwei, matches INITIAL_BASE_FEE
             replacement_bump_percent: 10,
             pending_ttl_secs: 30 * 60,
