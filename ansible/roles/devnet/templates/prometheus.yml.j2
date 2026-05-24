@@ -1,0 +1,35 @@
+# {{ ansible_managed }}
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+  - /etc/prometheus/recording-rules.yml
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'kora-validators'
+    static_configs:
+      - targets:
+{% for i in range(num_validators) %}
+        - 'validator-node{{ i }}:9002'
+{% endfor %}
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: 'validator-node(\d+):.*'
+        target_label: validator_index
+        replacement: '$1'
+
+  - job_name: 'kora-secondary'
+    static_configs:
+      - targets:
+        - 'secondary-node0:9002'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: 'secondary-node(\d+):.*'
+        target_label: secondary_index
+        replacement: '$1'

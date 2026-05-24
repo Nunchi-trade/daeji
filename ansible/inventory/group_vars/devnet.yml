@@ -9,7 +9,7 @@ compose_project_name: kora-devnet
 docker_dns_servers: []  # Set to e.g. ["185.12.64.1", "185.12.64.2"] for Hetzner
 
 # Devnet config
-num_validators: 4
+num_validators: 10
 dkg_mode: trusted  # 'trusted' or 'interactive'
 rust_log: info
 chain_id: 1337
@@ -24,10 +24,10 @@ health_delay: 5
 
 # Ports
 ssh_port: 22
-p2p_ports: "30400:30403"
+p2p_ports: "30400:30409"
 secondary_p2p_port: 30500
-rpc_ports: "8545:8548"
-metrics_ports: "9000:9003"
+rpc_ports: "8545:8554"
+metrics_ports: "9000:9009"
 prometheus_port: 9090
 loki_port: 3100
 grafana_port: 3000

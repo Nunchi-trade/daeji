@@ -1,15 +1,27 @@
 ---
+- name: Template devnet compose file
+  ansible.builtin.template:
+    src: devnet.yaml.j2
+    dest: "{{ compose_file }}"
+    mode: "0644"
+
+- name: Template prometheus config
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: "{{ remote_project_dir }}/docker/config/prometheus.yml"
+    mode: "0644"
+
 - name: Stop existing validators
   ansible.builtin.command:
     cmd: >
       docker compose -f {{ compose_file }} stop
-      validator-node0 validator-node1 validator-node2 validator-node3 secondary-node0
+      {% for i in range(num_validators) %}validator-node{{ i }} {% endfor %}secondary-node0
   changed_when: true
   failed_when: false
 
 - name: Check if DKG shares exist
   ansible.builtin.shell: |
-    for i in 0 1 2 3; do
+    for i in $(seq 0 {{ num_validators - 1 }}); do
       volume="{{ compose_project_name }}_data_node${i}"
       docker volume inspect "$volume" >/dev/null 2>&1 || exit 1
       docker run --rm -v "${volume}:/data" alpine \
@@ -44,7 +56,7 @@
       ansible.builtin.command:
         cmd: >
           docker compose -f {{ compose_file }} --profile interactive-dkg up -d
-          dkg-node0 dkg-node1 dkg-node2 dkg-node3
+          {% for i in range(num_validators) %}dkg-node{{ i }} {% endfor %}
       changed_when: true
 
     - name: Wait for DKG ceremony to complete
@@ -54,7 +66,7 @@
         FAILED=$(docker compose -f {{ compose_file }} ps -a --format json 2>/dev/null | \
           jq -r 'select(.Service | startswith("dkg-")) | select(.State == "exited") | select(.ExitCode != 0) | .Service' 2>/dev/null | wc -l | tr -d ' ')
         [[ "$FAILED" -gt 0 ]] && exit 1
-        [[ "$EXITED" -ge 4 ]] && exit 0
+        [[ "$EXITED" -ge {{ num_validators }} ]] && exit 0
         exit 2
       register: dkg_result
       until: dkg_result.rc == 0
@@ -67,17 +79,16 @@
       ansible.builtin.command:
         cmd: >
           docker compose -f {{ compose_file }} --profile interactive-dkg stop
-          dkg-node0 dkg-node1 dkg-node2 dkg-node3
+          {% for i in range(num_validators) %}dkg-node{{ i }} {% endfor %}
       changed_when: true
       failed_when: false
 
 - name: Clear runtime state from data volumes
   ansible.builtin.shell: |
     for volume in \
-      {{ compose_project_name }}_data_node0 \
-      {{ compose_project_name }}_data_node1 \
-      {{ compose_project_name }}_data_node2 \
-      {{ compose_project_name }}_data_node3 \
+{% for i in range(num_validators) %}
+      {{ compose_project_name }}_data_node{{ i }} \
+{% endfor %}
       {{ compose_project_name }}_data_secondary0; do
       docker volume inspect "$volume" >/dev/null 2>&1 || continue
       docker run --rm -v "${volume}:/data" alpine rm -rf /data/runtime 2>/dev/null || true
@@ -95,7 +106,7 @@
   ansible.builtin.command:
     cmd: >
       docker compose -f {{ compose_file }} up -d
-      validator-node0 validator-node1 validator-node2 validator-node3 secondary-node0
+      {% for i in range(num_validators) %}validator-node{{ i }} {% endfor %}secondary-node0
   environment:
     RUST_LOG: "{{ rust_log }}"
     CHAIN_ID: "{{ chain_id }}"
@@ -129,6 +140,6 @@
       Devnet is healthy!
         Validators: {{ num_validators }}/{{ num_validators }} healthy
         Secondary:  healthy
-        RPC:        http://{{ ansible_host }}:8545-8548
-        P2P:        {{ ansible_host }}:30400-30403
-        Secondary:  {{ ansible_host }}:30500
+        RPC:        http://{{ ansible_host }}:8545-{{ 8545 + num_validators - 1 }}
+        P2P:        {{ ansible_host }}:30400-{{ 30400 + num_validators - 1 }}
+        Secondary:  {{ ansible_host }}:{{ secondary_p2p_port }}
