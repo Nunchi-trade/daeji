@@ -57,7 +57,7 @@ x-validator-common: &validator-common
         cpus: "2"
         pids: 4096
   tmpfs:
-    - /tmp:size=64m,mode=0700
+    - /tmp:size=64m,mode=1777
   healthcheck:
     test: ["CMD", "/scripts/healthcheck.sh"]
     interval: 30s
@@ -367,7 +367,7 @@ services:
     cap_drop:
       - ALL
     tmpfs:
-      - /tmp:size=64m,mode=0700
+      - /tmp:size=64m,mode=1777
     volumes:
       - prometheus_data:/prometheus
       - ../config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -392,7 +392,7 @@ services:
     cap_drop:
       - ALL
     tmpfs:
-      - /tmp:size=64m,mode=0700
+      - /tmp:size=64m,mode=1777
     volumes:
       - loki_data:/loki
       - ../config/loki.yml:/etc/loki/local-config.yaml:ro
@@ -412,7 +412,7 @@ services:
     cap_drop:
       - ALL
     tmpfs:
-      - /tmp:size=64m,mode=0700
+      - /tmp:size=64m,mode=1777
     depends_on:
       - loki
     volumes:
@@ -436,7 +436,7 @@ services:
     cap_drop:
       - ALL
     tmpfs:
-      - /tmp:size=64m,mode=0700
+      - /tmp:size=64m,mode=1777
     depends_on:
       - prometheus
       - loki
