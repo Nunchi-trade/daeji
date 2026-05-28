@@ -157,7 +157,6 @@ async fn seed_report_inner<V: Variant>(
     }
 }
 
-#[derive(Clone)]
 /// Tracks simplex activity to store seed hashes for future proposals.
 pub struct SeedReporter<V> {
     /// Ledger service that keeps per-digest seeds and snapshots.
@@ -193,7 +192,7 @@ where
 
     fn report(&mut self, activity: Self::Activity) -> Feedback {
         let state = self.state.clone();
-        self.context.spawn(move |_| async move {
+        self.context.child("seed").spawn(move |_| async move {
             seed_report_inner(state, activity).await;
         });
         Feedback::Ok
@@ -1204,7 +1203,6 @@ fn receipt_effective_gas_price(metadata: &TxMetadata, base_fee_per_gas: Option<u
     max_fee_per_gas.min(u128::from(base_fee_per_gas).saturating_add(priority_fee))
 }
 
-#[derive(Clone)]
 /// Persists finalized blocks.
 pub struct FinalizedReporter<E, P> {
     /// Ledger service used to verify blocks and persist snapshots.
@@ -1325,7 +1323,7 @@ where
         let checkpoint_interval = self.checkpoint_interval;
         let pending_acks = self.pending_acks.clone();
         let node_state = self.node_state.clone();
-        self.context.spawn(move |_| async move {
+        self.context.child("finalize-task").spawn(move |_| async move {
             handle_finalized_update(
                 state,
                 context,
