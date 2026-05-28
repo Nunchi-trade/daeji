@@ -12,7 +12,7 @@ use std::{collections::BTreeSet, fmt, sync::Arc, time::Duration};
 use alloy_primitives::{Address, B256, U256};
 use commonware_consensus::Block as _;
 use commonware_cryptography::Committable as _;
-use commonware_runtime::{Metrics as _, tokio};
+use commonware_runtime::{Supervisor as _, tokio};
 use futures::{channel::mpsc::UnboundedReceiver, lock::Mutex};
 use kora_consensus::{
     ConsensusError, Mempool as _, SeedTracker as _, Snapshot, SnapshotStore as _,
