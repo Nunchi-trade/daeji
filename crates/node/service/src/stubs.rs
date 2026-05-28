@@ -4,9 +4,8 @@
 //! simplex consensus engine. Replace with real implementations as
 //! components are built out.
 
-use std::future::Future;
-
-use commonware_consensus::{CertifiableAutomaton, Relay, Reporter, types::Epoch};
+use commonware_actor::Feedback;
+use commonware_consensus::{CertifiableAutomaton, Relay, Reporter};
 use commonware_cryptography::sha256;
 use commonware_utils::channel::{fallible::OneshotExt as _, oneshot};
 
@@ -27,14 +26,9 @@ const fn zero_digest() -> StubDigest {
 #[derive(Clone, Debug)]
 pub struct StubAutomaton;
 
-#[allow(clippy::manual_async_fn)]
 impl commonware_consensus::Automaton for StubAutomaton {
     type Context = commonware_consensus::simplex::types::Context<StubDigest, StubPublicKey>;
     type Digest = StubDigest;
-
-    fn genesis(&mut self, _epoch: Epoch) -> impl Future<Output = Self::Digest> + Send {
-        async { zero_digest() }
-    }
 
     #[allow(clippy::async_yields_async)]
     fn propose(
@@ -68,18 +62,13 @@ impl CertifiableAutomaton for StubAutomaton {}
 #[derive(Clone, Debug)]
 pub struct StubRelay;
 
-#[allow(clippy::manual_async_fn)]
 impl Relay for StubRelay {
     type Digest = StubDigest;
     type PublicKey = StubPublicKey;
     type Plan = ();
 
-    fn broadcast(
-        &mut self,
-        _payload: Self::Digest,
-        _plan: Self::Plan,
-    ) -> impl Future<Output = ()> + Send {
-        async {}
+    fn broadcast(&mut self, _payload: Self::Digest, _plan: Self::Plan) -> Feedback {
+        Feedback::Ok
     }
 }
 
@@ -101,42 +90,41 @@ where
 {
     type Activity = commonware_consensus::simplex::types::Activity<S, StubDigest>;
 
-    fn report(&mut self, activity: Self::Activity) -> impl Future<Output = ()> + Send {
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
         use commonware_consensus::simplex::types::Activity;
-        async move {
-            match activity {
-                Activity::Notarize(n) => {
-                    tracing::trace!(view = ?n.proposal.round.view(), "notarize vote");
-                }
-                Activity::Notarization(n) => {
-                    tracing::debug!(view = ?n.proposal.round.view(), "notarization");
-                }
-                Activity::Certification(c) => {
-                    tracing::debug!(view = ?c.proposal.round.view(), "certification");
-                }
-                Activity::Nullify(_) => {
-                    tracing::trace!("nullify vote");
-                }
-                Activity::Nullification(n) => {
-                    tracing::debug!(round = ?n.round, "nullification");
-                }
-                Activity::Finalize(f) => {
-                    tracing::trace!(view = ?f.proposal.round.view(), "finalize vote");
-                }
-                Activity::Finalization(f) => {
-                    tracing::info!(view = ?f.proposal.round.view(), "finalization");
-                }
-                Activity::ConflictingNotarize(_) => {
-                    tracing::warn!("conflicting notarize detected");
-                }
-                Activity::ConflictingFinalize(_) => {
-                    tracing::warn!("conflicting finalize detected");
-                }
-                Activity::NullifyFinalize(_) => {
-                    tracing::warn!("nullify-finalize conflict detected");
-                }
+        match activity {
+            Activity::Notarize(n) => {
+                tracing::trace!(view = ?n.proposal.round.view(), "notarize vote");
+            }
+            Activity::Notarization(n) => {
+                tracing::debug!(view = ?n.proposal.round.view(), "notarization");
+            }
+            Activity::Certification(c) => {
+                tracing::debug!(view = ?c.proposal.round.view(), "certification");
+            }
+            Activity::Nullify(_) => {
+                tracing::trace!("nullify vote");
+            }
+            Activity::Nullification(n) => {
+                tracing::debug!(round = ?n.round, "nullification");
+            }
+            Activity::Finalize(f) => {
+                tracing::trace!(view = ?f.proposal.round.view(), "finalize vote");
+            }
+            Activity::Finalization(f) => {
+                tracing::info!(view = ?f.proposal.round.view(), "finalization");
+            }
+            Activity::ConflictingNotarize(_) => {
+                tracing::warn!("conflicting notarize detected");
+            }
+            Activity::ConflictingFinalize(_) => {
+                tracing::warn!("conflicting finalize detected");
+            }
+            Activity::NullifyFinalize(_) => {
+                tracing::warn!("nullify-finalize conflict detected");
             }
         }
+        Feedback::Ok
     }
 }
 
@@ -144,11 +132,10 @@ where
 #[derive(Clone, Debug)]
 pub struct StubBlocker;
 
-#[allow(clippy::manual_async_fn)]
 impl commonware_p2p::Blocker for StubBlocker {
     type PublicKey = StubPublicKey;
 
-    fn block(&mut self, _peer: Self::PublicKey) -> impl Future<Output = ()> + Send {
-        async {}
+    fn block(&mut self, _peer: Self::PublicKey) -> Feedback {
+        Feedback::Ok
     }
 }

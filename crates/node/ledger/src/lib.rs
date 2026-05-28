@@ -224,7 +224,7 @@ impl LedgerView {
         genesis_timestamp: u64,
     ) -> LedgerResult<Self> {
         let qmdb = QmdbLedger::init_with_genesis(
-            context.with_label("qmdb"),
+            context.child("qmdb"),
             config,
             genesis_alloc,
             apply_genesis,

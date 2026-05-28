@@ -12,8 +12,8 @@ use std::{
 use alloy_consensus::Header;
 use alloy_primitives::{Address, B256, Bytes};
 use commonware_consensus::{
-    Application, Block as _, VerifyingApplication,
-    marshal::ancestry::{AncestorStream, BlockProvider},
+    Application, Block as _,
+    marshal::ancestry::Ancestry,
     simplex::types::Context,
 };
 use commonware_cryptography::{Committable as _, certificate::Scheme as CertScheme};
@@ -616,18 +616,11 @@ where
     type Context = Context<ConsensusDigest, S::PublicKey>;
     type Block = Block;
 
-    fn genesis(&mut self) -> impl std::future::Future<Output = Self::Block> + Send {
-        async move { self.ledger.genesis_block() }
-    }
-
-    fn propose<A>(
+    fn propose(
         &mut self,
         context: (Env, Self::Context),
-        mut ancestry: AncestorStream<A, Self::Block>,
-    ) -> impl std::future::Future<Output = Option<Self::Block>> + Send
-    where
-        A: BlockProvider<Block = Self::Block>,
-    {
+        mut ancestry: impl Ancestry<Self::Block>,
+    ) -> impl std::future::Future<Output = Option<Self::Block>> + Send {
         let node_state = self.node_state.clone();
         let metrics = self.metrics.clone();
         let env = context.0;
@@ -701,22 +694,12 @@ where
             block
         }
     }
-}
 
-impl<Env, S, E> VerifyingApplication<Env> for RevmApplication<S, E>
-where
-    Env: Rng + Spawner + Metrics + Clock,
-    S: CertScheme + Send + Sync + 'static,
-    E: BlockExecutor<OverlayState<QmdbState>, Tx = Bytes> + Clone + Send + Sync + 'static,
-{
-    fn verify<A>(
+    fn verify(
         &mut self,
         _context: (Env, Self::Context),
-        mut ancestry: AncestorStream<A, Self::Block>,
-    ) -> impl std::future::Future<Output = bool> + Send
-    where
-        A: BlockProvider<Block = Self::Block>,
-    {
+        mut ancestry: impl Ancestry<Self::Block>,
+    ) -> impl std::future::Future<Output = bool> + Send {
         async move {
             let start = Instant::now();
 

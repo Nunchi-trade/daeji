@@ -237,21 +237,21 @@ async fn open_stores(context: Context, config: &QmdbBackendConfig) -> Result<Sto
     let page_cache = CacheRef::from_pooler(&context, config.page_size, config.page_cache_size);
 
     let accounts = AccountStore::init(
-        context.with_label("accounts"),
+        context.child("accounts"),
         store_config(&config.partition_prefix, "accounts", page_cache.clone(), ()),
     )
     .await
     .map_err(|e| BackendError::Storage(e.to_string()))?;
 
     let storage = StorageStore::init(
-        context.with_label("storage"),
+        context.child("storage"),
         store_config(&config.partition_prefix, "storage", page_cache.clone(), ()),
     )
     .await
     .map_err(|e| BackendError::Storage(e.to_string()))?;
 
     let code = CodeStore::init(
-        context.with_label("code"),
+        context.child("code"),
         store_config(
             &config.partition_prefix,
             "code",

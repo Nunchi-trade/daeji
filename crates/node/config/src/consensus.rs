@@ -280,14 +280,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use commonware_codec::Write as _;
+    use commonware_codec::{ReadExt as _, Write as _};
     use commonware_cryptography::Signer as _;
 
     use super::*;
 
     fn create_valid_public_key_bytes() -> Vec<u8> {
-        let private_key =
-            ed25519::PrivateKey::from(ed25519_consensus::SigningKey::from([42u8; 32]));
+        let private_key = ed25519::PrivateKey::read(&mut [42u8; 32].as_slice()).unwrap();
         let public_key = private_key.public_key();
         let mut bytes = Vec::new();
         public_key.write(&mut bytes);
@@ -464,7 +463,7 @@ mod tests {
     fn build_validator_set_multiple_keys() {
         let keys: Vec<_> = (1..=3u8)
             .map(|i| {
-                let pk = ed25519::PrivateKey::from(ed25519_consensus::SigningKey::from([i; 32]));
+                let pk = ed25519::PrivateKey::read(&mut [i; 32].as_slice()).unwrap();
                 let mut bytes = Vec::new();
                 pk.public_key().write(&mut bytes);
                 bytes

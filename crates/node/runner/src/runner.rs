@@ -9,6 +9,7 @@ use std::{
 use alloy_consensus::Header;
 use alloy_primitives::{Address, B256, keccak256};
 use anyhow::Context as _;
+use commonware_actor::Feedback;
 use commonware_consensus::{
     Block as _, Reporters,
     marshal::{
@@ -114,9 +115,9 @@ impl<P> NoOpBlocker<P> {
 impl<P: commonware_cryptography::PublicKey> Blocker for NoOpBlocker<P> {
     type PublicKey = P;
 
-    fn block(&mut self, peer: Self::PublicKey) -> impl std::future::Future<Output = ()> + Send {
+    fn block(&mut self, peer: Self::PublicKey) -> Feedback {
         warn!(?peer, "NoOpBlocker: ignoring block request for peer (catch-up safe)");
-        async {}
+        Feedback::Ok
     }
 }
 
@@ -571,7 +572,7 @@ fn spawn_ledger_observers<S: Spawner>(service: LedgerService, spawner: S, data_d
 }
 
 fn spawn_txpool_cleanup(pool: TransactionPool, context: cw_tokio::Context) {
-    context.with_label("txpool-cleanup").shared(false).spawn(move |ctx| async move {
+    context.child("txpool-cleanup").shared(false).spawn(move |ctx| async move {
         loop {
             ctx.sleep(TXPOOL_CLEANUP_INTERVAL).await;
             let removed = pool.cleanup();
@@ -615,7 +616,7 @@ fn mark_seen(seen: &SeenSet, hash: B256) -> bool {
 /// operators (and log-based alerting) can detect connectivity issues even
 /// without Prometheus.
 fn spawn_partition_monitor(node_state: kora_rpc::NodeState, context: cw_tokio::Context) {
-    context.with_label("partition-monitor").shared(false).spawn(move |ctx| async move {
+    context.child("partition-monitor").shared(false).spawn(move |ctx| async move {
         loop {
             ctx.sleep(PARTITION_CHECK_INTERVAL).await;
             let status = node_state.status();
@@ -673,7 +674,7 @@ fn spawn_consensus_monitor(
 /// to flush buffered log output.  This makes post-mortem diagnosis possible
 /// even when the process is restarted by a supervisor immediately.
 fn spawn_task_watchdog(context: &cw_tokio::Context, name: &'static str, handle: RuntimeHandle<()>) {
-    context.with_label(name).shared(true).spawn(move |ctx| async move {
+    context.child(name).shared(true).spawn(move |ctx| async move {
         let reason = match handle.await {
             Ok(()) => {
                 error!(task = name, "critical task exited cleanly — this should never happen for a long-lived consensus actor");
@@ -814,7 +815,7 @@ impl NodeRunner for ProductionRunner {
         let validators = self.scheme.participants().clone();
         let secondary = Set::from_iter_dedup(self.secondary_peers.iter().cloned());
         let secondary_count = secondary.len();
-        transport.oracle.track(0, TrackedPeers::new(validators, secondary)).await;
+        transport.oracle.track(0, TrackedPeers::new(validators, secondary));
         info!(
             validators = self.scheme.participants().len(),
             secondary_peers = secondary_count,
@@ -849,7 +850,7 @@ impl NodeRunner for ProductionRunner {
         <ThresholdScheme as commonware_cryptography::certificate::Scheme>::certificate_codec_config_unbounded();
         let finalizations_by_height =
             ArchiveInitializer::init_prunable_checkpointed::<_, ConsensusDigest, CertArchive>(
-                context.with_label("finalizations_by_height"),
+                context.child("finalizations_by_height"),
                 finalizations_prefix,
                 (),
                 checkpoint_interval,
@@ -859,7 +860,7 @@ impl NodeRunner for ProductionRunner {
 
         let finalized_blocks =
             ArchiveInitializer::init_prunable_checkpointed::<_, ConsensusDigest, Block>(
-                context.with_label("finalized_blocks"),
+                context.child("finalized_blocks"),
                 blocks_prefix,
                 block_cfg,
                 checkpoint_interval,
@@ -869,7 +870,7 @@ impl NodeRunner for ProductionRunner {
 
         let has_finalized_history = finalized_blocks.last_index().is_some();
         let state = LedgerView::init_with_genesis_options(
-            context.with_label("state"),
+            context.child("state"),
             format!("{}-qmdb", self.partition_prefix),
             self.bootstrap.genesis_alloc.clone(),
             !has_finalized_history,
@@ -884,7 +885,9 @@ impl NodeRunner for ProductionRunner {
             self.rpc_config.as_ref().map(|_| kora_rpc::mempool_event_channel().0);
         let ledger = LedgerService::new(state.clone());
         let block_index = Arc::new(BlockIndex::new());
-        seed_genesis_block_index(&block_index, &ledger.genesis_block(), gas_limit);
+        let genesis = ledger.genesis_block();
+        let genesis_digest = genesis.commitment();
+        seed_genesis_block_index(&block_index, &genesis, gas_limit);
         spawn_ledger_observers(ledger.clone(), context.clone(), config.data_dir.clone());
         let txpool = ledger.txpool().await;
         spawn_txpool_cleanup(txpool.clone(), context.clone());
@@ -909,7 +912,7 @@ impl NodeRunner for ProductionRunner {
                 let seen = seen.clone();
                 let mut sender = tx_gossip_sender;
                 let out_metrics = app_metrics.clone();
-                context.with_label("tx-gossip-out").shared(true).spawn(move |_| async move {
+                context.child("tx-gossip-out").shared(true).spawn(move |_| async move {
                     let mut rx = gossip_outbound_rx;
                     while let Some(raw) = rx.recv().await {
                         let hash = keccak256(&raw);
@@ -917,7 +920,7 @@ impl NodeRunner for ProductionRunner {
                             continue;
                         }
                         let msg = bytes::Bytes::copy_from_slice(&raw);
-                        if let Err(e) = sender.send(Recipients::All, msg, false).await {
+                        if let Err(e) = sender.send(Recipients::All, msg, false) {
                             warn!(error = %e, "tx gossip: failed to broadcast transaction");
                             out_metrics.gossip_tx_broadcast_failed.inc();
                         } else {
@@ -937,7 +940,7 @@ impl NodeRunner for ProductionRunner {
                 let gossip_pool = txpool.clone();
                 let mut receiver = tx_gossip_receiver;
                 let in_metrics = app_metrics.clone();
-                context.with_label("tx-gossip-in").shared(true).spawn(move |_| async move {
+                context.child("tx-gossip-in").shared(true).spawn(move |_| async move {
                     loop {
                         let (peer, raw) = match receiver.recv().await {
                             Ok(msg) => msg,
@@ -1108,7 +1111,7 @@ impl NodeRunner for ProductionRunner {
 
         if let Some(metrics_addr) = self.metrics_addr {
             let metrics_context = context.clone();
-            context.with_label("metrics").shared(true).spawn(move |_| async move {
+            context.child("metrics").shared(true).spawn(move |_| async move {
                 let app = axum::Router::new().route(
                     "/metrics",
                     axum::routing::get(move || {
@@ -1183,7 +1186,7 @@ impl NodeRunner for ProductionRunner {
         let scheme_provider = ConstantSchemeProvider::from(self.scheme.clone());
 
         let resolver = PeerInitializer::init::<_, _, _, Block, _, _, _>(
-            &context.with_label("resolver"),
+            context.child("resolver"),
             my_pk.clone(),
             transport.oracle.clone(),
             NoOpBlocker::<Peer>::new(),
@@ -1191,7 +1194,7 @@ impl NodeRunner for ProductionRunner {
         );
 
         let (broadcast_engine, buffer) = BroadcastInitializer::init::<_, Peer, Block, _>(
-            context.with_label("broadcast"),
+            context.child("broadcast"),
             my_pk.clone(),
             transport.oracle.clone(),
             block_cfg,
@@ -1199,6 +1202,8 @@ impl NodeRunner for ProductionRunner {
         let broadcast_handle = broadcast_engine.start(transport.marshal.blocks);
 
         let scratch_context = NoSyncStorage::new(context.clone(), checkpoint_interval);
+        let marshal_start =
+            commonware_consensus::marshal::Start::Genesis(genesis.clone());
         let (actor, marshal_mailbox, _last_processed_height) =
             kora_marshal::ActorInitializer::init_with_strategy::<_, Block, _, _, _, Exact, _>(
                 scratch_context.clone(),
@@ -1207,6 +1212,7 @@ impl NodeRunner for ProductionRunner {
                 scheme_provider,
                 page_cache.clone(),
                 block_cfg,
+                marshal_start,
                 strategy.clone(),
             )
             .await;
@@ -1228,13 +1234,13 @@ impl NodeRunner for ProductionRunner {
             app = app.with_node_state(state.clone());
         }
         let marshaled = Inline::new(
-            scratch_context.with_label("marshaled"),
+            scratch_context.child("marshaled"),
             app,
             marshal_mailbox.clone(),
             epocher,
         );
 
-        let seed_reporter = SeedReporter::<MinSig>::new(ledger.clone());
+        let seed_reporter = SeedReporter::<MinSig>::new(ledger.clone(), context.clone());
         let node_state_reporter = self
             .rpc_config
             .as_ref()
@@ -1250,7 +1256,7 @@ impl NodeRunner for ProductionRunner {
         }
 
         let engine = simplex::Engine::new(
-            scratch_context.with_label("engine"),
+            scratch_context.child("engine"),
             simplex::Config {
                 scheme: self.scheme.clone(),
                 elector: Random,
@@ -1260,8 +1266,9 @@ impl NodeRunner for ProductionRunner {
                 reporter,
                 strategy,
                 partition: self.partition_prefix.clone(),
-                mailbox_size: MAILBOX_SIZE,
+                mailbox_size: NZUsize!(MAILBOX_SIZE),
                 epoch: Epoch::zero(),
+                floor: simplex::Floor::Genesis(genesis_digest),
                 replay_buffer: simplex_config.replay_buffer_bytes,
                 write_buffer: simplex_config.write_buffer_bytes,
                 leader_timeout: Duration::from_secs(simplex_config.leader_timeout_secs.get()),
@@ -1272,7 +1279,7 @@ impl NodeRunner for ProductionRunner {
                 fetch_timeout: Duration::from_secs(simplex_config.fetch_timeout_secs.get()),
                 activity_timeout: ViewDelta::new(simplex_config.activity_timeout_views.get()),
                 skip_timeout: ViewDelta::new(simplex_config.skip_timeout_views.get()),
-                fetch_concurrent: simplex_config.fetch_concurrent.get(),
+                fetch_concurrent: NZUsize!(simplex_config.fetch_concurrent.get()),
                 page_cache,
                 forwarding: simplex::ForwardingPolicy::SilentLeader,
             },

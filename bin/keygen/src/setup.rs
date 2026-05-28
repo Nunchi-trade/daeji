@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use alloy_primitives::{Address, keccak256};
 use clap::Args;
-use commonware_codec::Encode;
+use commonware_codec::{Encode, ReadExt as _};
 use commonware_cryptography::{Signer, ed25519};
 use commonware_utils::{Faults, N3f1};
 use eyre::{Result, WrapErr};
@@ -113,13 +113,13 @@ pub(crate) fn run(args: SetupArgs) -> Result<()> {
             let bytes = fs::read(&key_path)?;
             let mut seed = [0u8; 32];
             seed.copy_from_slice(&bytes);
-            ed25519::PrivateKey::from(ed25519_consensus::SigningKey::from(seed))
+            ed25519::PrivateKey::read(&mut seed.as_slice()).expect("valid 32-byte seed")
         } else {
             tracing::info!(node = i, "Generating new identity key");
             let mut seed = [0u8; 32];
             rand::rngs::OsRng.fill_bytes(&mut seed);
             fs::write(&key_path, seed)?;
-            ed25519::PrivateKey::from(ed25519_consensus::SigningKey::from(seed))
+            ed25519::PrivateKey::read(&mut seed.as_slice()).expect("valid 32-byte seed")
         };
 
         let public_key = key.public_key();
@@ -149,13 +149,13 @@ pub(crate) fn run(args: SetupArgs) -> Result<()> {
             let bytes = fs::read(&key_path)?;
             let mut seed = [0u8; 32];
             seed.copy_from_slice(&bytes);
-            ed25519::PrivateKey::from(ed25519_consensus::SigningKey::from(seed))
+            ed25519::PrivateKey::read(&mut seed.as_slice()).expect("valid 32-byte seed")
         } else {
             tracing::info!(node = i, "Generating new secondary identity key");
             let mut seed = [0u8; 32];
             rand::rngs::OsRng.fill_bytes(&mut seed);
             fs::write(&key_path, seed)?;
-            ed25519::PrivateKey::from(ed25519_consensus::SigningKey::from(seed))
+            ed25519::PrivateKey::read(&mut seed.as_slice()).expect("valid 32-byte seed")
         };
 
         let public_key = key.public_key();

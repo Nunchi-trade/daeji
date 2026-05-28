@@ -120,7 +120,7 @@ impl LegacyNodeService {
             let validator_set: commonware_utils::ordered::Set<_> = validators
                 .try_into()
                 .map_err(|_| eyre::eyre!("failed to convert validator set"))?;
-            transport.oracle.track(0, validator_set).await;
+            transport.oracle.track(0, validator_set);
             tracing::info!("registered validators with oracle");
         }
 

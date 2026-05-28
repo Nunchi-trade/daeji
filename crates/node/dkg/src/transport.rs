@@ -199,7 +199,7 @@ impl DkgTransportConfig {
         E: Spawner + BufferPooler + Clock + CryptoRngCore + Network + Resolver + Metrics,
     {
         let (mut network, oracle) =
-            discovery::Network::new(context.with_label("dkg-network"), self.inner);
+            discovery::Network::new(context.child("dkg-network"), self.inner);
 
         let (sender, receiver) = network.register(CHANNEL_DKG, self.quota, self.backlog);
 
@@ -215,30 +215,28 @@ impl<E: Clock> DkgTransport<E> {
     /// Update the set of authorized participants.
     ///
     /// This should be called with the DKG ceremony participants before starting.
-    pub async fn set_participants(&mut self, participants: Set<ed25519::PublicKey>) {
-        self.oracle.track(0, participants).await;
+    pub fn set_participants(&mut self, participants: Set<ed25519::PublicKey>) {
+        self.oracle.track(0, participants);
     }
 
     /// Send a message to a specific peer.
-    pub async fn send_to(&mut self, to: &ed25519::PublicKey, msg: Bytes) -> Result<(), DkgError>
+    pub fn send_to(&mut self, to: &ed25519::PublicKey, msg: Bytes) -> Result<(), DkgError>
     where
         E: Spawner + Clock + CryptoRngCore + Network,
     {
         self.sender
             .send(Recipients::One(to.clone()), msg, false)
-            .await
             .map(|_| ())
             .map_err(|e| DkgError::Network(format!("Failed to send to peer: {}", e)))
     }
 
     /// Broadcast a message to all connected peers.
-    pub async fn broadcast(&mut self, msg: Bytes) -> Result<(), DkgError>
+    pub fn broadcast(&mut self, msg: Bytes) -> Result<(), DkgError>
     where
         E: Spawner + Clock + CryptoRngCore + Network,
     {
         self.sender
             .send(Recipients::All, msg, false)
-            .await
             .map(|_| ())
             .map_err(|e| DkgError::Network(format!("Failed to broadcast: {}", e)))
     }

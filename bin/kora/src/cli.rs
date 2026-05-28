@@ -278,22 +278,19 @@ impl Cli {
                 .build_local_transport(identity_key, context.clone())
                 .map_err(|e| eyre::eyre!("failed to build transport: {}", e))?;
 
-            transport
-                .oracle
-                .track(
-                    0,
-                    TrackedPeers::new(
-                        Set::from_iter_dedup(peers.participants),
-                        Set::from_iter_dedup(peers.secondary_participants),
-                    ),
-                )
-                .await;
+            transport.oracle.track(
+                0,
+                TrackedPeers::new(
+                    Set::from_iter_dedup(peers.participants),
+                    Set::from_iter_dedup(peers.secondary_participants),
+                ),
+            );
 
             tracing::info!("secondary peer joined network");
 
             // Spawn a metrics server so Prometheus can scrape this node.
             let metrics_context = context.clone();
-            context.with_label("metrics").shared(true).spawn(move |_| async move {
+            context.child("metrics").shared(true).spawn(move |_| async move {
                 let app = axum::Router::new().route(
                     "/metrics",
                     axum::routing::get(move || {
@@ -326,7 +323,7 @@ impl Cli {
             });
 
             // Spawn periodic health logging.
-            context.with_label("health").shared(true).spawn(move |ctx| async move {
+            context.child("health").shared(true).spawn(move |ctx| async move {
                 let interval = std::time::Duration::from_secs(30);
                 loop {
                     ctx.sleep(interval).await;

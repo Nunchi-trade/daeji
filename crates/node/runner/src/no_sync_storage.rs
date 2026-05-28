@@ -10,7 +10,7 @@ use std::{
 
 use commonware_runtime::{
     Blob, BufferPool, BufferPooler, Clock, Error, Handle, IoBufs, IoBufsMut, Metrics, Spawner,
-    Storage, iobuf, signal,
+    Storage, Supervisor, Tracing, iobuf, signal,
 };
 use prometheus_client::registry::Metric;
 use rand::{CryptoRng, RngCore};
@@ -120,48 +120,55 @@ where
     }
 }
 
+impl<C> Supervisor for NoSyncStorage<C>
+where
+    C: Supervisor,
+{
+    fn name(&self) -> commonware_runtime::Name {
+        self.inner.name()
+    }
+
+    fn child(&self, label: &'static str) -> Self {
+        Self {
+            inner: self.inner.child(label),
+            partitions: self.partitions.clone(),
+            checkpoint_interval: self.checkpoint_interval,
+        }
+    }
+
+    fn with_attribute(self, key: &'static str, value: impl std::fmt::Display) -> Self {
+        Self {
+            inner: self.inner.with_attribute(key, value),
+            partitions: self.partitions,
+            checkpoint_interval: self.checkpoint_interval,
+        }
+    }
+}
+
+impl<C> Tracing for NoSyncStorage<C>
+where
+    C: Tracing,
+{
+    fn with_span(self) -> Self {
+        Self {
+            inner: self.inner.with_span(),
+            partitions: self.partitions,
+            checkpoint_interval: self.checkpoint_interval,
+        }
+    }
+}
+
 impl<C> Metrics for NoSyncStorage<C>
 where
     C: Metrics,
 {
-    fn label(&self) -> String {
-        self.inner.label()
-    }
-
-    fn with_label(&self, label: &str) -> Self {
-        Self {
-            inner: self.inner.with_label(label),
-            partitions: self.partitions.clone(),
-            checkpoint_interval: self.checkpoint_interval,
-        }
-    }
-
-    fn with_attribute(&self, key: &str, value: impl std::fmt::Display) -> Self {
-        Self {
-            inner: self.inner.with_attribute(key, value),
-            partitions: self.partitions.clone(),
-            checkpoint_interval: self.checkpoint_interval,
-        }
-    }
-
-    fn with_scope(&self) -> Self {
-        Self {
-            inner: self.inner.with_scope(),
-            partitions: self.partitions.clone(),
-            checkpoint_interval: self.checkpoint_interval,
-        }
-    }
-
-    fn with_span(&self) -> Self {
-        Self {
-            inner: self.inner.with_span(),
-            partitions: self.partitions.clone(),
-            checkpoint_interval: self.checkpoint_interval,
-        }
-    }
-
-    fn register<N: Into<String>, H: Into<String>>(&self, name: N, help: H, metric: impl Metric) {
-        self.inner.register(name, help, metric);
+    fn register<N: Into<String>, H: Into<String>, M: Metric>(
+        &self,
+        name: N,
+        help: H,
+        metric: M,
+    ) -> commonware_runtime::telemetry::metrics::Registered<M> {
+        self.inner.register(name, help, metric)
     }
 
     fn encode(&self) -> String {

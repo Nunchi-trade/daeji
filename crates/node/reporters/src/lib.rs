@@ -19,6 +19,7 @@ use alloy_consensus::{
 };
 use alloy_eips::eip2718::Decodable2718 as _;
 use alloy_primitives::{B256, Bytes, U256, keccak256, logs_bloom};
+use commonware_actor::Feedback;
 use commonware_consensus::{
     Block as _, Reporter,
     marshal::Update,
@@ -161,6 +162,8 @@ async fn seed_report_inner<V: Variant>(
 pub struct SeedReporter<V> {
     /// Ledger service that keeps per-digest seeds and snapshots.
     state: LedgerService,
+    /// Tokio context used to spawn async seed persistence.
+    context: tokio::Context,
     /// Marker indicating the variant for the threshold scheme in use.
     _variant: PhantomData<V>,
 }
@@ -173,8 +176,8 @@ impl<V> fmt::Debug for SeedReporter<V> {
 
 impl<V> SeedReporter<V> {
     /// Create a new seed reporter for the provided ledger service.
-    pub const fn new(state: LedgerService) -> Self {
-        Self { state, _variant: PhantomData }
+    pub const fn new(state: LedgerService, context: tokio::Context) -> Self {
+        Self { state, context, _variant: PhantomData }
     }
 
     fn hash_seed(seed: impl commonware_codec::Encode) -> B256 {
@@ -188,11 +191,12 @@ where
 {
     type Activity = Activity<Scheme<PublicKey, V>, ConsensusDigest>;
 
-    fn report(&mut self, activity: Self::Activity) -> impl std::future::Future<Output = ()> + Send {
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
         let state = self.state.clone();
-        async move {
+        self.context.spawn(move |_| async move {
             seed_report_inner(state, activity).await;
-        }
+        });
+        Feedback::Ok
     }
 }
 
@@ -1309,7 +1313,7 @@ where
 {
     type Activity = Update<Block>;
 
-    fn report(&mut self, update: Self::Activity) -> impl std::future::Future<Output = ()> + Send {
+    fn report(&mut self, update: Self::Activity) -> Feedback {
         let state = self.state.clone();
         let context = self.context.clone();
         let executor = self.executor.clone();
@@ -1321,7 +1325,7 @@ where
         let checkpoint_interval = self.checkpoint_interval;
         let pending_acks = self.pending_acks.clone();
         let node_state = self.node_state.clone();
-        async move {
+        self.context.spawn(move |_| async move {
             handle_finalized_update(
                 state,
                 context,
@@ -1337,7 +1341,8 @@ where
                 update,
             )
             .await;
-        }
+        });
+        Feedback::Ok
     }
 }
 
@@ -1477,7 +1482,7 @@ where
 {
     type Activity = Activity<S, ConsensusDigest>;
 
-    fn report(&mut self, activity: Self::Activity) -> impl std::future::Future<Output = ()> + Send {
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
         match &activity {
             Activity::Notarization(n) => {
                 self.state.set_view(n.proposal.round.view().get());
@@ -1491,6 +1496,6 @@ where
             }
             _ => {}
         }
-        async {}
+        Feedback::Ok
     }
 }

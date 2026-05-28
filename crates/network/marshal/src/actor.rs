@@ -8,7 +8,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use commonware_consensus::{
     Block,
     marshal::{
-        Config,
+        Config, Start,
         core::{Actor, Mailbox},
         standard::Standard,
         store::{Blocks, Certificates},
@@ -36,6 +36,7 @@ use rand_core::CryptoRngCore;
 ///     provider,
 ///     buffer_pool,
 ///     block_codec_config,
+///     start,
 /// ).await;
 /// ```
 #[derive(Debug, Clone, Copy)]
@@ -43,7 +44,7 @@ pub struct ActorInitializer;
 
 impl ActorInitializer {
     /// The default mailbox size.
-    pub const DEFAULT_MAILBOX_SIZE: usize = 1024;
+    pub const DEFAULT_MAILBOX_SIZE: NonZeroUsize = NZUsize!(1024);
 
     /// The default view retention timeout.
     ///
@@ -97,10 +98,10 @@ impl ActorInitializer {
     ///
     /// # Returns
     ///
-    /// A tuple of `(Actor, Mailbox, Height)` where:
+    /// A tuple of `(Actor, Mailbox, Option<Height>)` where:
     /// - `Actor` is the initialized marshal actor
     /// - `Mailbox` is the message mailbox for sending consensus messages
-    /// - `Height` is the last processed height from storage (or zero if none)
+    /// - `Option<Height>` is the last processed height from storage (or `None` if none)
     #[allow(clippy::type_complexity)]
     pub async fn init<E, B, P, FC, FB, A>(
         context: E,
@@ -109,10 +110,11 @@ impl ActorInitializer {
         provider: P,
         page_cache: CacheRef,
         block_codec_config: B::Cfg,
+        start: Start<P::Scheme, B::Digest, B>,
     ) -> (
         Actor<E, Standard<B>, P, FC, FB, FixedEpocher, Sequential, A>,
         Mailbox<P::Scheme, Standard<B>>,
-        Height,
+        Option<Height>,
     )
     where
         E: BufferPooler + CryptoRngCore + Spawner + Metrics + Clock + Storage,
@@ -129,6 +131,7 @@ impl ActorInitializer {
             provider,
             page_cache,
             block_codec_config,
+            start,
             Sequential,
         )
         .await
@@ -143,11 +146,12 @@ impl ActorInitializer {
         provider: P,
         page_cache: CacheRef,
         block_codec_config: B::Cfg,
+        start: Start<P::Scheme, B::Digest, B>,
         strategy: S,
     ) -> (
         Actor<E, Standard<B>, P, FC, FB, FixedEpocher, S, A>,
         Mailbox<P::Scheme, Standard<B>>,
-        Height,
+        Option<Height>,
     )
     where
         E: BufferPooler + CryptoRngCore + Spawner + Metrics + Clock + Storage,
@@ -161,6 +165,7 @@ impl ActorInitializer {
         let config = Config {
             provider,
             epocher: FixedEpocher::new(Self::DEFAULT_BLOCKS_PER_EPOCH),
+            start,
             partition_prefix: Self::DEFAULT_PARTITION_PREFIX.to_string(),
             mailbox_size: Self::DEFAULT_MAILBOX_SIZE,
             view_retention_timeout: Self::DEFAULT_VIEW_RETENTION_TIMEOUT,
@@ -190,11 +195,12 @@ impl ActorInitializer {
         provider: P,
         page_cache: CacheRef,
         block_codec_config: B::Cfg,
+        start: Start<P::Scheme, B::Digest, B>,
         partition_prefix: impl Into<String>,
     ) -> (
         Actor<E, Standard<B>, P, FC, FB, FixedEpocher, Sequential, A>,
         Mailbox<P::Scheme, Standard<B>>,
-        Height,
+        Option<Height>,
     )
     where
         E: BufferPooler + CryptoRngCore + Spawner + Metrics + Clock + Storage,
@@ -207,6 +213,7 @@ impl ActorInitializer {
         let config = Config {
             provider,
             epocher: FixedEpocher::new(Self::DEFAULT_BLOCKS_PER_EPOCH),
+            start,
             partition_prefix: partition_prefix.into(),
             mailbox_size: Self::DEFAULT_MAILBOX_SIZE,
             view_retention_timeout: Self::DEFAULT_VIEW_RETENTION_TIMEOUT,
@@ -231,7 +238,7 @@ mod tests {
 
     #[test]
     fn test_defaults() {
-        assert_eq!(ActorInitializer::DEFAULT_MAILBOX_SIZE, 1024);
+        assert_eq!(ActorInitializer::DEFAULT_MAILBOX_SIZE.get(), 1024);
         assert_eq!(ActorInitializer::DEFAULT_VIEW_RETENTION_TIMEOUT, ViewDelta::new(256));
         assert_eq!(ActorInitializer::DEFAULT_MAX_REPAIR.get(), 128);
         assert_eq!(ActorInitializer::DEFAULT_PRUNABLE_ITEMS_PER_SECTION.get(), 256);
