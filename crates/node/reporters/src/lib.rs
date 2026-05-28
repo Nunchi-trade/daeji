@@ -167,6 +167,16 @@ pub struct SeedReporter<V> {
     _variant: PhantomData<V>,
 }
 
+impl<V> Clone for SeedReporter<V> {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+            context: self.context.child("seed-clone"),
+            _variant: PhantomData,
+        }
+    }
+}
+
 impl<V> fmt::Debug for SeedReporter<V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SeedReporter").finish_non_exhaustive()
@@ -535,7 +545,7 @@ where
     if persist_checkpoint {
         let persist_state = state.clone();
         let persist_handle = context
-            .clone()
+            .child("persist")
             .shared(true)
             .spawn(move |_| async move { persist_state.persist_snapshot(digest).await });
         let persist_result = persist_handle
@@ -1227,6 +1237,24 @@ pub struct FinalizedReporter<E, P> {
     pending_acks: Arc<Mutex<Vec<Exact>>>,
     /// Optional node state for tracking the latest finalized height.
     node_state: Option<NodeState>,
+}
+
+impl<E: Clone, P: Clone> Clone for FinalizedReporter<E, P> {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+            context: self.context.child("finalized-clone"),
+            executor: self.executor.clone(),
+            provider: self.provider.clone(),
+            block_index: self.block_index.clone(),
+            mempool_broadcast: self.mempool_broadcast.clone(),
+            gc_log: self.gc_log.clone(),
+            metrics: self.metrics.clone(),
+            checkpoint_interval: self.checkpoint_interval,
+            pending_acks: self.pending_acks.clone(),
+            node_state: self.node_state.clone(),
+        }
+    }
 }
 
 impl<E, P> fmt::Debug for FinalizedReporter<E, P> {
