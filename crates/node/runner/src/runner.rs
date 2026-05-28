@@ -920,8 +920,9 @@ impl NodeRunner for ProductionRunner {
                             continue;
                         }
                         let msg = bytes::Bytes::copy_from_slice(&raw);
-                        if let Err(e) = sender.send(Recipients::All, msg, false) {
-                            warn!(error = %e, "tx gossip: failed to broadcast transaction");
+                        let recipients = sender.send(Recipients::All, msg, false);
+                        if recipients.is_empty() {
+                            warn!("tx gossip: failed to broadcast transaction (no recipients)");
                             out_metrics.gossip_tx_broadcast_failed.inc();
                         } else {
                             trace!(?hash, "tx gossip: broadcast transaction to peers");

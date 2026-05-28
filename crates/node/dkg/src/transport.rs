@@ -224,10 +224,12 @@ impl<E: Clock> DkgTransport<E> {
     where
         E: Spawner + Clock + CryptoRngCore + Network,
     {
-        self.sender
-            .send(Recipients::One(to.clone()), msg, false)
-            .map(|_| ())
-            .map_err(|e| DkgError::Network(format!("Failed to send to peer: {}", e)))
+        let recipients = self.sender.send(Recipients::One(to.clone()), msg, false);
+        if recipients.is_empty() {
+            Err(DkgError::Network("Failed to send to peer: no recipients accepted".into()))
+        } else {
+            Ok(())
+        }
     }
 
     /// Broadcast a message to all connected peers.
@@ -235,10 +237,12 @@ impl<E: Clock> DkgTransport<E> {
     where
         E: Spawner + Clock + CryptoRngCore + Network,
     {
-        self.sender
-            .send(Recipients::All, msg, false)
-            .map(|_| ())
-            .map_err(|e| DkgError::Network(format!("Failed to broadcast: {}", e)))
+        let recipients = self.sender.send(Recipients::All, msg, false);
+        if recipients.is_empty() {
+            Err(DkgError::Network("Failed to broadcast: no recipients accepted".into()))
+        } else {
+            Ok(())
+        }
     }
 
     /// Receive the next message.
