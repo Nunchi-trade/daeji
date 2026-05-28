@@ -59,7 +59,7 @@ impl kora_metrics::MetricsRegister for RuntimeMetrics<'_> {
         help: H,
         metric: impl prometheus_client::registry::Metric,
     ) {
-        commonware_runtime::Metrics::register(self.0, name, help, metric);
+        let _ = commonware_runtime::Metrics::register(self.0, name, help, metric);
     }
 }
 
