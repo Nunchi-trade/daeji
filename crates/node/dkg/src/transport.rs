@@ -199,7 +199,7 @@ impl DkgTransportConfig {
         E: Spawner + BufferPooler + Clock + CryptoRngCore + Network + Resolver + Metrics,
     {
         let (mut network, oracle) =
-            discovery::Network::new(context.child("dkg-network"), self.inner);
+            discovery::Network::new(context.child("dkg_network"), self.inner);
 
         let (sender, receiver) = network.register(CHANNEL_DKG, self.quota, self.backlog);
 

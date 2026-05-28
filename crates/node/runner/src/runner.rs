@@ -572,7 +572,7 @@ fn spawn_ledger_observers<S: Spawner>(service: LedgerService, spawner: S, data_d
 }
 
 fn spawn_txpool_cleanup(pool: TransactionPool, context: cw_tokio::Context) {
-    context.child("txpool-cleanup").shared(false).spawn(move |ctx| async move {
+    context.child("txpool_cleanup").shared(false).spawn(move |ctx| async move {
         loop {
             ctx.sleep(TXPOOL_CLEANUP_INTERVAL).await;
             let removed = pool.cleanup();
@@ -616,7 +616,7 @@ fn mark_seen(seen: &SeenSet, hash: B256) -> bool {
 /// operators (and log-based alerting) can detect connectivity issues even
 /// without Prometheus.
 fn spawn_partition_monitor(node_state: kora_rpc::NodeState, context: cw_tokio::Context) {
-    context.child("partition-monitor").shared(false).spawn(move |ctx| async move {
+    context.child("partition_monitor").shared(false).spawn(move |ctx| async move {
         loop {
             ctx.sleep(PARTITION_CHECK_INTERVAL).await;
             let status = node_state.status();
@@ -888,9 +888,9 @@ impl NodeRunner for ProductionRunner {
         let genesis = ledger.genesis_block();
         let genesis_digest = genesis.commitment();
         seed_genesis_block_index(&block_index, &genesis, gas_limit);
-        spawn_ledger_observers(ledger.clone(), context.child("ledger-observers"), config.data_dir.clone());
+        spawn_ledger_observers(ledger.clone(), context.child("ledger_observers"), config.data_dir.clone());
         let txpool = ledger.txpool().await;
-        spawn_txpool_cleanup(txpool.clone(), context.child("txpool-cleanup"));
+        spawn_txpool_cleanup(txpool.clone(), context.child("txpool_cleanup"));
 
         // Initialize application-level Prometheus metrics and register them
         // with the commonware runtime so they appear on the /metrics endpoint.
@@ -912,7 +912,7 @@ impl NodeRunner for ProductionRunner {
                 let seen = seen.clone();
                 let mut sender = tx_gossip_sender;
                 let out_metrics = app_metrics.clone();
-                context.child("tx-gossip-out").shared(true).spawn(move |_| async move {
+                context.child("tx_gossip_out").shared(true).spawn(move |_| async move {
                     let mut rx = gossip_outbound_rx;
                     while let Some(raw) = rx.recv().await {
                         let hash = keccak256(&raw);
@@ -941,7 +941,7 @@ impl NodeRunner for ProductionRunner {
                 let gossip_pool = txpool.clone();
                 let mut receiver = tx_gossip_receiver;
                 let in_metrics = app_metrics.clone();
-                context.child("tx-gossip-in").shared(true).spawn(move |_| async move {
+                context.child("tx_gossip_in").shared(true).spawn(move |_| async move {
                     loop {
                         let (peer, raw) = match receiver.recv().await {
                             Ok(msg) => msg,
@@ -1107,11 +1107,11 @@ impl NodeRunner for ProductionRunner {
             drop(rpc.start());
             info!(addr = %addr, "RPC server started with live state provider");
 
-            spawn_partition_monitor(node_state.clone(), context.child("partition-monitor"));
+            spawn_partition_monitor(node_state.clone(), context.child("partition_monitor"));
         }
 
         if let Some(metrics_addr) = self.metrics_addr {
-            let metrics_context = Arc::new(context.child("metrics-encode"));
+            let metrics_context = Arc::new(context.child("metrics_encode"));
             context.child("metrics").shared(true).spawn(move |_| async move {
                 let app = axum::Router::new().route(
                     "/metrics",
@@ -1153,7 +1153,7 @@ impl NodeRunner for ProductionRunner {
         let finalized_executor = RevmExecutor::new(self.chain_id);
         let mut finalized_reporter = FinalizedReporter::new(
             ledger.clone(),
-            context.child("finalized-reporter"),
+            context.child("finalized_reporter"),
             finalized_executor,
             context_provider,
         )
@@ -1241,7 +1241,7 @@ impl NodeRunner for ProductionRunner {
             epocher,
         );
 
-        let seed_reporter = SeedReporter::<MinSig>::new(ledger.clone(), context.child("seed-reporter"));
+        let seed_reporter = SeedReporter::<MinSig>::new(ledger.clone(), context.child("seed_reporter"));
         let node_state_reporter = self
             .rpc_config
             .as_ref()

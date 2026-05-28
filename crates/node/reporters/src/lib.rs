@@ -171,7 +171,7 @@ impl<V> Clone for SeedReporter<V> {
     fn clone(&self) -> Self {
         Self {
             state: self.state.clone(),
-            context: self.context.child("seed-clone"),
+            context: self.context.child("seed_clone"),
             _variant: PhantomData,
         }
     }
@@ -1243,7 +1243,7 @@ impl<E: Clone, P: Clone> Clone for FinalizedReporter<E, P> {
     fn clone(&self) -> Self {
         Self {
             state: self.state.clone(),
-            context: self.context.child("finalized-clone"),
+            context: self.context.child("finalized_clone"),
             executor: self.executor.clone(),
             provider: self.provider.clone(),
             block_index: self.block_index.clone(),
@@ -1351,7 +1351,7 @@ where
         let checkpoint_interval = self.checkpoint_interval;
         let pending_acks = self.pending_acks.clone();
         let node_state = self.node_state.clone();
-        self.context.child("finalize-task").spawn(move |_| async move {
+        self.context.child("finalize_task").spawn(move |_| async move {
             handle_finalized_update(
                 state,
                 context,

@@ -321,7 +321,7 @@ async fn start_single_node(
     .context("init qmdb")?;
 
     let ledger = LedgerService::new(state.clone());
-    spawn_ledger_observers(ledger.clone(), context.child("ledger-observers"), index, finalized_tx);
+    spawn_ledger_observers(ledger.clone(), context.child("ledger_observers"), index, finalized_tx);
     let test_node = TestNode::new(index, ledger.clone());
 
     // Create application
@@ -334,7 +334,7 @@ async fn start_single_node(
     let executor = RevmExecutor::new(chain_id);
     let context_provider = TestContextProvider { gas_limit };
     let finalized_reporter =
-        FinalizedReporter::new(ledger.clone(), context.child("finalized-reporter"), executor, context_provider);
+        FinalizedReporter::new(ledger.clone(), context.child("finalized_reporter"), executor, context_provider);
 
     // Start marshal
     let marshal_mailbox = start_marshal(
@@ -364,7 +364,7 @@ async fn start_single_node(
     );
 
     // Setup reporters
-    let seed_reporter = SeedReporter::<MinSig>::new(ledger.clone(), context.child("seed-reporter"));
+    let seed_reporter = SeedReporter::<MinSig>::new(ledger.clone(), context.child("seed_reporter"));
     let reporter = Reporters::from((seed_reporter, marshal_mailbox.clone()));
 
     // Submit bootstrap transactions
