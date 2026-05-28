@@ -73,7 +73,13 @@ impl ActorInitializer {
     pub const DEFAULT_VALUE_WRITE_BUFFER: NonZeroUsize = NZUsize!(1024 * 1024);
 
     /// The default blocks per epoch.
-    pub const DEFAULT_BLOCKS_PER_EPOCH: NonZeroU64 = NZU64!(20);
+    ///
+    /// Must match the epocher used by the simplex engine. Using `u64::MAX`
+    /// keeps all blocks in epoch 0, which matches the runner's `EPOCH_LENGTH`.
+    /// A mismatch causes the marshal's resolver validation to reject finalized
+    /// blocks due to epoch mismatch (`finalization.epoch() != bounds.epoch()`),
+    /// breaking node restart recovery (issue #241).
+    pub const DEFAULT_BLOCKS_PER_EPOCH: NonZeroU64 = NZU64!(u64::MAX);
 
     /// The default partition prefix.
     pub const DEFAULT_PARTITION_PREFIX: &'static str = "marshal";
@@ -245,7 +251,7 @@ mod tests {
         assert_eq!(ActorInitializer::DEFAULT_REPLAY_BUFFER.get(), 8 * 1024 * 1024);
         assert_eq!(ActorInitializer::DEFAULT_KEY_WRITE_BUFFER.get(), 1024 * 1024);
         assert_eq!(ActorInitializer::DEFAULT_VALUE_WRITE_BUFFER.get(), 1024 * 1024);
-        assert_eq!(ActorInitializer::DEFAULT_BLOCKS_PER_EPOCH.get(), 20);
+        assert_eq!(ActorInitializer::DEFAULT_BLOCKS_PER_EPOCH.get(), u64::MAX);
         assert_eq!(ActorInitializer::DEFAULT_PARTITION_PREFIX, "marshal");
     }
 }
