@@ -375,6 +375,29 @@ where
         }
     }
 
+    fn write_at_sync(
+        &self,
+        offset: u64,
+        bufs: impl Into<IoBufs> + Send,
+    ) -> impl Future<Output = Result<(), Error>> + Send {
+        async move {
+            match self {
+                Self::Memory { content, .. } => {
+                    let buf = bufs.into().coalesce();
+                    let offset: usize = offset.try_into().map_err(|_| Error::OffsetOverflow)?;
+                    let end = offset.checked_add(buf.len()).ok_or(Error::OffsetOverflow)?;
+                    let mut content = content.write().expect("scratch blob lock poisoned");
+                    if end > content.len() {
+                        content.resize(end, 0);
+                    }
+                    content[offset..end].copy_from_slice(buf.as_ref());
+                    Ok(())
+                }
+                Self::Passthrough(blob) => blob.write_at_sync(offset, bufs).await,
+            }
+        }
+    }
+
     fn resize(&self, len: u64) -> impl Future<Output = Result<(), Error>> + Send {
         async move {
             match self {

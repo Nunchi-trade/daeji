@@ -289,7 +289,7 @@ impl Cli {
             tracing::info!("secondary peer joined network");
 
             // Spawn a metrics server so Prometheus can scrape this node.
-            let metrics_context = context.child("metrics-encode");
+            let metrics_context = std::sync::Arc::new(context.child("metrics-encode"));
             context.child("metrics").shared(true).spawn(move |_| async move {
                 let app = axum::Router::new().route(
                     "/metrics",

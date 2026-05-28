@@ -1111,7 +1111,7 @@ impl NodeRunner for ProductionRunner {
         }
 
         if let Some(metrics_addr) = self.metrics_addr {
-            let metrics_context = context.child("metrics-encode");
+            let metrics_context = Arc::new(context.child("metrics-encode"));
             context.child("metrics").shared(true).spawn(move |_| async move {
                 let app = axum::Router::new().route(
                     "/metrics",
