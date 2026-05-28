@@ -24,7 +24,7 @@ use commonware_consensus::{
 use commonware_cryptography::{Committable as _, bls12381::primitives::variant::MinSig, ed25519};
 use commonware_p2p::{Blocker, Manager, Receiver as _, Recipients, Sender as _, TrackedPeers};
 use commonware_runtime::{
-    Clock as _, Handle as RuntimeHandle, Metrics as _, Spawner, ThreadPooler as _,
+    Clock as _, Handle as RuntimeHandle, Metrics as _, Spawner, Supervisor as _, ThreadPooler as _,
     buffer::paged::CacheRef, tokio as cw_tokio,
 };
 use commonware_storage::archive::{Archive, Identifier as ArchiveId};
@@ -779,7 +779,7 @@ impl ProductionRunner {
 
             let transport = config
                 .network
-                .build_local_transport(validator_key, context.clone())
+                .build_local_transport(validator_key, context.child("transport"))
                 .map_err(|e| anyhow::anyhow!("failed to build transport: {}", e))?;
 
             let ctx =
@@ -888,9 +888,9 @@ impl NodeRunner for ProductionRunner {
         let genesis = ledger.genesis_block();
         let genesis_digest = genesis.commitment();
         seed_genesis_block_index(&block_index, &genesis, gas_limit);
-        spawn_ledger_observers(ledger.clone(), context.clone(), config.data_dir.clone());
+        spawn_ledger_observers(ledger.clone(), context.child("ledger-observers"), config.data_dir.clone());
         let txpool = ledger.txpool().await;
-        spawn_txpool_cleanup(txpool.clone(), context.clone());
+        spawn_txpool_cleanup(txpool.clone(), context.child("txpool-cleanup"));
 
         // Initialize application-level Prometheus metrics and register them
         // with the commonware runtime so they appear on the /metrics endpoint.
@@ -1107,11 +1107,11 @@ impl NodeRunner for ProductionRunner {
             drop(rpc.start());
             info!(addr = %addr, "RPC server started with live state provider");
 
-            spawn_partition_monitor(node_state.clone(), context.clone());
+            spawn_partition_monitor(node_state.clone(), context.child("partition-monitor"));
         }
 
         if let Some(metrics_addr) = self.metrics_addr {
-            let metrics_context = context.clone();
+            let metrics_context = context.child("metrics-encode");
             context.child("metrics").shared(true).spawn(move |_| async move {
                 let app = axum::Router::new().route(
                     "/metrics",
@@ -1153,7 +1153,7 @@ impl NodeRunner for ProductionRunner {
         let finalized_executor = RevmExecutor::new(self.chain_id);
         let mut finalized_reporter = FinalizedReporter::new(
             ledger.clone(),
-            context.clone(),
+            context.child("finalized-reporter"),
             finalized_executor,
             context_provider,
         )
@@ -1202,12 +1202,12 @@ impl NodeRunner for ProductionRunner {
         );
         let broadcast_handle = broadcast_engine.start(transport.marshal.blocks);
 
-        let scratch_context = NoSyncStorage::new(context.clone(), checkpoint_interval);
+        let scratch_context = NoSyncStorage::new(context.child("scratch"), checkpoint_interval);
         let marshal_start =
             commonware_consensus::marshal::Start::Genesis(genesis.clone());
         let (actor, marshal_mailbox, _last_processed_height) =
             kora_marshal::ActorInitializer::init_with_strategy::<_, Block, _, _, _, Exact, _>(
-                scratch_context.clone(),
+                scratch_context.child("marshal"),
                 finalizations_by_height,
                 finalized_blocks,
                 scheme_provider,
@@ -1241,7 +1241,7 @@ impl NodeRunner for ProductionRunner {
             epocher,
         );
 
-        let seed_reporter = SeedReporter::<MinSig>::new(ledger.clone(), context.clone());
+        let seed_reporter = SeedReporter::<MinSig>::new(ledger.clone(), context.child("seed-reporter"));
         let node_state_reporter = self
             .rpc_config
             .as_ref()

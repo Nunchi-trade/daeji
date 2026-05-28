@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use commonware_runtime::tokio;
+use commonware_runtime::{Supervisor as _, tokio};
 use kora_config::NodeConfig;
 
 /// Context provided to a node runner.
@@ -38,9 +38,9 @@ impl<T> NodeRunContext<T> {
         &self.context
     }
 
-    /// Get a clone of the runtime context.
-    pub fn context_owned(&self) -> tokio::Context {
-        self.context.clone()
+    /// Get a child of the runtime context with the provided label.
+    pub fn context_child(&self, label: &'static str) -> tokio::Context {
+        self.context.child(label)
     }
 
     /// Get the node configuration.

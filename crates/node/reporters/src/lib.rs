@@ -29,7 +29,7 @@ use commonware_consensus::{
     },
 };
 use commonware_cryptography::{Committable as _, bls12381::primitives::variant::Variant};
-use commonware_runtime::{Spawner as _, tokio};
+use commonware_runtime::{Spawner as _, Supervisor as _, tokio};
 use commonware_utils::acknowledgement::{Acknowledgement as _, Exact};
 pub use gc_log::SelfdestructGcLog;
 use kora_consensus::BlockExecution;
@@ -671,7 +671,7 @@ mod finalize_error_tests {
         runner.start(|context| async move {
             // -- set up ledger with an empty genesis --
             let ledger = LedgerView::init(
-                context.clone(),
+                context.child("ledger"),
                 next_partition("reporters-finalize-err"),
                 Vec::new(),
             )
@@ -788,7 +788,7 @@ mod finalize_success_tests {
         runner.start(|context| async move {
             // -- set up ledger with an empty genesis --
             let ledger = LedgerView::init(
-                context.clone(),
+                context.child("ledger"),
                 next_partition("reporters-finalize-ok"),
                 Vec::new(),
             )
@@ -858,7 +858,7 @@ mod finalize_success_tests {
         let runner = tokio::Runner::default();
         runner.start(|context| async move {
             let ledger = LedgerView::init(
-                context.clone(),
+                context.child("ledger"),
                 next_partition("reporters-finalize-index"),
                 Vec::new(),
             )
@@ -909,7 +909,7 @@ mod finalize_success_tests {
         let runner = tokio::Runner::default();
         runner.start(|context| async move {
             let ledger = LedgerView::init(
-                context.clone(),
+                context.child("ledger"),
                 next_partition("reporters-finalize-checkpoint"),
                 Vec::new(),
             )
@@ -929,7 +929,7 @@ mod finalize_success_tests {
 
             handle_finalized_update(
                 service.clone(),
-                context.clone(),
+                context.child("finalized"),
                 EmptySuccessExecutor,
                 StubProvider,
                 None,
@@ -1315,7 +1315,7 @@ where
 
     fn report(&mut self, update: Self::Activity) -> Feedback {
         let state = self.state.clone();
-        let context = self.context.clone();
+        let context = self.context.child("finalized");
         let executor = self.executor.clone();
         let provider = self.provider.clone();
         let block_index = self.block_index.clone();

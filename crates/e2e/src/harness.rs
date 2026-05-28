@@ -17,7 +17,7 @@ use commonware_consensus::{
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519};
 use commonware_p2p::{Manager as _, simulated};
 use commonware_parallel::Sequential;
-use commonware_runtime::{Clock, Metrics, Runner as _, Spawner, buffer::paged::CacheRef, tokio};
+use commonware_runtime::{Clock, Metrics, Runner as _, Spawner, Supervisor as _, buffer::paged::CacheRef, tokio};
 use commonware_utils::{NZU64, NZUsize, TryCollect as _, ordered::Set};
 use futures::{StreamExt as _, channel::mpsc};
 use kora_config::INITIAL_BASE_FEE;
@@ -321,7 +321,7 @@ async fn start_single_node(
     .context("init qmdb")?;
 
     let ledger = LedgerService::new(state.clone());
-    spawn_ledger_observers(ledger.clone(), context.clone(), index, finalized_tx);
+    spawn_ledger_observers(ledger.clone(), context.child("ledger-observers"), index, finalized_tx);
     let test_node = TestNode::new(index, ledger.clone());
 
     // Create application
@@ -334,7 +334,7 @@ async fn start_single_node(
     let executor = RevmExecutor::new(chain_id);
     let context_provider = TestContextProvider { gas_limit };
     let finalized_reporter =
-        FinalizedReporter::new(ledger.clone(), context.clone(), executor, context_provider);
+        FinalizedReporter::new(ledger.clone(), context.child("finalized-reporter"), executor, context_provider);
 
     // Start marshal
     let marshal_mailbox = start_marshal(
@@ -364,7 +364,7 @@ async fn start_single_node(
     );
 
     // Setup reporters
-    let seed_reporter = SeedReporter::<MinSig>::new(ledger.clone(), context.clone());
+    let seed_reporter = SeedReporter::<MinSig>::new(ledger.clone(), context.child("seed-reporter"));
     let reporter = Reporters::from((seed_reporter, marshal_mailbox.clone()));
 
     // Submit bootstrap transactions

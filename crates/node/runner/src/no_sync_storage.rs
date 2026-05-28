@@ -23,7 +23,6 @@ type PartitionMap = BTreeMap<String, BTreeMap<Vec<u8>, Arc<RwLock<Vec<u8>>>>>;
 /// wrapper is only used for state that can be reconstructed from finalized
 /// blocks, so it avoids Docker-volume write latency without putting durable
 /// state on tmpfs.
-#[derive(Clone)]
 pub(crate) struct NoSyncStorage<C> {
     inner: C,
     partitions: Arc<Mutex<PartitionMap>>,

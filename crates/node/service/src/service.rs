@@ -5,7 +5,7 @@ use std::sync::Arc;
 use commonware_cryptography::Signer;
 use commonware_p2p::Manager;
 use commonware_runtime::{
-    Runner,
+    Runner, Supervisor as _,
     tokio::{self, Context},
 };
 use futures::future::try_join_all;
@@ -111,7 +111,7 @@ impl LegacyNodeService {
         let mut transport = self
             .config
             .network
-            .build_local_transport(validator_key, context.clone())
+            .build_local_transport(validator_key, context.child("transport"))
             .map_err(|e| eyre::eyre!("failed to build transport: {}", e))?;
         tracing::info!("network transport started");
 

@@ -231,7 +231,7 @@ impl Cli {
 
     fn run_secondary(&self, args: &SecondaryArgs) -> eyre::Result<()> {
         use commonware_p2p::{Manager, TrackedPeers};
-        use commonware_runtime::{Clock as _, Metrics as _, Runner, Spawner};
+        use commonware_runtime::{Clock as _, Metrics as _, Runner, Spawner, Supervisor as _};
         use commonware_utils::ordered::Set;
         use kora_transport::NetworkConfigExt;
 
@@ -275,7 +275,7 @@ impl Cli {
         executor.start(|context| async move {
             let mut transport = config
                 .network
-                .build_local_transport(identity_key, context.clone())
+                .build_local_transport(identity_key, context.child("transport"))
                 .map_err(|e| eyre::eyre!("failed to build transport: {}", e))?;
 
             transport.oracle.track(
@@ -289,7 +289,7 @@ impl Cli {
             tracing::info!("secondary peer joined network");
 
             // Spawn a metrics server so Prometheus can scrape this node.
-            let metrics_context = context.clone();
+            let metrics_context = context.child("metrics-encode");
             context.child("metrics").shared(true).spawn(move |_| async move {
                 let app = axum::Router::new().route(
                     "/metrics",
