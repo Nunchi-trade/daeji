@@ -1157,6 +1157,7 @@ mod tests {
             service: AlwaysOkRpcService,
             per_conn_limiter: None,
             global_limiter: global,
+            rpc_requests_total: None,
         };
 
         let first = service.call(rpc_request_with_conn(1, 1)).await;
