@@ -6,7 +6,7 @@ use commonware_cryptography::PublicKey;
 use commonware_p2p::authenticated::discovery;
 use commonware_runtime::{Clock, Handle};
 
-use crate::channels::{MarshalChannels, SimplexChannels, TxGossipChannel};
+use crate::channels::{MarshalChannels, PeerProbeChannel, SimplexChannels, TxGossipChannel};
 
 /// Complete network transport bundle.
 ///
@@ -41,6 +41,9 @@ pub struct NetworkTransport<P: PublicKey, E: Clock> {
 
     /// Channel for transaction gossip.
     pub tx_gossip: TxGossipChannel<P, E>,
+
+    /// Channel for startup peer connectivity probes.
+    pub peer_probe: PeerProbeChannel<P, E>,
 }
 
 impl<P: PublicKey, E: Clock> fmt::Debug for NetworkTransport<P, E> {

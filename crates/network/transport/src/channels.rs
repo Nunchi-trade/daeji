@@ -24,6 +24,9 @@ pub const CHANNEL_BACKFILL: u64 = 4;
 /// Channel ID for transaction gossip messages.
 pub const CHANNEL_TX_GOSSIP: u64 = 5;
 
+/// Channel ID for validator startup peer probes.
+pub const CHANNEL_PEER_PROBE: u64 = 6;
+
 /// Type alias for channel sender.
 pub type Sender<P, E> = discovery::Sender<P, E>;
 
@@ -79,5 +82,17 @@ pub struct TxGossipChannel<P: PublicKey, E: Clock> {
 impl<P: PublicKey, E: Clock> fmt::Debug for TxGossipChannel<P, E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TxGossipChannel").finish_non_exhaustive()
+    }
+}
+
+/// Channel for startup peer connectivity probes.
+pub struct PeerProbeChannel<P: PublicKey, E: Clock> {
+    /// Sender/receiver pair for startup peer probes.
+    pub channel: (Sender<P, E>, Receiver<P>),
+}
+
+impl<P: PublicKey, E: Clock> fmt::Debug for PeerProbeChannel<P, E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PeerProbeChannel").finish_non_exhaustive()
     }
 }

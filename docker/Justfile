@@ -10,8 +10,8 @@ build-fresh:
     docker buildx bake --allow=fs.read=.. -f docker-bake.hcl kora-local --no-cache
 
 # Start devnet with interactive DKG (production-like)
-devnet:
-    ./scripts/devnet-run.sh --interactive-dkg
+devnet nodes="4":
+    ./scripts/devnet-run.sh --interactive-dkg --nodes {{nodes}}
 
 # Start devnet with trusted dealer DKG (fast, insecure, for local dev)
 trusted-devnet:
@@ -27,10 +27,12 @@ health:
     ./scripts/devnet-health.sh
 
 down:
-    docker compose -f compose/devnet.yaml --profile observability --profile interactive-dkg down
+    docker compose -p kora-devnet -f compose/devnet.yaml --profile observability --profile interactive-dkg down --remove-orphans
+    @if [ -f compose/devnet.generated.yaml ]; then docker compose -p kora-devnet -f compose/devnet.generated.yaml --profile observability --profile interactive-dkg down --remove-orphans; fi
 
 reset:
-    docker compose -f compose/devnet.yaml --profile observability --profile interactive-dkg down -v
+    docker compose -p kora-devnet -f compose/devnet.yaml --profile observability --profile interactive-dkg down -v --remove-orphans
+    @if [ -f compose/devnet.generated.yaml ]; then docker compose -p kora-devnet -f compose/devnet.generated.yaml --profile observability --profile interactive-dkg down -v --remove-orphans; fi
     @echo "Devnet reset. Next 'just devnet' runs fresh DKG."
 
 restart: down devnet

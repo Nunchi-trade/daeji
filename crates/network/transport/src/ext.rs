@@ -98,10 +98,7 @@ fn parse_network_config(
         .map_err(|_| TransportError::InvalidListenAddr(config.listen_addr.clone()))?;
 
     let dialable = if let Some(ref dialable_addr) = config.dialable_addr {
-        let addr: SocketAddr = dialable_addr
-            .parse()
-            .map_err(|_| TransportError::InvalidListenAddr(dialable_addr.clone()))?;
-        Ingress::Socket(addr)
+        TransportParsing::parse_ingress(dialable_addr)?
     } else {
         Ingress::Socket(listen_addr)
     };
@@ -109,4 +106,21 @@ fn parse_network_config(
     let bootstrappers = TransportParsing::parse_bootstrappers(&config.bootstrap_peers)?;
 
     Ok((listen_addr, dialable, bootstrappers))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_network_config_accepts_dns_dialable_addr() {
+        let config = NetworkConfig {
+            dialable_addr: Some("node14:30303".to_string()),
+            ..NetworkConfig::default()
+        };
+
+        let (_, dialable, _) = parse_network_config(&config).expect("parse config");
+
+        assert!(matches!(dialable, Ingress::Dns { port: 30303, .. }));
+    }
 }

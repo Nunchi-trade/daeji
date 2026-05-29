@@ -42,8 +42,8 @@ clean:
     cargo clean
 
 # Start the devnet with interactive DKG (production-like)
-devnet:
-    cd docker && just devnet
+devnet nodes="4":
+    cd docker && just devnet {{nodes}}
 
 # Start the devnet with trusted dealer DKG (fast, insecure, for local dev)
 trusted-devnet:

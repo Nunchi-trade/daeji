@@ -4,6 +4,7 @@ target/
 *.swp
 *.swo
 .env
+docker/compose/devnet.generated.yaml
 
 # Ansible inventory contains real server IPs — use hosts.yml.example as template
 ansible/inventory/hosts.yml
