@@ -9,7 +9,7 @@ mod actor;
 pub use actor::ActorInitializer;
 
 mod archive;
-pub use archive::{ArchiveInitializer, CheckpointedArchive, Prunable};
+pub use archive::{ArchiveInitializer, CheckpointedArchive, DEFAULT_ARCHIVE_RETENTION, Prunable};
 
 mod broadcast;
 pub use broadcast::BroadcastInitializer;
