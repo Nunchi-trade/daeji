@@ -51,6 +51,11 @@ impl BlockNumberOrTag {
 pub(crate) const EMPTY_UNCLE_HASH: B256 =
     alloy_primitives::b256!("1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347");
 
+/// Keccak-256 hash of the RLP encoding of an empty trie (`keccak256(0x80)`),
+/// used as the `withdrawalsRoot` for blocks with no beacon-chain withdrawals.
+pub(crate) const EMPTY_WITHDRAWALS_ROOT: B256 =
+    alloy_primitives::b256!("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421");
+
 /// Rich block representation for JSON-RPC responses.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -99,6 +104,10 @@ pub struct RpcBlock {
     pub size: U64,
     /// Transactions (hashes or full objects).
     pub transactions: BlockTransactions,
+    /// Withdrawals list (always empty -- Kora has no beacon chain).
+    pub withdrawals: Vec<()>,
+    /// Withdrawals trie root (empty trie root when no withdrawals).
+    pub withdrawals_root: B256,
 }
 
 /// Transactions in a block response.
@@ -272,28 +281,6 @@ impl CallRequest {
     pub fn input_data(&self) -> Bytes {
         self.input.clone().or_else(|| self.data.clone()).unwrap_or_default()
     }
-}
-
-/// Sync status for eth_syncing.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum SyncStatus {
-    /// Not syncing.
-    NotSyncing(bool),
-    /// Syncing status.
-    Syncing(SyncInfo),
-}
-
-/// Syncing information.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SyncInfo {
-    /// Starting block.
-    pub starting_block: U64,
-    /// Current block.
-    pub current_block: U64,
-    /// Highest block.
-    pub highest_block: U64,
 }
 
 /// Log filter for `eth_getLogs` queries.
@@ -485,27 +472,6 @@ mod tests {
         assert_eq!(log.address, Address::ZERO);
         assert!(log.topics.is_empty());
         assert!(!log.removed);
-    }
-
-    #[test]
-    fn sync_status_not_syncing() {
-        let status = SyncStatus::NotSyncing(false);
-        let json = serde_json::to_string(&status).unwrap();
-        assert_eq!(json, "false");
-    }
-
-    #[test]
-    fn sync_status_syncing() {
-        let info = SyncInfo {
-            starting_block: U64::from(0),
-            current_block: U64::from(100),
-            highest_block: U64::from(200),
-        };
-        let status = SyncStatus::Syncing(info);
-        let json = serde_json::to_string(&status).unwrap();
-        assert!(json.contains("startingBlock"));
-        assert!(json.contains("currentBlock"));
-        assert!(json.contains("highestBlock"));
     }
 
     #[test]
