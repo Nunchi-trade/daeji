@@ -15,6 +15,7 @@ use revm::{
     },
     context_interface::{
         ContextSetters,
+        block::BlobExcessGasAndPrice,
         transaction::{AccessList, AccessListItem},
     },
     database::State,
@@ -54,11 +55,6 @@ impl RevmExecutor {
     /// Get the chain ID.
     pub const fn chain_id(&self) -> u64 {
         self.config.chain_id
-    }
-
-    /// Get the execution configuration.
-    pub const fn config(&self) -> &ExecutionConfig {
-        &self.config
     }
 
     /// Get the spec ID.
@@ -222,6 +218,9 @@ impl RevmExecutor {
         let ctx = ctx
             .modify_cfg_chained(|cfg| {
                 cfg.chain_id = self.config.chain_id;
+                cfg.disable_nonce_check = true;
+                cfg.disable_balance_check = true;
+                cfg.disable_base_fee = true;
             })
             .modify_block_chained(|blk: &mut BlockEnv| {
                 blk.number = U256::from(context.header.number);
@@ -230,6 +229,12 @@ impl RevmExecutor {
                 blk.gas_limit = context.header.gas_limit;
                 blk.basefee = context.header.base_fee_per_gas.unwrap_or_default();
                 blk.prevrandao = Some(context.prevrandao);
+                if let Some(blob_base_fee) = context.blob_base_fee {
+                    blk.blob_excess_gas_and_price = Some(BlobExcessGasAndPrice {
+                        excess_blob_gas: 0,
+                        blob_gasprice: blob_base_fee,
+                    });
+                }
             });
 
         let mut evm = ctx.build_mainnet();
@@ -391,6 +396,12 @@ impl<S: StateDb> BlockExecutor<S> for RevmExecutor {
                     blk.gas_limit = context.header.gas_limit;
                     blk.basefee = context.header.base_fee_per_gas.unwrap_or_default();
                     blk.prevrandao = Some(context.prevrandao);
+                    if let Some(blob_base_fee) = context.blob_base_fee {
+                        blk.blob_excess_gas_and_price = Some(BlobExcessGasAndPrice {
+                            excess_blob_gas: 0,
+                            blob_gasprice: blob_base_fee,
+                        });
+                    }
                 });
 
             let mut evm = ctx.build_mainnet();
@@ -453,6 +464,13 @@ impl<S: StateDb> BlockExecutor<S> for RevmExecutor {
             }
 
             outcome.gas_used = cumulative_gas;
+        }
+
+        // Check the side-channel flag for DatabaseCommit failures.
+        // REVM's DatabaseCommit::commit() is infallible, so QMDB write errors
+        // are recorded via an atomic flag on the state handle and checked here.
+        if state.take_commit_failure() {
+            return Err(ExecutionError::StateCommit);
         }
 
         // --- post-execution hook ---
@@ -698,10 +716,11 @@ fn extract_changes(state: &EvmState) -> ChangeSet {
             continue;
         }
 
-        // Extract storage changes
+        // Extract storage changes (skip read-only SLOAD slots)
         let storage: BTreeMap<U256, U256> = account
             .storage
             .iter()
+            .filter(|(_, v)| v.is_changed())
             .map(|(k, v): (&U256, &EvmStorageSlot)| (*k, v.present_value()))
             .collect();
 

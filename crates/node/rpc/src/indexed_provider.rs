@@ -16,10 +16,18 @@ use crate::{
     error::RpcError,
     state_provider::StateProvider,
     types::{
-        BlockNumberOrTag, BlockTag, BlockTransactions, CallRequest, EMPTY_UNCLE_HASH, RpcBlock,
-        RpcLog, RpcLogFilter, RpcTransaction, RpcTransactionReceipt,
+        BlockNumberOrTag, BlockTag, BlockTransactions, CallRequest, EMPTY_UNCLE_HASH,
+        EMPTY_WITHDRAWALS_ROOT, RpcBlock, RpcLog, RpcLogFilter, RpcTransaction,
+        RpcTransactionReceipt,
     },
 };
+
+/// Maximum block range allowed for a single `eth_getLogs` query.
+///
+/// Ranges exceeding this limit are rejected with an invalid-params error to
+/// prevent unbounded iteration from monopolising the RPC thread. The value is
+/// aligned with Infura's 10 000-block cap.
+const MAX_LOG_BLOCK_RANGE: u64 = 10_000;
 
 /// State provider that combines indexed block data with live state queries.
 ///
@@ -32,20 +40,26 @@ pub struct IndexedStateProvider<S> {
     index: Arc<BlockIndex>,
     state: S,
     executor: Arc<RevmExecutor>,
+    fee_recipient: Address,
 }
 
 impl<S> IndexedStateProvider<S> {
     /// Creates a new indexed state provider with an explicit executor.
     #[must_use]
-    pub const fn new(index: Arc<BlockIndex>, state: S, executor: Arc<RevmExecutor>) -> Self {
-        Self { index, state, executor }
+    pub const fn new(
+        index: Arc<BlockIndex>,
+        state: S,
+        executor: Arc<RevmExecutor>,
+        fee_recipient: Address,
+    ) -> Self {
+        Self { index, state, executor, fee_recipient }
     }
 
     /// Creates a new indexed state provider with a default executor for the
     /// given chain id.
     #[must_use]
     pub fn with_chain_id(index: Arc<BlockIndex>, state: S, chain_id: u64) -> Self {
-        Self::new(index, state, Arc::new(RevmExecutor::new(chain_id)))
+        Self::new(index, state, Arc::new(RevmExecutor::new(chain_id)), Address::ZERO)
     }
 }
 
@@ -55,6 +69,7 @@ impl<S: Clone> Clone for IndexedStateProvider<S> {
             index: Arc::clone(&self.index),
             state: self.state.clone(),
             executor: Arc::clone(&self.executor),
+            fee_recipient: self.fee_recipient,
         }
     }
 }
@@ -181,18 +196,47 @@ impl<S: StateDbRead + Send + Sync + 'static> StateProvider for IndexedStateProvi
     }
 
     async fn get_logs(&self, filter: RpcLogFilter) -> Result<Vec<RpcLog>, RpcError> {
-        let from_block =
-            filter.from_block.as_ref().map(|b| self.resolve_block_number(b)).transpose()?;
-        let to_block =
-            filter.to_block.as_ref().map(|b| self.resolve_block_number(b)).transpose()?;
+        // EIP-234: blockHash is mutually exclusive with fromBlock/toBlock.
+        if filter.block_hash.is_some() && (filter.from_block.is_some() || filter.to_block.is_some())
+        {
+            return Err(RpcError::InvalidParams(
+                "blockHash is mutually exclusive with fromBlock/toBlock".into(),
+            ));
+        }
 
         let mut log_filter = LogFilter::new();
-        if let Some(from) = from_block {
-            log_filter = log_filter.from_block(from);
+
+        if let Some(block_hash) = &filter.block_hash {
+            // Single-block query by hash per EIP-234.
+            let block = self
+                .index
+                .get_block_by_hash(block_hash)
+                .ok_or_else(|| RpcError::InvalidParams("block not found".into()))?;
+            log_filter = log_filter.from_block(block.number).to_block(block.number);
+        } else {
+            let head = self.index.head_block_number();
+            let from_block =
+                filter.from_block.as_ref().map(|b| self.resolve_block_number(b)).transpose()?;
+            let to_block =
+                filter.to_block.as_ref().map(|b| self.resolve_block_number(b)).transpose()?;
+
+            let from = from_block.unwrap_or(0);
+            let to = to_block.unwrap_or(head).min(head);
+
+            if from > to {
+                return Err(RpcError::InvalidParams(
+                    "fromBlock must not be greater than toBlock".into(),
+                ));
+            }
+            if to.saturating_sub(from) > MAX_LOG_BLOCK_RANGE {
+                return Err(RpcError::InvalidParams(format!(
+                    "block range exceeds maximum of {MAX_LOG_BLOCK_RANGE}"
+                )));
+            }
+
+            log_filter = log_filter.from_block(from).to_block(to);
         }
-        if let Some(to) = to_block {
-            log_filter = log_filter.to_block(to);
-        }
+
         if let Some(addr_filter) = filter.address {
             log_filter = log_filter.address(addr_filter.into_vec());
         }
@@ -281,8 +325,8 @@ impl<S> IndexedStateProvider<S> {
             sha3_uncles: EMPTY_UNCLE_HASH,
             number: U64::from(block.number),
             state_root: block.state_root,
-            transactions_root: B256::ZERO,
-            receipts_root: B256::ZERO,
+            transactions_root: block.transactions_root,
+            receipts_root: block.receipts_root,
             // EIP-1474: logsBloom must be a 256-byte (512 hex char) value.
             // An empty `Bytes` breaks client-side deserializers that expect
             // a fixed-size bloom.
@@ -294,12 +338,14 @@ impl<S> IndexedStateProvider<S> {
             mix_hash: block.mix_hash,
             nonce: Default::default(),
             base_fee_per_gas: block.base_fee_per_gas.map(U256::from),
-            miner: Address::ZERO,
+            miner: self.fee_recipient,
             difficulty: U256::ZERO,
             total_difficulty: U256::ZERO,
             uncles: vec![],
             size: U64::from(block.size),
             transactions,
+            withdrawals: vec![],
+            withdrawals_root: EMPTY_WITHDRAWALS_ROOT,
         }
     }
 
@@ -377,6 +423,9 @@ fn execution_error_to_rpc(err: kora_executor::ExecutionError) -> RpcError {
         }
         E::State(s) => state_error_to_rpc(s),
         E::CodeNotFound(h) => RpcError::StateError(format!("code not found: {h}")),
+        E::StateCommit => {
+            RpcError::Internal("QMDB commit failed during block execution".to_string())
+        }
     }
 }
 
@@ -512,6 +561,8 @@ mod tests {
             number,
             parent_hash: B256::ZERO,
             state_root: B256::ZERO,
+            transactions_root: B256::ZERO,
+            receipts_root: B256::ZERO,
             timestamp: 1000 + number,
             gas_limit: 30_000_000,
             gas_used: 21_000,
