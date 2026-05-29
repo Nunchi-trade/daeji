@@ -151,7 +151,7 @@ impl TestHarness {
         let sim_control = Arc::new(Mutex::new(sim_control));
 
         // Start all nodes
-        let bootstrap = setup.to_bootstrap();
+        let bootstrap = setup.to_bootstrap(config.chain_id);
         let (nodes, mut finalized_rx) = start_all_nodes(
             &context,
             &sim_control,
@@ -243,6 +243,7 @@ impl BlockContextProvider for TestContextProvider {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start_all_nodes(
     context: &tokio::Context,
     sim_control: &Arc<Mutex<SimControl<ed25519::PublicKey>>>,
@@ -325,7 +326,12 @@ async fn start_single_node(
     let test_node = TestNode::new(index, ledger.clone());
 
     // Create application
-    let app = TestApplication::<ThresholdScheme>::new(block_cfg.max_txs, state.clone());
+    let app = TestApplication::<ThresholdScheme>::new(
+        block_cfg.max_txs,
+        state.clone(),
+        chain_id,
+        gas_limit,
+    );
 
     // Create finalized reporter
     let executor = RevmExecutor::new(chain_id);
@@ -601,20 +607,21 @@ async fn verify_state_convergence(
             }
         };
 
-        let node_seed = node.query_seed(head).await.ok_or_else(|| {
-            HarnessError::MissingState(format!("node {} missing seed", node.index))
-        })?;
-
-        seed = match seed {
-            None => Some(node_seed),
-            Some(prev) if prev == node_seed => Some(prev),
-            Some(prev) => {
-                return Err(HarnessError::StateDivergence {
-                    digest: head,
-                    message: format!("seed mismatch: {:?} vs {:?}", prev, node_seed),
-                });
-            }
-        };
+        // SeedReporter only fires on nodes that independently construct the
+        // finalization certificate, so not all nodes will have seeds. Only
+        // verify consistency across nodes that do have them.
+        if let Some(node_seed) = node.query_seed(head).await {
+            seed = match seed {
+                None => Some(node_seed),
+                Some(prev) if prev == node_seed => Some(prev),
+                Some(prev) => {
+                    return Err(HarnessError::StateDivergence {
+                        digest: head,
+                        message: format!("seed mismatch: {:?} vs {:?}", prev, node_seed),
+                    });
+                }
+            };
+        }
     }
 
     let state_root =
@@ -680,12 +687,12 @@ impl<S> std::fmt::Debug for TestApplication<S> {
 }
 
 impl<S> TestApplication<S> {
-    const fn new(max_txs: usize, ledger: LedgerView) -> Self {
+    const fn new(max_txs: usize, ledger: LedgerView, chain_id: u64, gas_limit: u64) -> Self {
         Self {
             ledger,
-            executor: RevmExecutor::new(1337),
+            executor: RevmExecutor::new(chain_id),
             max_txs,
-            gas_limit: 30_000_000,
+            gas_limit,
             _scheme: std::marker::PhantomData,
         }
     }
@@ -721,11 +728,8 @@ impl<S> TestApplication<S> {
 
         let outcome = self.executor.execute(&parent_snapshot.state, &context, &txs_bytes).ok()?;
 
-        let state_root = self
-            .ledger
-            .compute_root_from_store(parent_digest, &outcome.changes)
-            .await
-            .ok()?;
+        let state_root =
+            self.ledger.compute_root_from_store(parent_digest, &outcome.changes).await.ok()?;
 
         let block = Block::new(parent.id(), height, timestamp, prevrandao, state_root, txs);
 
@@ -830,8 +834,8 @@ where
     type Context = Context<ConsensusDigest, S::PublicKey>;
     type Block = Block;
 
-    fn genesis(&mut self) -> impl std::future::Future<Output = Self::Block> + Send {
-        async move { self.ledger.genesis_block() }
+    async fn genesis(&mut self) -> Self::Block {
+        self.ledger.genesis_block()
     }
 
     fn propose<A: BlockProvider<Block = Self::Block>>(
@@ -855,28 +859,26 @@ where
     Env: Rng + Spawner + Metrics + Clock,
     S: CertScheme + Send + Sync + 'static,
 {
-    fn verify<A: BlockProvider<Block = Self::Block>>(
+    async fn verify<A: BlockProvider<Block = Self::Block>>(
         &mut self,
         _context: (Env, Self::Context),
         mut ancestry: AncestorStream<A, Self::Block>,
-    ) -> impl std::future::Future<Output = bool> + Send {
-        async move {
-            let mut blocks_to_verify = Vec::new();
-            while let Some(block) = ancestry.next().await {
-                let digest = block.commitment();
-                if self.ledger.query_state_root(digest).await.is_some() {
-                    break;
-                }
-                blocks_to_verify.push(block);
+    ) -> bool {
+        let mut blocks_to_verify = Vec::new();
+        while let Some(block) = ancestry.next().await {
+            let digest = block.commitment();
+            if self.ledger.query_state_root(digest).await.is_some() {
+                break;
             }
-
-            for block in blocks_to_verify.into_iter().rev() {
-                if !self.verify_block(&block).await {
-                    return false;
-                }
-            }
-
-            true
+            blocks_to_verify.push(block);
         }
+
+        for block in blocks_to_verify.into_iter().rev() {
+            if !self.verify_block(&block).await {
+                return false;
+            }
+        }
+
+        true
     }
 }

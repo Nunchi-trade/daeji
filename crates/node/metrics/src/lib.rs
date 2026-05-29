@@ -15,6 +15,14 @@ use prometheus_client::metrics::{
 /// Default histogram buckets for block build time (seconds).
 const BLOCK_BUILD_BUCKETS: [f64; 9] = [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0];
 
+/// Default histogram buckets for EVM execution time (seconds).
+///
+/// Captures the time spent in the EVM executor (`BlockExecutor::execute`)
+/// excluding proposal overhead (snapshot lookup, tx selection, state root
+/// computation).  Most executions complete in under 10 ms; the higher
+/// buckets detect pathological transactions or state-cache misses.
+const EVM_EXEC_BUCKETS: [f64; 9] = [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0];
+
 /// Default histogram buckets for snapshot poll wait time (seconds).
 ///
 /// Captures the delay between "leader needs parent snapshot" and "snapshot
@@ -66,6 +74,27 @@ pub struct AppMetrics {
     /// Total number of blocks successfully finalized.
     pub blocks_finalized: Counter,
 
+    // -- EVM Execution --
+    /// Histogram of EVM execution time in seconds (excluding proposal
+    /// overhead such as snapshot lookup, tx selection, and state root
+    /// computation).  Recorded in both `build_block` and `verify_block`.
+    pub evm_execution_seconds: Histogram,
+
+    // -- RPC --
+    /// Total number of JSON-RPC requests received (including rate-limited).
+    pub rpc_requests_total: Counter,
+
+    // -- Snapshot Store --
+    /// Number of snapshots that have not yet been persisted to QMDB.
+    ///
+    /// A rising value under steady-state operation indicates the persistence
+    /// pipeline is falling behind block production, which leads to unbounded
+    /// memory growth and increasingly expensive chain walks.
+    pub unpersisted_snapshot_depth: Gauge,
+    /// Total number of snapshots currently held in the in-memory store
+    /// (both persisted and unpersisted).
+    pub snapshot_store_total: Gauge,
+
     // -- Transaction Gossip --
     /// Total transactions broadcast to peers via gossip.
     pub gossip_tx_broadcast: Counter,
@@ -75,6 +104,11 @@ pub struct AppMetrics {
     pub gossip_tx_broadcast_failed: Counter,
     /// Total gossip transactions that failed validation.
     pub gossip_tx_invalid: Counter,
+
+    // -- Equivocation --
+    /// Total equivocation events detected, labelled by type
+    /// (`conflicting_notarize`, `conflicting_finalize`, `nullify_finalize`).
+    pub equivocations: Family<EquivocationTypeLabel, Counter>,
 }
 
 /// Label set for metrics that carry a `reason` dimension.
@@ -82,6 +116,14 @@ pub struct AppMetrics {
 pub struct ReasonLabel {
     /// The rejection / error reason.
     pub reason: String,
+}
+
+/// Label set for equivocation metrics, distinguishing the type of Byzantine fault.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, prometheus_client::encoding::EncodeLabelSet)]
+pub struct EquivocationTypeLabel {
+    /// The equivocation type (`conflicting_notarize`, `conflicting_finalize`,
+    /// `nullify_finalize`).
+    pub r#type: String,
 }
 
 impl AppMetrics {
@@ -100,10 +142,15 @@ impl AppMetrics {
             snapshot_poll_wait: Histogram::new(SNAPSHOT_POLL_BUCKETS),
             finalization_failures: Counter::default(),
             blocks_finalized: Counter::default(),
+            evm_execution_seconds: Histogram::new(EVM_EXEC_BUCKETS),
+            rpc_requests_total: Counter::default(),
+            unpersisted_snapshot_depth: Gauge::default(),
+            snapshot_store_total: Gauge::default(),
             gossip_tx_broadcast: Counter::default(),
             gossip_tx_received: Counter::default(),
             gossip_tx_broadcast_failed: Counter::default(),
             gossip_tx_invalid: Counter::default(),
+            equivocations: Family::default(),
         }
     }
 
@@ -171,6 +218,26 @@ impl AppMetrics {
             self.blocks_finalized.clone(),
         );
         registry.register(
+            "kora_evm_execution_seconds",
+            "EVM execution time per block in seconds",
+            self.evm_execution_seconds.clone(),
+        );
+        registry.register(
+            "kora_rpc_requests",
+            "Total JSON-RPC requests received",
+            self.rpc_requests_total.clone(),
+        );
+        registry.register(
+            "kora_unpersisted_snapshot_depth",
+            "Number of in-memory snapshots not yet persisted to QMDB",
+            self.unpersisted_snapshot_depth.clone(),
+        );
+        registry.register(
+            "kora_snapshot_store_total",
+            "Total snapshots currently held in the in-memory store",
+            self.snapshot_store_total.clone(),
+        );
+        registry.register(
             "kora_gossip_tx_broadcast",
             "Total transactions broadcast to peers via gossip",
             self.gossip_tx_broadcast.clone(),
@@ -189,6 +256,11 @@ impl AppMetrics {
             "kora_gossip_tx_invalid",
             "Total gossip transactions that failed validation",
             self.gossip_tx_invalid.clone(),
+        );
+        registry.register(
+            "kora_equivocations",
+            "Total equivocation events detected by type",
+            self.equivocations.clone(),
         );
     }
 }

@@ -1,6 +1,17 @@
 //! Indexed types for blocks, transactions, receipts, and logs.
 
-use alloy_primitives::{Address, B256, Bloom, Bytes, U256};
+use alloy_primitives::{Address, B256, Bloom, Bytes, U256, b256};
+
+/// The root hash of an empty Merkle Patricia Trie.
+///
+/// This is the keccak256 hash of the RLP encoding of an empty string, which is
+/// the expected value for `transactionsRoot` and `receiptsRoot` in blocks that
+/// contain no transactions.
+///
+/// Equal to `keccak256(rlp(""))` =
+/// `0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421`.
+pub const EMPTY_ROOT_HASH: B256 =
+    b256!("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421");
 
 /// An indexed block containing header information and transaction hashes.
 #[derive(Debug, Clone)]
@@ -13,6 +24,10 @@ pub struct IndexedBlock {
     pub parent_hash: B256,
     /// State root after executing this block.
     pub state_root: B256,
+    /// Transactions trie root (MPT root of RLP-encoded transactions).
+    pub transactions_root: B256,
+    /// Receipts trie root (MPT root of RLP-encoded receipts).
+    pub receipts_root: B256,
     /// Block timestamp.
     pub timestamp: u64,
     /// Gas limit for this block.
@@ -23,6 +38,10 @@ pub struct IndexedBlock {
     pub base_fee_per_gas: Option<u64>,
     /// Mix hash / prevrandao value for this block.
     pub mix_hash: B256,
+    /// Block-level Bloom filter (bitwise OR of all receipt Bloom filters).
+    pub logs_bloom: Bloom,
+    /// Approximate block size in bytes (header overhead + sum of raw tx sizes).
+    pub size: u64,
     /// Hashes of transactions included in this block.
     pub transaction_hashes: Vec<B256>,
 }

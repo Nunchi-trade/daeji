@@ -402,6 +402,13 @@ impl TransactionPool {
         inner.by_sender.get(sender).map(|q| q.pending.clone()).unwrap_or_default()
     }
 
+    /// Returns the next expected nonce for `sender` after all pending
+    /// (executable) transactions, or `None` if the sender has no queue.
+    pub fn next_nonce(&self, sender: &Address) -> Option<u64> {
+        let inner = self.inner.read();
+        inner.by_sender.get(sender).map(SenderQueue::next_pending_nonce)
+    }
+
     /// Gets a transaction by its hash.
     pub fn get(&self, hash: &B256) -> Option<OrderedTransaction> {
         self.inner.read().by_hash.get(hash).cloned()

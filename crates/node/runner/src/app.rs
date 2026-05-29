@@ -1,7 +1,7 @@
 //! REVM-based consensus application implementation.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -21,12 +21,13 @@ use commonware_runtime::{Clock, Metrics, Spawner};
 use futures::StreamExt;
 use kora_consensus::{BlockExecution, SnapshotStore, components::InMemorySnapshotStore};
 use kora_domain::{Block, ConsensusDigest};
-use kora_executor::{BlockContext, BlockExecutor};
+use kora_executor::{BaseFeeParams, BlockContext, BlockExecutor, calculate_base_fee};
 use kora_ledger::LedgerService;
 use kora_metrics::AppMetrics;
 use kora_overlay::OverlayState;
 use kora_qmdb_ledger::QmdbState;
 use kora_rpc::NodeState;
+use parking_lot::RwLock;
 use rand::Rng;
 use tracing::{debug, error, info, trace, warn};
 
@@ -40,6 +41,13 @@ use tracing::{debug, error, info, trace, warn};
 /// provides ample budget; in the common case the Notify fires within the
 /// first few milliseconds.
 const SNAPSHOT_WAIT_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// Maximum number of seconds a block timestamp may be ahead of the
+/// validator's wall-clock time.  Blocks with timestamps further in the
+/// future are rejected during verification.  15 seconds is generous enough
+/// to tolerate clock skew between validators while preventing malicious
+/// leaders from pushing timestamps arbitrarily far forward.
+const MAX_FUTURE_TIMESTAMP_DRIFT: u64 = 15;
 
 /// Maximum number of unfinalized blocks a leader may be ahead of the last
 /// finalized height before it voluntarily skips its proposal turn.  This
@@ -86,6 +94,7 @@ pub struct RevmApplication<S, E> {
     executor: E,
     max_txs: usize,
     gas_limit: u64,
+    fee_recipient: Address,
     node_state: Option<NodeState>,
     metrics: Option<AppMetrics>,
     /// Height of the HEAD block that was restored from the archive during
@@ -104,6 +113,12 @@ pub struct RevmApplication<S, E> {
     /// previously processed blocks (including certificate-trusted ones).
     /// Used to determine when the catch-up window should close.
     last_verified_height: Arc<AtomicU64>,
+    /// Per-block `(gas_used, base_fee_per_gas)` cache, keyed by consensus
+    /// digest.  Populated when a block is built or verified so that the
+    /// *next* block can compute its EIP-1559 base fee from the parent's
+    /// gas usage.  Entries are small (32 + 16 bytes) and the map is bounded
+    /// by the number of unfinalized blocks.
+    block_fees: Arc<RwLock<HashMap<ConsensusDigest, (u64, u64)>>>,
     _scheme: std::marker::PhantomData<S>,
 }
 
@@ -112,9 +127,11 @@ impl<S, E> std::fmt::Debug for RevmApplication<S, E> {
         f.debug_struct("RevmApplication")
             .field("max_txs", &self.max_txs)
             .field("gas_limit", &self.gas_limit)
+            .field("fee_recipient", &self.fee_recipient)
             .field("metrics", &self.metrics.is_some())
             .field("recovered_height", &self.recovered_height.load(Ordering::Relaxed))
             .field("last_verified_height", &self.last_verified_height.load(Ordering::Relaxed))
+            .field("block_fees_cached", &self.block_fees.read().len())
             .finish_non_exhaustive()
     }
 }
@@ -124,16 +141,24 @@ where
     E: BlockExecutor<OverlayState<QmdbState>, Tx = Bytes> + Clone,
 {
     /// Create a new REVM application.
-    pub fn new(ledger: LedgerService, executor: E, max_txs: usize, gas_limit: u64) -> Self {
+    pub fn new(
+        ledger: LedgerService,
+        executor: E,
+        max_txs: usize,
+        gas_limit: u64,
+        fee_recipient: Address,
+    ) -> Self {
         Self {
             ledger,
             executor,
             max_txs,
             gas_limit,
+            fee_recipient,
             node_state: None,
             metrics: None,
             recovered_height: Arc::new(AtomicU64::new(0)),
             last_verified_height: Arc::new(AtomicU64::new(0)),
+            block_fees: Arc::new(RwLock::new(HashMap::new())),
             _scheme: std::marker::PhantomData,
         }
     }
@@ -168,13 +193,57 @@ where
         self
     }
 
-    fn block_context(&self, height: u64, timestamp: u64, prevrandao: B256) -> BlockContext {
+    /// Seed the block-fee cache with entries from the block index so that
+    /// the first blocks after a restart can derive a correct EIP-1559 base
+    /// fee.  Without this, `compute_base_fee` would fall back to
+    /// `INITIAL_BASE_FEE` for any parent whose fee data was not in the
+    /// in-memory cache.
+    ///
+    /// `entries` should contain `(digest, gas_used, base_fee_per_gas)` for
+    /// recent blocks (at minimum the HEAD block).
+    pub fn seed_block_fees(&self, entries: &[(ConsensusDigest, u64, u64)]) {
+        let mut fees = self.block_fees.write();
+        for &(digest, gas_used, base_fee) in entries {
+            fees.insert(digest, (gas_used, base_fee));
+        }
+    }
+
+    /// Compute the base fee for a new block from the parent's gas usage
+    /// (EIP-1559).  Falls back to [`kora_config::INITIAL_BASE_FEE`] when the
+    /// parent's fee data is not cached (genesis or catch-up).
+    fn compute_base_fee(&self, parent_digest: ConsensusDigest) -> u64 {
+        let fees = self.block_fees.read();
+        match fees.get(&parent_digest) {
+            Some(&(parent_gas_used, parent_base_fee)) => calculate_base_fee(
+                parent_base_fee,
+                parent_gas_used,
+                self.gas_limit,
+                &BaseFeeParams::DEFAULT,
+            ),
+            None => kora_config::INITIAL_BASE_FEE,
+        }
+    }
+
+    /// Record a block's gas usage and base fee so that the next block can
+    /// derive its own base fee via [`Self::compute_base_fee`].
+    fn record_block_fees(&self, digest: ConsensusDigest, gas_used: u64, base_fee: u64) {
+        self.block_fees.write().insert(digest, (gas_used, base_fee));
+    }
+
+    fn block_context(
+        &self,
+        height: u64,
+        timestamp: u64,
+        prevrandao: B256,
+        parent_digest: ConsensusDigest,
+    ) -> BlockContext {
+        let base_fee = self.compute_base_fee(parent_digest);
         let header = Header {
             number: height,
             timestamp,
             gas_limit: self.gas_limit,
-            beneficiary: Address::ZERO,
-            base_fee_per_gas: Some(kora_config::INITIAL_BASE_FEE),
+            beneficiary: self.fee_recipient,
+            base_fee_per_gas: Some(base_fee),
             ..Default::default()
         };
         BlockContext::new(header, B256::ZERO, prevrandao)
@@ -271,24 +340,45 @@ where
 
         let prevrandao = self.get_prevrandao(parent_digest).await;
         let height = parent.height + 1;
-        let context = self.block_context(height, timestamp, prevrandao);
+        let context = self.block_context(height, timestamp, prevrandao, parent_digest);
+        let base_fee = context.header.base_fee_per_gas.unwrap_or(kora_config::INITIAL_BASE_FEE);
         let txs_bytes: Vec<Bytes> = txs.iter().map(|tx| tx.bytes.clone()).collect();
 
         let exec_start = Instant::now();
-        let outcome = match self.executor.execute(&parent_snapshot.state, &context, &txs_bytes) {
-            Ok(outcome) => outcome,
-            Err(err) => {
-                error!(
-                    parent = ?parent_digest,
-                    height,
-                    txs = txs.len(),
-                    gas_limit = self.gas_limit,
-                    error = %err,
-                    error_debug = ?err,
-                    "build_block: block execution failed -- \
-                     this may indicate a bad transaction, OOM, or state corruption"
-                );
-                return None;
+        // Run EVM execution on a dedicated blocking thread so that the
+        // synchronous REVM loop does not occupy an async worker thread.
+        // All clones are cheap (Arc bumps or small Copy types).
+        let outcome = {
+            let executor = self.executor.clone();
+            let state = parent_snapshot.state.clone();
+            match tokio::task::spawn_blocking(move || {
+                executor.execute(&state, &context, &txs_bytes)
+            })
+            .await
+            {
+                Ok(Ok(outcome)) => outcome,
+                Ok(Err(err)) => {
+                    error!(
+                        parent = ?parent_digest,
+                        height,
+                        txs = txs.len(),
+                        gas_limit = self.gas_limit,
+                        error = %err,
+                        error_debug = ?err,
+                        "build_block: block execution failed -- \
+                         this may indicate a bad transaction, OOM, or state corruption"
+                    );
+                    return None;
+                }
+                Err(join_err) => {
+                    error!(
+                        parent = ?parent_digest,
+                        height,
+                        error = %join_err,
+                        "build_block: spawn_blocking join error"
+                    );
+                    return None;
+                }
             }
         };
         let exec_elapsed = exec_start.elapsed();
@@ -315,10 +405,14 @@ where
 
         let block_digest = block.commitment();
 
+        // Cache gas usage so that the next block can derive its base fee.
+        self.record_block_fees(block_digest, outcome.gas_used, base_fee);
+
         let total_elapsed = start.elapsed();
 
         if let Some(ref m) = self.metrics {
             m.block_build_time.observe(total_elapsed.as_secs_f64());
+            m.evm_execution_seconds.observe(exec_elapsed.as_secs_f64());
             m.block_txs_included.set(block.txs.len() as i64);
         }
 
@@ -371,7 +465,12 @@ where
         verified < recovered.saturating_add(CATCH_UP_THRESHOLD)
     }
 
-    async fn verify_block(&self, block: &Block) -> bool {
+    async fn verify_block(
+        &self,
+        block: &Block,
+        parent_timestamp: Option<u64>,
+        now_secs: u64,
+    ) -> bool {
         let start = Instant::now();
         let digest = block.commitment();
         let parent_digest = block.parent();
@@ -388,8 +487,49 @@ where
             // store), so the full-execution path is never reached for that
             // height, and `last_verified_height` never advances past it.
             self.last_verified_height.fetch_max(block.height, Ordering::Relaxed);
+            if let Some(ref state) = self.node_state {
+                state.set_last_verified_height(block.height);
+            }
             trace!(?digest, height = block.height, "block already verified");
             return true;
+        }
+
+        // ── Timestamp validation ──────────────────────────────────────
+        // These checks are cheap (no I/O) and catch obviously invalid
+        // blocks early, before we spend time fetching snapshots and
+        // executing transactions.  During catch-up the blocks are already
+        // backed by a finality certificate so we skip the checks.
+        if !self.is_catching_up(block.height) {
+            // Monotonicity: block timestamp must be strictly greater than
+            // the parent timestamp (matches the contract enforced by
+            // `Block::next_timestamp` on the proposer side).
+            if let Some(parent_ts) = parent_timestamp
+                && block.timestamp <= parent_ts
+            {
+                warn!(
+                    ?digest,
+                    height = block.height,
+                    block_timestamp = block.timestamp,
+                    parent_timestamp = parent_ts,
+                    "verify_block: timestamp not increasing"
+                );
+                return false;
+            }
+
+            // Future-drift: reject blocks whose timestamp is too far
+            // ahead of the validator's wall-clock.
+            let max_allowed = now_secs.saturating_add(MAX_FUTURE_TIMESTAMP_DRIFT);
+            if block.timestamp > max_allowed {
+                warn!(
+                    ?digest,
+                    height = block.height,
+                    block_timestamp = block.timestamp,
+                    now_secs,
+                    max_allowed,
+                    "verify_block: timestamp too far in the future"
+                );
+                return false;
+            }
         }
 
         let parent_snapshot = match self.ledger.parent_snapshot(parent_digest).await {
@@ -445,7 +585,9 @@ where
         };
         let snapshot_elapsed = start.elapsed();
 
-        let context = self.block_context(block.height, block.timestamp, block.prevrandao);
+        let context =
+            self.block_context(block.height, block.timestamp, block.prevrandao, parent_digest);
+        let base_fee = context.header.base_fee_per_gas.unwrap_or(kora_config::INITIAL_BASE_FEE);
         let exec_start = Instant::now();
         let execution =
             match BlockExecution::execute(&parent_snapshot, &self.executor, &context, &block.txs)
@@ -529,6 +671,9 @@ where
             return false;
         }
 
+        // Cache gas usage so the next block can derive its base fee.
+        self.record_block_fees(digest, execution.outcome.gas_used, base_fee);
+
         let merged_changes = parent_snapshot.state.merge_changes(execution.outcome.changes.clone());
         let next_state = OverlayState::new(parent_snapshot.state.base(), merged_changes);
 
@@ -547,6 +692,9 @@ where
         // height so that the catch-up window eventually closes once we
         // have verified blocks past the recovery point.
         let prev_verified = self.last_verified_height.fetch_max(block.height, Ordering::Relaxed);
+        if let Some(ref state) = self.node_state {
+            state.set_last_verified_height(block.height);
+        }
         if prev_verified < self.recovered_height.load(Ordering::Relaxed)
             && block.height >= self.recovered_height.load(Ordering::Relaxed)
         {
@@ -555,6 +703,10 @@ where
                 recovered_height = self.recovered_height.load(Ordering::Relaxed),
                 "catch-up: first full-execution verification past recovery point"
             );
+        }
+
+        if let Some(ref m) = self.metrics {
+            m.evm_execution_seconds.observe(exec_elapsed.as_secs_f64());
         }
 
         let total_elapsed = start.elapsed();
@@ -617,7 +769,14 @@ where
     type Block = Block;
 
     fn genesis(&mut self) -> impl std::future::Future<Output = Self::Block> + Send {
-        async move { self.ledger.genesis_block() }
+        async move {
+            let genesis = self.ledger.genesis_block();
+            // Seed the genesis block's fee data so that block 1 can derive
+            // its base fee from the parent (genesis) gas usage.
+            let genesis_digest = genesis.commitment();
+            self.record_block_fees(genesis_digest, 0, kora_config::INITIAL_BASE_FEE);
+            genesis
+        }
     }
 
     fn propose<A>(
@@ -711,23 +870,30 @@ where
 {
     fn verify<A>(
         &mut self,
-        _context: (Env, Self::Context),
+        context: (Env, Self::Context),
         mut ancestry: AncestorStream<A, Self::Block>,
     ) -> impl std::future::Future<Output = bool> + Send
     where
         A: BlockProvider<Block = Self::Block>,
     {
+        let env = context.0;
         async move {
             let start = Instant::now();
+            let now_secs = unix_timestamp_secs(&env);
 
             // The ancestry stream yields tip-first (newest -> oldest).
             // We only need to verify blocks that we haven't seen yet.
             // Collect blocks until we hit one we've already verified.
+            // When we find the already-verified parent, capture its
+            // timestamp so we can validate timestamp monotonicity for
+            // the oldest unverified block.
             let mut blocks_to_verify = Vec::new();
+            let mut verified_parent_timestamp: Option<u64> = None;
             while let Some(block) = ancestry.next().await {
                 let digest = block.commitment();
                 // Stop if we've already verified this block
                 if self.ledger.query_state_root(digest).await.is_some() {
+                    verified_parent_timestamp = Some(block.timestamp);
                     break;
                 }
                 blocks_to_verify.push(block);
@@ -743,12 +909,16 @@ where
             let block_count = blocks_to_verify.len();
             let tip_height = blocks_to_verify.first().map(|b| b.height).unwrap_or(0);
 
-            // Verify from oldest (parent) to newest (tip)
+            // Verify from oldest (parent) to newest (tip).
+            // Track the parent timestamp across the chain so each block's
+            // timestamp monotonicity can be validated.
             let verify_start = Instant::now();
+            let mut parent_ts = verified_parent_timestamp;
             for block in blocks_to_verify.into_iter().rev() {
-                if !self.verify_block(&block).await {
+                if !self.verify_block(&block, parent_ts, now_secs).await {
                     return false;
                 }
+                parent_ts = Some(block.timestamp);
             }
             let verify_elapsed = verify_start.elapsed();
             let total_elapsed = start.elapsed();
