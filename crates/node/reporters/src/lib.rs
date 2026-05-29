@@ -64,7 +64,6 @@ const DEFAULT_CHECKPOINT_INTERVAL: u64 = 1;
 /// distinguish transient errors (worth retrying) from permanent ones
 /// (indicating state divergence or eviction).
 #[derive(Debug, Error)]
-#[allow(dead_code)]
 enum FinalizationError {
     /// Block execution failed during finalization replay.
     #[error("execution failed: {0}")]
@@ -78,16 +77,6 @@ enum FinalizationError {
     /// This is a deterministic mismatch and is NOT retryable.
     #[error("state root mismatch: expected {expected:?}, computed {computed:?}")]
     StateRootMismatch { expected: StateRoot, computed: StateRoot },
-
-    /// The parent snapshot needed for re-execution was not found and
-    /// may still be in-flight (catch-up race). Retryable with a short delay.
-    #[error("missing parent snapshot (transient): digest={digest:?} parent={parent_digest:?}")]
-    MissingParentSnapshot { digest: ConsensusDigest, parent_digest: ConsensusDigest },
-
-    /// The parent snapshot was persisted and then evicted from memory.
-    /// The snapshot data is gone; retrying will not help.
-    #[error("parent snapshot evicted: digest={digest:?} parent={parent_digest:?}")]
-    ParentSnapshotEvicted { digest: ConsensusDigest, parent_digest: ConsensusDigest },
 
     /// The spawned persistence task panicked or was cancelled.
     #[error("persist task failed: {0}")]
@@ -105,12 +94,9 @@ impl FinalizationError {
         match self {
             // Deterministic: local state has diverged, retry produces the same mismatch.
             Self::StateRootMismatch { .. } => false,
-            // Evicted: the snapshot data is gone permanently, retry is futile.
-            Self::ParentSnapshotEvicted { .. } => false,
             // All other failures may be transient (I/O, OOM, race condition).
             Self::ExecutionFailed(_)
             | Self::RootComputationFailed(_)
-            | Self::MissingParentSnapshot { .. }
             | Self::PersistTaskFailed(_)
             | Self::PersistFailed(_) => true,
         }
@@ -122,8 +108,6 @@ impl FinalizationError {
             Self::ExecutionFailed(_) => "execution_failed",
             Self::RootComputationFailed(_) => "root_computation_failed",
             Self::StateRootMismatch { .. } => "state_root_mismatch",
-            Self::MissingParentSnapshot { .. } => "missing_parent_snapshot",
-            Self::ParentSnapshotEvicted { .. } => "parent_snapshot_evicted",
             Self::PersistTaskFailed(_) => "persist_task_failed",
             Self::PersistFailed(_) => "persist_failed",
         }
