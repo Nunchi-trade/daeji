@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::Header;
+use alloy_consensus::{EMPTY_ROOT_HASH, Header};
 use alloy_primitives::{Address, B256, keccak256};
 use anyhow::Context as _;
 use commonware_consensus::{
@@ -163,6 +163,8 @@ fn seed_genesis_block_index(index: &BlockIndex, genesis: &Block, gas_limit: u64)
             number: 0,
             parent_hash: genesis.parent.0,
             state_root: genesis.state_root.0,
+            transactions_root: EMPTY_ROOT_HASH,
+            receipts_root: EMPTY_ROOT_HASH,
             timestamp: genesis.timestamp,
             gas_limit,
             gas_used: 0,
@@ -186,11 +188,16 @@ fn index_recovered_block(
 ) {
     let block_context = provider.context(block);
     let transaction_hashes = block.txs.iter().map(|tx| keccak256(&tx.bytes)).collect();
+    // Recovered blocks lack full execution data; use EMPTY_ROOT_HASH as a
+    // safe fallback. The correct roots will be computed when the block is
+    // re-finalized through the normal consensus path.
     let indexed_block = kora_indexer::IndexedBlock {
         hash: block.id().0,
         number: block.height,
         parent_hash: block.parent.0,
         state_root: block.state_root.0,
+        transactions_root: EMPTY_ROOT_HASH,
+        receipts_root: EMPTY_ROOT_HASH,
         timestamp: block_context.header.timestamp,
         gas_limit: block_context.header.gas_limit,
         gas_used: 0,

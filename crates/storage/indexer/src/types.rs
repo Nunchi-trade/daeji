@@ -13,6 +13,10 @@ pub struct IndexedBlock {
     pub parent_hash: B256,
     /// State root after executing this block.
     pub state_root: B256,
+    /// Transactions trie root (MPT root of RLP-encoded transactions).
+    pub transactions_root: B256,
+    /// Receipts trie root (MPT root of RLP-encoded receipts).
+    pub receipts_root: B256,
     /// Block timestamp.
     pub timestamp: u64,
     /// Gas limit for this block.
