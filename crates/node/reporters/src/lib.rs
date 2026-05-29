@@ -152,6 +152,27 @@ async fn seed_report_inner<V: Variant>(
                 )
                 .await;
         }
+        Activity::ConflictingNotarize(ref proof) => {
+            warn!(
+                signer = ?proof.signer(),
+                view = ?proof.view(),
+                "EQUIVOCATION: conflicting notarize detected — validator signed two different notarize votes for the same view"
+            );
+        }
+        Activity::ConflictingFinalize(ref proof) => {
+            warn!(
+                signer = ?proof.signer(),
+                view = ?proof.view(),
+                "EQUIVOCATION: conflicting finalize detected — validator signed two different finalize votes for the same view"
+            );
+        }
+        Activity::NullifyFinalize(ref proof) => {
+            warn!(
+                signer = ?proof.signer(),
+                view = ?proof.view(),
+                "EQUIVOCATION: nullify-finalize conflict detected — validator signed both a nullify and a finalize for the same view"
+            );
+        }
         _ => {}
     }
 }
@@ -572,26 +593,18 @@ mod mempool_tests {
     fn publish_mempool_inclusions_broadcasts_tx_included() {
         let (sender, mut receiver) = kora_rpc::mempool_event_channel();
         let tx = Tx::new(Bytes::from_static(&[0x01, 0x02, 0x03]));
-        let block = Block::new(
-            BlockId(B256::ZERO),
-            7,
-            0,
-            B256::ZERO,
-            StateRoot(B256::ZERO),
-            vec![tx.clone()],
-        );
+        let block = Block::new(BlockId(B256::ZERO), 7, 0, B256::ZERO, StateRoot(B256::ZERO), vec![
+            tx.clone(),
+        ]);
         let block_hash = block.id().0;
 
         publish_mempool_inclusions(Some(&sender), &block);
 
-        assert_eq!(
-            receiver.try_recv().unwrap(),
-            MempoolEvent::TxIncluded {
-                hash: keccak256(&tx.bytes),
-                block_number: block.height,
-                block_hash,
-            }
-        );
+        assert_eq!(receiver.try_recv().unwrap(), MempoolEvent::TxIncluded {
+            hash: keccak256(&tx.bytes),
+            block_number: block.height,
+            block_hash,
+        });
     }
 }
 
@@ -1488,6 +1501,27 @@ where
             }
             Activity::Nullification(_) => {
                 self.state.inc_nullified();
+            }
+            Activity::ConflictingNotarize(proof) => {
+                warn!(
+                    signer = ?proof.signer(),
+                    view = ?proof.view(),
+                    "EQUIVOCATION: conflicting notarize detected — validator signed two different notarize votes for the same view"
+                );
+            }
+            Activity::ConflictingFinalize(proof) => {
+                warn!(
+                    signer = ?proof.signer(),
+                    view = ?proof.view(),
+                    "EQUIVOCATION: conflicting finalize detected — validator signed two different finalize votes for the same view"
+                );
+            }
+            Activity::NullifyFinalize(proof) => {
+                warn!(
+                    signer = ?proof.signer(),
+                    view = ?proof.view(),
+                    "EQUIVOCATION: nullify-finalize conflict detected — validator signed both a nullify and a finalize for the same view"
+                );
             }
             _ => {}
         }
