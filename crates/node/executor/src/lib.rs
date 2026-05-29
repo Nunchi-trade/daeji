@@ -25,4 +25,3 @@ pub use revm::{CallParams, RevmExecutor, calculate_base_fee};
 
 mod traits;
 pub use traits::BlockExecutor;
-
