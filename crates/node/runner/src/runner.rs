@@ -2,7 +2,10 @@ use std::{
     collections::{BTreeMap, HashSet},
     ffi::OsString,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -34,7 +37,7 @@ use futures::StreamExt;
 use kora_consensus::BlockExecution;
 use kora_domain::{Block, BlockCfg, BootstrapConfig, ConsensusDigest, LedgerEvent, Tx, TxCfg};
 use kora_executor::{BaseFeeParams, BlockContext, RevmExecutor, calculate_base_fee};
-use kora_indexer::{BlockIndex, IndexedBlock};
+use kora_indexer::{BlockIndex, EMPTY_ROOT_HASH, IndexedBlock};
 use kora_ledger::{LedgerService, LedgerView, LiveState};
 use kora_marshal::{ArchiveInitializer, BroadcastInitializer, PeerInitializer};
 use kora_metrics::AppMetrics;
@@ -86,7 +89,8 @@ type CertArchive = Finalization<ThresholdScheme, ConsensusDigest>;
 type MarshalMailbox = Mailbox<ThresholdScheme, Standard<Block>>;
 type NodeStateRptr = NodeStateReporter<ThresholdScheme>;
 
-/// A no-op [`Blocker`] that never permanently bans peers.
+/// A [`Blocker`] that suppresses peer bans during catch-up but delegates to
+/// the real oracle blocker during normal operation.
 ///
 /// When a restarted node catches up, the resolver's `verify_block()` may return
 /// `false` because parent state snapshots are missing (not because the peer sent
@@ -94,31 +98,48 @@ type NodeStateRptr = NodeStateReporter<ThresholdScheme>;
 /// that peer, and in a 4-validator cluster all 3 peers get blocked within
 /// milliseconds, making catch-up impossible.
 ///
-/// This struct implements [`Blocker`] with an empty `block()` method so that
-/// the resolver and simplex engine never permanently ban peers for transient
-/// verification failures. The P2P oracle still handles peer *discovery* and
-/// *tracking*; only the punitive blocking path is disabled.
+/// `GraduatedBlocker` solves this by checking a shared `catching_up` flag:
+/// - **During catch-up** (`catching_up = true`): block requests are logged at
+///   `warn` level but suppressed, allowing the resolver to retry with other
+///   peers.
+/// - **During normal operation** (`catching_up = false`): block requests are
+///   forwarded to the underlying oracle, which disconnects the peer and
+///   prevents future connections.
 ///
-/// This is a Kora-side workaround. The ideal upstream fix would add
-/// retry/back-off semantics to the resolver so it can distinguish transient
-/// failures from genuinely Byzantine behaviour.
+/// The `catching_up` flag is set to `true` when the node is recovering from a
+/// restart (i.e., `recovered_head_height` is `Some`) and cleared to `false`
+/// for fresh genesis starts. A future improvement should wire a "backfill
+/// complete" signal from the resolver to clear this flag once historical block
+/// sync finishes.
 #[derive(Clone, Debug)]
-struct NoOpBlocker<P> {
-    _marker: std::marker::PhantomData<P>,
+struct GraduatedBlocker<P: commonware_cryptography::PublicKey> {
+    oracle: commonware_p2p::authenticated::discovery::Oracle<P>,
+    catching_up: Arc<AtomicBool>,
 }
 
-impl<P> NoOpBlocker<P> {
-    const fn new() -> Self {
-        Self { _marker: std::marker::PhantomData }
+impl<P: commonware_cryptography::PublicKey> GraduatedBlocker<P> {
+    const fn new(
+        oracle: commonware_p2p::authenticated::discovery::Oracle<P>,
+        catching_up: Arc<AtomicBool>,
+    ) -> Self {
+        Self { oracle, catching_up }
     }
 }
 
-impl<P: commonware_cryptography::PublicKey> Blocker for NoOpBlocker<P> {
+impl<P: commonware_cryptography::PublicKey> Blocker for GraduatedBlocker<P> {
     type PublicKey = P;
 
     fn block(&mut self, peer: Self::PublicKey) -> impl std::future::Future<Output = ()> + Send {
-        warn!(?peer, "NoOpBlocker: ignoring block request for peer (catch-up safe)");
-        async {}
+        let catching_up = self.catching_up.load(Ordering::Relaxed);
+        let mut oracle = self.oracle.clone();
+        async move {
+            if catching_up {
+                warn!(?peer, "GraduatedBlocker: suppressing block request during catch-up");
+            } else {
+                warn!(?peer, "GraduatedBlocker: blocking Byzantine peer via oracle");
+                oracle.block(peer).await;
+            }
+        }
     }
 }
 
@@ -165,6 +186,8 @@ fn seed_genesis_block_index(index: &BlockIndex, genesis: &Block, gas_limit: u64)
             number: 0,
             parent_hash: genesis.parent.0,
             state_root: genesis.state_root.0,
+            transactions_root: EMPTY_ROOT_HASH,
+            receipts_root: EMPTY_ROOT_HASH,
             timestamp: genesis.timestamp,
             gas_limit,
             gas_used: 0,
@@ -233,6 +256,8 @@ fn index_recovered_block(
         number: block.height,
         parent_hash: block.parent.0,
         state_root: block.state_root.0,
+        transactions_root: EMPTY_ROOT_HASH,
+        receipts_root: EMPTY_ROOT_HASH,
         timestamp: block_context.header.timestamp,
         gas_limit: block_context.header.gas_limit,
         gas_used: 0,
@@ -581,6 +606,7 @@ impl From<ThresholdScheme> for ConstantSchemeProvider {
 #[derive(Clone, Debug)]
 struct RevmContextProvider {
     gas_limit: u64,
+    fee_recipient: Address,
     block_index: Arc<BlockIndex>,
 }
 
@@ -617,7 +643,7 @@ impl BlockContextProvider for RevmContextProvider {
             number: block.height,
             timestamp: block.timestamp,
             gas_limit: self.gas_limit,
-            beneficiary: Address::ZERO,
+            beneficiary: self.fee_recipient,
             base_fee_per_gas: Some(base_fee),
             ..Default::default()
         };
@@ -767,8 +793,11 @@ fn spawn_task_watchdog(context: &cw_tokio::Context, name: &'static str, handle: 
                 "panicked (Error::Exited)"
             }
             Err(commonware_runtime::Error::Closed) => {
-                warn!(task = name, "critical task terminated because the runtime context was shut down");
-                "runtime context closed"
+                // Runtime context was shut down (e.g. SIGTERM). This is normal
+                // shutdown -- do NOT abort, just let the process exit cleanly so
+                // any in-progress cleanup (QMDB flush, log drain) can complete.
+                info!(task = name, "task stopped (runtime context closed during shutdown)");
+                return;
             }
             Err(ref e) => {
                 error!(task = name, error = %e, error_debug = ?e, "critical task failed with unexpected error");
@@ -851,9 +880,16 @@ impl ProductionRunner {
         use kora_transport::NetworkConfigExt;
 
         let runtime_dir = runtime_storage_directory(&config.data_dir);
-        info!(runtime_dir = %runtime_dir.display(), "Starting Commonware runtime");
-        let executor =
-            cw_tokio::Runner::new(cw_tokio::Config::default().with_storage_directory(runtime_dir));
+        info!(
+            runtime_dir = %runtime_dir.display(),
+            worker_threads = config.worker_threads,
+            "Starting Commonware runtime"
+        );
+        let executor = cw_tokio::Runner::new(
+            cw_tokio::Config::default()
+                .with_storage_directory(runtime_dir)
+                .with_worker_threads(config.worker_threads),
+        );
         executor.start(|context| async move {
             let validator_key = config
                 .validator_key()
@@ -876,7 +912,15 @@ impl ProductionRunner {
                 _ = tokio::signal::ctrl_c() => {},
                 _ = sigterm.recv() => {},
             }
-            info!("Received shutdown signal, stopping...");
+            info!("Received shutdown signal, initiating graceful shutdown...");
+
+            // Allow a brief window for in-flight QMDB commits and log drains
+            // to complete before the runtime drops all task contexts. The
+            // watchdog no longer calls abort() on `Error::Closed`, so these
+            // tasks will terminate cleanly when their contexts are dropped.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+
+            info!("Graceful shutdown complete");
             Ok::<(), RunnerError>(())
         })
     }
@@ -1078,7 +1122,9 @@ impl NodeRunner for ProductionRunner {
             (None, None)
         };
 
-        let context_provider = RevmContextProvider { gas_limit, block_index: block_index.clone() };
+        let fee_recipient = config.execution.fee_recipient.unwrap_or(Address::ZERO);
+        let context_provider =
+            RevmContextProvider { gas_limit, fee_recipient, block_index: block_index.clone() };
         let recovered_head_height = recover_finalized_state(
             &ledger,
             &block_index,
@@ -1123,8 +1169,12 @@ impl NodeRunner for ProductionRunner {
             // up to 256 blocks behind head).
             let live_state = LiveState::new(ledger.clone());
             let rpc_executor = Arc::new(RevmExecutor::new(self.chain_id));
-            let indexed_provider =
-                kora_rpc::IndexedStateProvider::new(block_index.clone(), live_state, rpc_executor);
+            let indexed_provider = kora_rpc::IndexedStateProvider::new(
+                block_index.clone(),
+                live_state,
+                rpc_executor,
+                fee_recipient,
+            );
             let tx_ledger = ledger.clone();
             let chain_id = self.chain_id;
             let tx_pool = txpool.clone();
@@ -1183,7 +1233,11 @@ impl NodeRunner for ProductionRunner {
             if let Some(sender) = mempool_broadcast.clone() {
                 rpc = rpc.with_mempool_broadcast(sender);
             }
-            drop(rpc.start());
+            // Keep the RPC handle alive so the HTTP and JSON-RPC tasks are not
+            // cancelled immediately.  The handle is dropped when `run()` returns
+            // (i.e. after the signal handler completes), which cleanly stops the
+            // RPC servers during shutdown.
+            let _rpc_handle = rpc.start();
             info!(addr = %addr, "RPC server started with live state provider");
 
             spawn_partition_monitor(node_state.clone(), context.clone());
@@ -1265,11 +1319,19 @@ impl NodeRunner for ProductionRunner {
 
         let scheme_provider = ConstantSchemeProvider::from(self.scheme.clone());
 
+        // Suppress resolver peer-bans during catch-up to avoid blocking peers
+        // that serve historical data which fails local verification due to
+        // missing parent snapshots. The simplex engine uses the real oracle
+        // blocker unconditionally since it only bans for genuine equivocation.
+        let resolver_catching_up = Arc::new(AtomicBool::new(recovered_head_height.is_some()));
+        let resolver_blocker =
+            GraduatedBlocker::new(transport.oracle.clone(), resolver_catching_up);
+
         let resolver = PeerInitializer::init::<_, _, _, Block, _, _, _>(
             &context.with_label("resolver"),
             my_pk.clone(),
             transport.oracle.clone(),
-            NoOpBlocker::<Peer>::new(),
+            resolver_blocker,
             transport.marshal.backfill,
         );
 
@@ -1302,8 +1364,9 @@ impl NodeRunner for ProductionRunner {
             executor,
             block_cfg.max_txs,
             gas_limit,
+            fee_recipient,
         );
-        app = app.with_metrics(app_metrics);
+        app = app.with_metrics(app_metrics.clone());
         if let Some((height, _)) = recovered_head_height {
             app = app.with_recovered_height(height);
             // Seed the block-fee cache from the block index so that the
@@ -1311,6 +1374,9 @@ impl NodeRunner for ProductionRunner {
             // base fee.  We seed the last few blocks to cover the parent
             // of the next proposed/verified block.
             seed_block_fee_cache(&app, &block_index, height);
+            if let Some((state, _)) = &self.rpc_config {
+                state.set_recovered_height(height);
+            }
         }
         if let Some((state, _)) = &self.rpc_config {
             app = app.with_node_state(state.clone());
@@ -1323,10 +1389,9 @@ impl NodeRunner for ProductionRunner {
         );
 
         let seed_reporter = SeedReporter::<MinSig>::new(ledger.clone());
-        let node_state_reporter = self
-            .rpc_config
-            .as_ref()
-            .map(|(state, _)| NodeStateReporter::<ThresholdScheme>::new(state.clone()));
+        let node_state_reporter = self.rpc_config.as_ref().map(|(state, _)| {
+            NodeStateReporter::<ThresholdScheme>::new(state.clone()).with_metrics(app_metrics)
+        });
         let inner_reporters: Reporters<_, MarshalMailbox, Option<NodeStateRptr>> =
             Reporters::from((marshal_mailbox.clone(), node_state_reporter));
         let reporter = Reporters::from((seed_reporter, inner_reporters));
@@ -1342,7 +1407,7 @@ impl NodeRunner for ProductionRunner {
             simplex::Config {
                 scheme: self.scheme.clone(),
                 elector: Random,
-                blocker: NoOpBlocker::<Peer>::new(),
+                blocker: transport.oracle.clone(),
                 automaton: marshaled.clone(),
                 relay: marshaled,
                 reporter,
