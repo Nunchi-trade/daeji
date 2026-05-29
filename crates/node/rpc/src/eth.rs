@@ -1536,6 +1536,8 @@ mod tests {
             uncles: vec![],
             size: U64::ZERO,
             transactions: BlockTransactions::Full(transactions),
+            withdrawals: vec![],
+            withdrawals_root: B256::ZERO,
         }
     }
 
@@ -1604,6 +1606,8 @@ mod tests {
             uncles: vec![],
             size: U64::ZERO,
             transactions: BlockTransactions::Full(transactions),
+            withdrawals: vec![],
+            withdrawals_root: B256::ZERO,
         }
     }
 
