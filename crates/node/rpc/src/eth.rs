@@ -586,6 +586,27 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
         newest_block: BlockNumberOrTag,
         reward_percentiles: Option<Vec<f64>>,
     ) -> RpcResult<FeeHistory> {
+        // Validate percentile inputs per the Ethereum JSON-RPC specification:
+        // values must be finite, in [0, 100], and monotonically non-decreasing.
+        if let Some(percentiles) = &reward_percentiles {
+            for p in percentiles {
+                if !p.is_finite() || *p < 0.0 || *p > 100.0 {
+                    return Err(RpcError::InvalidParams(
+                        "percentile values must be in [0, 100]".to_string(),
+                    )
+                    .into());
+                }
+            }
+            for w in percentiles.windows(2) {
+                if w[0] > w[1] {
+                    return Err(RpcError::InvalidParams(
+                        "percentiles must be monotonically increasing".to_string(),
+                    )
+                    .into());
+                }
+            }
+        }
+
         let provider = self.state_provider.read().await;
         let head = provider
             .block_number()
@@ -618,7 +639,11 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
                 gas_used_ratio.push(block_gas_used_ratio(gas_used, gas_limit));
 
                 if let (Some(percentiles), Some(rows)) = (&reward_percentiles, reward.as_mut()) {
-                    rows.push(compute_reward_percentiles(&block, percentiles));
+                    // Fetch per-transaction gas_used from receipts for
+                    // correct percentile weighting (spec requires gas consumed,
+                    // not gas limit).
+                    let tx_gas_used = fetch_tx_gas_used(&*provider, &block).await;
+                    rows.push(compute_reward_percentiles(&block, percentiles, &tx_gas_used));
                 }
 
                 last_base_fee = Some(base_fee);
@@ -1056,6 +1081,25 @@ async fn block_by_number_or_none<S: StateProvider>(
     }
 }
 
+/// Fetches per-transaction `gas_used` from receipts for all transactions in a
+/// block. Returns a map from transaction hash to its actual gas consumed.
+/// When a receipt is unavailable (e.g. test mocks), falls back to the
+/// transaction's gas limit so that the percentile calculation still works.
+async fn fetch_tx_gas_used<S: StateProvider>(provider: &S, block: &RpcBlock) -> HashMap<B256, u64> {
+    let BlockTransactions::Full(txs) = &block.transactions else {
+        return HashMap::new();
+    };
+    let mut map = HashMap::with_capacity(txs.len());
+    for tx in txs {
+        let gas_used = match provider.receipt_by_hash(tx.hash).await {
+            Ok(Some(receipt)) => receipt.gas_used.to::<u64>(),
+            _ => tx.gas.to::<u64>(),
+        };
+        map.insert(tx.hash, gas_used);
+    }
+    map
+}
+
 fn resolve_fee_history_newest(newest_block: BlockNumberOrTag, head: u64) -> u64 {
     match newest_block {
         BlockNumberOrTag::Number(n) => n.to::<u64>().min(head),
@@ -1086,7 +1130,11 @@ fn block_gas_used_ratio(gas_used: u64, gas_limit: u64) -> f64 {
     (gas_used as f64 / gas_limit as f64).clamp(0.0, 1.0)
 }
 
-fn compute_reward_percentiles(block: &RpcBlock, percentiles: &[f64]) -> Vec<U256> {
+fn compute_reward_percentiles(
+    block: &RpcBlock,
+    percentiles: &[f64],
+    tx_gas_used: &HashMap<B256, u64>,
+) -> Vec<U256> {
     let BlockTransactions::Full(txs) = &block.transactions else {
         return vec![U256::ZERO; percentiles.len()];
     };
@@ -1097,7 +1145,10 @@ fn compute_reward_percentiles(block: &RpcBlock, percentiles: &[f64]) -> Vec<U256
     let base_fee = block.base_fee_per_gas.unwrap_or_default();
     let mut rewards = txs
         .iter()
-        .map(|tx| (effective_priority_fee(tx, base_fee), tx.gas.to::<u64>()))
+        .map(|tx| {
+            let gas_used = tx_gas_used.get(&tx.hash).copied().unwrap_or_else(|| tx.gas.to::<u64>());
+            (effective_priority_fee(tx, base_fee), gas_used)
+        })
         .filter(|(_, gas)| *gas > 0)
         .collect::<Vec<_>>();
     if rewards.is_empty() {
@@ -1298,6 +1349,7 @@ mod tests {
     #[derive(Clone, Debug)]
     struct MockFeeStateProvider {
         blocks: HashMap<u64, RpcBlock>,
+        receipts: HashMap<B256, RpcTransactionReceipt>,
         head: u64,
     }
 
@@ -1306,7 +1358,14 @@ mod tests {
             let head = blocks.iter().map(|block| block.number.to::<u64>()).max().unwrap_or(0);
             let blocks =
                 blocks.into_iter().map(|block| (block.number.to::<u64>(), block)).collect();
-            Self { blocks, head }
+            Self { blocks, receipts: HashMap::new(), head }
+        }
+
+        fn with_receipts(mut self, receipts: Vec<RpcTransactionReceipt>) -> Self {
+            for receipt in receipts {
+                self.receipts.insert(receipt.transaction_hash, receipt);
+            }
+            self
         }
 
         fn resolve_block_number(&self, block: BlockNumberOrTag) -> u64 {
@@ -1401,9 +1460,9 @@ mod tests {
 
         async fn receipt_by_hash(
             &self,
-            _hash: B256,
+            hash: B256,
         ) -> Result<Option<RpcTransactionReceipt>, RpcError> {
-            Ok(None)
+            Ok(self.receipts.get(&hash).cloned())
         }
 
         async fn block_number(&self) -> Result<u64, RpcError> {
@@ -1587,10 +1646,11 @@ mod tests {
         async fn insert_block(&self, number: u64, hash: B256) {
             let mut inner = self.inner.write().await;
             inner.head = inner.head.max(number);
-            inner.blocks.insert(
-                number,
-                RpcBlock { hash, number: U64::from(number), ..RpcBlock::default() },
-            );
+            inner.blocks.insert(number, RpcBlock {
+                hash,
+                number: U64::from(number),
+                ..RpcBlock::default()
+            });
         }
 
         async fn insert_log(
@@ -1834,13 +1894,11 @@ mod tests {
 
     #[tokio::test]
     async fn fee_history_rewards_reflect_actual_tips() {
-        let provider = MockFeeStateProvider::new(vec![make_fee_block(
-            0,
-            gwei(1),
-            42_000,
-            30_000_000,
-            vec![gwei(3), gwei(5)],
-        )]);
+        let provider =
+            MockFeeStateProvider::new(vec![make_fee_block(0, gwei(1), 42_000, 30_000_000, vec![
+                gwei(3),
+                gwei(5),
+            ])]);
         let api = EthApiImpl::new(1, provider);
 
         let history = EthApiServer::fee_history(
@@ -1995,13 +2053,10 @@ mod tests {
         };
         // base_fee = 8 gwei, tx gas_price = 12 gwei
         // Without fix: min_gas_price = base_fee + priority_fee could exceed max_price
-        let provider = MockFeeStateProvider::new(vec![make_fee_block(
-            0,
-            gwei(8),
-            21_000,
-            30_000_000,
-            vec![gwei(12)],
-        )]);
+        let provider =
+            MockFeeStateProvider::new(vec![make_fee_block(0, gwei(8), 21_000, 30_000_000, vec![
+                gwei(12),
+            ])]);
         let api = EthApiImpl::new(1, provider).with_gas_oracle_config(config);
 
         let gas_price = EthApiServer::gas_price(&api).await.unwrap();
@@ -2020,13 +2075,10 @@ mod tests {
             min_priority_fee: U256::from(GWEI),
         };
         // base_fee = 10 gwei (above max_price of 5 gwei)
-        let provider = MockFeeStateProvider::new(vec![make_fee_block(
-            0,
-            gwei(10),
-            21_000,
-            30_000_000,
-            vec![gwei(12)],
-        )]);
+        let provider =
+            MockFeeStateProvider::new(vec![make_fee_block(0, gwei(10), 21_000, 30_000_000, vec![
+                gwei(12),
+            ])]);
         let api = EthApiImpl::new(1, provider).with_gas_oracle_config(config);
 
         let gas_price = EthApiServer::gas_price(&api).await.unwrap();
@@ -2211,14 +2263,11 @@ mod tests {
         provider.insert_block(1, B256::repeat_byte(1)).await;
         provider.insert_log(1, target, vec![topic]).await;
         let api = EthApiImpl::new(1, provider.clone());
-        let filter_id = EthApiServer::new_filter(
-            &api,
-            RpcLogFilter {
-                address: Some(AddressFilter::Single(target)),
-                topics: Some(vec![Some(TopicFilter::Single(topic))]),
-                ..RpcLogFilter::default()
-            },
-        )
+        let filter_id = EthApiServer::new_filter(&api, RpcLogFilter {
+            address: Some(AddressFilter::Single(target)),
+            topics: Some(vec![Some(TopicFilter::Single(topic))]),
+            ..RpcLogFilter::default()
+        })
         .await
         .unwrap();
 
@@ -2279,10 +2328,10 @@ mod tests {
         provider.insert_log(1, target, vec![topic]).await;
 
         let api = EthApiImpl::new(1, provider.clone());
-        let filter_id = EthApiServer::new_filter(
-            &api,
-            RpcLogFilter { block_hash: Some(block_hash), ..RpcLogFilter::default() },
-        )
+        let filter_id = EthApiServer::new_filter(&api, RpcLogFilter {
+            block_hash: Some(block_hash),
+            ..RpcLogFilter::default()
+        })
         .await
         .unwrap();
 
@@ -2477,5 +2526,204 @@ mod tests {
         };
         assert!(hashes.contains(&h3), "new tx after filter creation should appear");
         assert!(hashes.contains(&h4), "new tx after filter creation should appear");
+    }
+
+    /// Per-transaction parameters for building blocks where each tx has a
+    /// distinct gas limit and gas_used.
+    struct TxGasParams {
+        gas_price: U256,
+        gas_limit: u64,
+        gas_used: u64,
+    }
+
+    /// Builds a block and matching receipts where each transaction has an
+    /// independent gas_limit and gas_used.
+    fn make_fee_block_with_receipts(
+        number: u64,
+        base_fee_per_gas: U256,
+        gas_limit: u64,
+        txs: Vec<TxGasParams>,
+    ) -> (RpcBlock, Vec<RpcTransactionReceipt>) {
+        let block_hash = B256::repeat_byte(number as u8);
+        let total_gas_used: u64 = txs.iter().map(|t| t.gas_used).sum();
+        let mut cumulative = 0u64;
+        let mut transactions = Vec::with_capacity(txs.len());
+        let mut receipts = Vec::with_capacity(txs.len());
+
+        for (index, params) in txs.iter().enumerate() {
+            let tx_hash =
+                B256::repeat_byte((number as u8).wrapping_mul(16).wrapping_add(index as u8));
+            cumulative += params.gas_used;
+
+            transactions.push(RpcTransaction {
+                hash: tx_hash,
+                nonce: U64::from(index as u64),
+                block_hash: Some(block_hash),
+                block_number: Some(U64::from(number)),
+                transaction_index: Some(U64::from(index as u64)),
+                from: Address::repeat_byte(0x11),
+                to: Some(Address::repeat_byte(0x22)),
+                value: U256::ZERO,
+                gas: U64::from(params.gas_limit),
+                gas_price: params.gas_price,
+                input: Bytes::new(),
+                tx_type: U64::ZERO,
+                chain_id: None,
+                max_fee_per_gas: None,
+                max_priority_fee_per_gas: None,
+                v: U256::ZERO,
+                r: U256::ZERO,
+                s: U256::ZERO,
+            });
+
+            receipts.push(RpcTransactionReceipt {
+                transaction_hash: tx_hash,
+                transaction_index: U64::from(index as u64),
+                block_hash,
+                block_number: U64::from(number),
+                from: Address::repeat_byte(0x11),
+                to: Some(Address::repeat_byte(0x22)),
+                cumulative_gas_used: U64::from(cumulative),
+                gas_used: U64::from(params.gas_used),
+                ..RpcTransactionReceipt::default()
+            });
+        }
+
+        let block = RpcBlock {
+            hash: block_hash,
+            parent_hash: B256::ZERO,
+            sha3_uncles: B256::ZERO,
+            number: U64::from(number),
+            state_root: B256::ZERO,
+            transactions_root: B256::ZERO,
+            receipts_root: B256::ZERO,
+            logs_bloom: Bytes::new(),
+            timestamp: U64::from(number),
+            gas_limit: U64::from(gas_limit),
+            gas_used: U64::from(total_gas_used),
+            extra_data: Bytes::new(),
+            mix_hash: B256::ZERO,
+            nonce: Default::default(),
+            base_fee_per_gas: Some(base_fee_per_gas),
+            miner: Address::ZERO,
+            difficulty: U256::ZERO,
+            total_difficulty: U256::ZERO,
+            uncles: vec![],
+            size: U64::ZERO,
+            transactions: BlockTransactions::Full(transactions),
+        };
+
+        (block, receipts)
+    }
+
+    #[tokio::test]
+    async fn fee_history_uses_gas_used_not_gas_limit_for_percentiles() {
+        // Two transactions:
+        //   tx0: gas_price=3 gwei, gas_limit=1_000_000, gas_used=50_000
+        //   tx1: gas_price=5 gwei, gas_limit=21_000,    gas_used=21_000
+        //
+        // With the bug (using gas_limit): tx0 dominates (1M vs 21K),
+        // so the 50th percentile = tip of tx0 = 2 gwei.
+        //
+        // With the fix (using gas_used): tx0 uses 50K, tx1 uses 21K.
+        // Total gas_used = 71_000. Sorted by tip: tx0 (2 gwei, 50K), tx1 (4 gwei, 21K).
+        // 50th percentile threshold = ceil(71000 * 50 / 100) = 35500.
+        // Cumulative after tx0: 50_000 >= 35_500 => 50th percentile = 2 gwei.
+        //
+        // But at 75th percentile threshold = ceil(71000 * 75 / 100) = 53250.
+        // Cumulative after tx0: 50_000 < 53_250.
+        // Cumulative after tx1: 71_000 >= 53_250 => 75th percentile = 4 gwei.
+        //
+        // With the bug at 75th: threshold = ceil(1021000 * 75 / 100) = 765750.
+        // Cumulative after tx0: 1_000_000 >= 765_750 => 75th = 2 gwei (WRONG).
+        let (block, receipts) = make_fee_block_with_receipts(0, gwei(1), 30_000_000, vec![
+            TxGasParams { gas_price: gwei(3), gas_limit: 1_000_000, gas_used: 50_000 },
+            TxGasParams { gas_price: gwei(5), gas_limit: 21_000, gas_used: 21_000 },
+        ]);
+
+        let provider = MockFeeStateProvider::new(vec![block]).with_receipts(receipts);
+        let api = EthApiImpl::new(1, provider);
+
+        let history = EthApiServer::fee_history(
+            &api,
+            U64::from(1),
+            BlockNumberOrTag::Latest,
+            Some(vec![75.0]),
+        )
+        .await
+        .unwrap();
+
+        let rewards = history.reward.unwrap();
+        // With the fix, 75th percentile should be 4 gwei (tx1's tip).
+        // With the bug, it would be 2 gwei (tx0's tip dominated by gas_limit).
+        assert_eq!(rewards, vec![vec![gwei(4)]]);
+    }
+
+    #[tokio::test]
+    async fn fee_history_rejects_out_of_range_percentile() {
+        let provider =
+            MockFeeStateProvider::new(vec![make_fee_block(0, gwei(1), 0, 30_000_000, vec![])]);
+        let api = EthApiImpl::new(1, provider);
+
+        let result = EthApiServer::fee_history(
+            &api,
+            U64::from(1),
+            BlockNumberOrTag::Latest,
+            Some(vec![150.0]),
+        )
+        .await;
+
+        assert!(result.is_err(), "percentile > 100 should be rejected");
+    }
+
+    #[tokio::test]
+    async fn fee_history_rejects_negative_percentile() {
+        let provider =
+            MockFeeStateProvider::new(vec![make_fee_block(0, gwei(1), 0, 30_000_000, vec![])]);
+        let api = EthApiImpl::new(1, provider);
+
+        let result = EthApiServer::fee_history(
+            &api,
+            U64::from(1),
+            BlockNumberOrTag::Latest,
+            Some(vec![-1.0]),
+        )
+        .await;
+
+        assert!(result.is_err(), "negative percentile should be rejected");
+    }
+
+    #[tokio::test]
+    async fn fee_history_rejects_non_monotonic_percentiles() {
+        let provider =
+            MockFeeStateProvider::new(vec![make_fee_block(0, gwei(1), 0, 30_000_000, vec![])]);
+        let api = EthApiImpl::new(1, provider);
+
+        let result = EthApiServer::fee_history(
+            &api,
+            U64::from(1),
+            BlockNumberOrTag::Latest,
+            Some(vec![75.0, 25.0]),
+        )
+        .await;
+
+        assert!(result.is_err(), "non-monotonic percentiles should be rejected");
+    }
+
+    #[tokio::test]
+    async fn fee_history_accepts_equal_percentiles() {
+        let provider =
+            MockFeeStateProvider::new(vec![make_fee_block(0, gwei(1), 0, 30_000_000, vec![])]);
+        let api = EthApiImpl::new(1, provider);
+
+        let result = EthApiServer::fee_history(
+            &api,
+            U64::from(1),
+            BlockNumberOrTag::Latest,
+            Some(vec![50.0, 50.0]),
+        )
+        .await;
+
+        assert!(result.is_ok(), "equal consecutive percentiles should be accepted");
     }
 }

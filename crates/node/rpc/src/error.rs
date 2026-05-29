@@ -78,6 +78,10 @@ pub enum RpcError {
     /// Unsupported operation (e.g. historical state queries).
     #[error("unsupported: {0}")]
     Unsupported(String),
+
+    /// Invalid method parameters.
+    #[error("invalid params: {0}")]
+    InvalidParams(String),
 }
 
 impl From<RpcError> for ErrorObjectOwned {
@@ -94,6 +98,7 @@ impl From<RpcError> for ErrorObjectOwned {
             RpcError::Internal(_) => (codes::INTERNAL_ERROR, err.to_string()),
             RpcError::NotImplemented => (codes::METHOD_NOT_SUPPORTED, err.to_string()),
             RpcError::Unsupported(_) => (codes::INVALID_PARAMS, err.to_string()),
+            RpcError::InvalidParams(_) => (codes::INVALID_PARAMS, err.to_string()),
         };
         ErrorObjectOwned::owned(code, message, None::<()>)
     }
@@ -276,5 +281,19 @@ mod tests {
         let err = RpcError::BlockNotFound;
         let debug_str = format!("{err:?}");
         assert!(debug_str.contains("BlockNotFound"));
+    }
+
+    #[test]
+    fn rpc_error_display_invalid_params() {
+        let err = RpcError::InvalidParams("bad value".to_string());
+        assert_eq!(err.to_string(), "invalid params: bad value");
+    }
+
+    #[test]
+    fn rpc_error_to_error_object_invalid_params() {
+        let err = RpcError::InvalidParams("bad value".to_string());
+        let obj: ErrorObjectOwned = err.into();
+        assert_eq!(obj.code(), codes::INVALID_PARAMS);
+        assert!(obj.message().contains("bad value"));
     }
 }
