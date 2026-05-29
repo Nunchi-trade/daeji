@@ -20,11 +20,11 @@ use alloy_consensus::{
 use alloy_eips::eip2718::Decodable2718 as _;
 use alloy_primitives::{B256, Bytes, U256, keccak256, logs_bloom};
 use commonware_consensus::{
-    Block as _, Reporter,
+    Block as _, Reporter, Viewable as _,
     marshal::Update,
     simplex::{
         scheme::bls12381_threshold::vrf::{Scheme, Seedable as _},
-        types::Activity,
+        types::{Activity, Attributable as _},
     },
 };
 use commonware_cryptography::{Committable as _, bls12381::primitives::variant::Variant};
@@ -36,7 +36,7 @@ use kora_domain::{Block, ConsensusDigest, MempoolEvent, PublicKey, StateRoot};
 use kora_executor::{BlockContext, BlockExecutor, ExecutionOutcome};
 use kora_indexer::{BlockIndex, IndexedBlock, IndexedLog, IndexedReceipt, IndexedTransaction};
 use kora_ledger::{LedgerError, LedgerService};
-use kora_metrics::AppMetrics;
+use kora_metrics::{AppMetrics, EquivocationTypeLabel};
 use kora_overlay::OverlayState;
 use kora_qmdb_ledger::QmdbState;
 use kora_rpc::{MempoolEventSender, NodeState};
@@ -152,7 +152,33 @@ async fn seed_report_inner<V: Variant>(
                 )
                 .await;
         }
-        _ => {}
+        Activity::ConflictingNotarize(ref proof) => {
+            warn!(
+                signer = ?proof.signer(),
+                view = ?proof.view(),
+                "EQUIVOCATION: conflicting notarize detected"
+            );
+        }
+        Activity::ConflictingFinalize(ref proof) => {
+            warn!(
+                signer = ?proof.signer(),
+                view = ?proof.view(),
+                "EQUIVOCATION: conflicting finalize detected"
+            );
+        }
+        Activity::NullifyFinalize(ref proof) => {
+            warn!(
+                signer = ?proof.signer(),
+                view = ?proof.view(),
+                "EQUIVOCATION: nullify-finalize conflict detected"
+            );
+        }
+        // Normal per-vote and aggregate events that don't affect seed state.
+        Activity::Notarize(_)
+        | Activity::Certification(_)
+        | Activity::Nullify(_)
+        | Activity::Nullification(_)
+        | Activity::Finalize(_) => {}
     }
 }
 
@@ -572,26 +598,18 @@ mod mempool_tests {
     fn publish_mempool_inclusions_broadcasts_tx_included() {
         let (sender, mut receiver) = kora_rpc::mempool_event_channel();
         let tx = Tx::new(Bytes::from_static(&[0x01, 0x02, 0x03]));
-        let block = Block::new(
-            BlockId(B256::ZERO),
-            7,
-            0,
-            B256::ZERO,
-            StateRoot(B256::ZERO),
-            vec![tx.clone()],
-        );
+        let block = Block::new(BlockId(B256::ZERO), 7, 0, B256::ZERO, StateRoot(B256::ZERO), vec![
+            tx.clone(),
+        ]);
         let block_hash = block.id().0;
 
         publish_mempool_inclusions(Some(&sender), &block);
 
-        assert_eq!(
-            receiver.try_recv().unwrap(),
-            MempoolEvent::TxIncluded {
-                hash: keccak256(&tx.bytes),
-                block_number: block.height,
-                block_hash,
-            }
-        );
+        assert_eq!(receiver.try_recv().unwrap(), MempoolEvent::TxIncluded {
+            hash: keccak256(&tx.bytes),
+            block_number: block.height,
+            block_hash,
+        });
     }
 }
 
@@ -1450,10 +1468,13 @@ mod tests {
 /// - Current view number (from notarizations)
 /// - Finalized block count
 /// - Nullified round count
+/// - Equivocation events (Byzantine behavior)
 #[derive(Clone)]
 pub struct NodeStateReporter<S> {
     /// RPC node state to update.
     state: NodeState,
+    /// Optional application-level metrics for Prometheus counters.
+    metrics: Option<AppMetrics>,
     /// Marker for the signing scheme.
     _scheme: PhantomData<S>,
 }
@@ -1467,7 +1488,14 @@ impl<S> fmt::Debug for NodeStateReporter<S> {
 impl<S> NodeStateReporter<S> {
     /// Create a new node state reporter.
     pub const fn new(state: NodeState) -> Self {
-        Self { state, _scheme: PhantomData }
+        Self { state, metrics: None, _scheme: PhantomData }
+    }
+
+    /// Attach application-level metrics for tracking equivocation events.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: AppMetrics) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 }
 
@@ -1489,7 +1517,54 @@ where
             Activity::Nullification(_) => {
                 self.state.inc_nullified();
             }
-            _ => {}
+            Activity::ConflictingNotarize(proof) => {
+                warn!(
+                    signer = ?proof.signer(),
+                    view = ?proof.view(),
+                    "EQUIVOCATION: conflicting notarize detected"
+                );
+                self.state.inc_equivocations();
+                if let Some(ref m) = self.metrics {
+                    m.equivocations
+                        .get_or_create(&EquivocationTypeLabel {
+                            r#type: "conflicting_notarize".into(),
+                        })
+                        .inc();
+                }
+            }
+            Activity::ConflictingFinalize(proof) => {
+                warn!(
+                    signer = ?proof.signer(),
+                    view = ?proof.view(),
+                    "EQUIVOCATION: conflicting finalize detected"
+                );
+                self.state.inc_equivocations();
+                if let Some(ref m) = self.metrics {
+                    m.equivocations
+                        .get_or_create(&EquivocationTypeLabel {
+                            r#type: "conflicting_finalize".into(),
+                        })
+                        .inc();
+                }
+            }
+            Activity::NullifyFinalize(proof) => {
+                warn!(
+                    signer = ?proof.signer(),
+                    view = ?proof.view(),
+                    "EQUIVOCATION: nullify-finalize conflict detected"
+                );
+                self.state.inc_equivocations();
+                if let Some(ref m) = self.metrics {
+                    m.equivocations
+                        .get_or_create(&EquivocationTypeLabel { r#type: "nullify_finalize".into() })
+                        .inc();
+                }
+            }
+            // Normal per-vote and aggregate events that don't affect node state.
+            Activity::Notarize(_)
+            | Activity::Certification(_)
+            | Activity::Nullify(_)
+            | Activity::Finalize(_) => {}
         }
         async {}
     }
