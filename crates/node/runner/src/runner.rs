@@ -493,6 +493,7 @@ async fn replay_finalized_block(
     // subsequent blocks can derive their EIP-1559 base fee correctly.
     // The initial `index_recovered_block` call stored gas_used=0 because
     // the archive does not include execution results.
+    let tx_bytes_total: u64 = block.txs.iter().map(|tx| tx.bytes.len() as u64).sum();
     let indexed_block = IndexedBlock {
         hash: block.id().0,
         number: block.height,
@@ -505,6 +506,7 @@ async fn replay_finalized_block(
         gas_used: execution.outcome.gas_used,
         base_fee_per_gas: block_context.header.base_fee_per_gas,
         mix_hash: block.prevrandao,
+        size: 508 + tx_bytes_total,
         transaction_hashes: block.txs.iter().map(|tx| keccak256(&tx.bytes)).collect(),
     };
     block_index.insert_block(indexed_block, Vec::new(), Vec::new());
