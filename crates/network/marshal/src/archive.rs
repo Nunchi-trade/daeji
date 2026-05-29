@@ -21,7 +21,7 @@ use commonware_storage::{
     translator::{EightCap, Translator},
 };
 use commonware_utils::{NZU16, NZU64, NZUsize, sequence::Array};
-use tracing::warn;
+use tracing::{info, warn};
 
 /// Trait for archive backends that support pruning old entries.
 ///
@@ -52,11 +52,18 @@ where
 /// `put` still updates the in-memory archive immediately, so marshal can serve
 /// and query freshly finalized blocks. `sync` is forwarded to disk only when the
 /// highest dirty height is divisible by `checkpoint_interval`.
+///
+/// When [`with_retention`](Self::with_retention) is configured and the inner
+/// archive implements [`Prunable`], old entries are automatically pruned during
+/// [`sync`](ArchiveTrait::sync) to bound disk and memory usage.
 #[derive(Debug)]
 pub struct CheckpointedArchive<A> {
     inner: A,
     checkpoint_interval: u64,
     highest_dirty: Option<u64>,
+    /// Number of recent entries to retain. When set, entries older than
+    /// `last_index - retention` are pruned on each sync.
+    retention: Option<u64>,
 }
 
 impl<A> CheckpointedArchive<A> {
@@ -68,12 +75,48 @@ impl<A> CheckpointedArchive<A> {
     /// `FinalizedReporter::with_checkpoint_interval()` (`if 0 then 1`).
     pub const fn new(inner: A, checkpoint_interval: u64) -> Self {
         let interval = if checkpoint_interval == 0 { 1 } else { checkpoint_interval };
-        Self { inner, checkpoint_interval: interval, highest_dirty: None }
+        Self { inner, checkpoint_interval: interval, highest_dirty: None, retention: None }
+    }
+
+    /// Set the retention window for automatic pruning.
+    ///
+    /// When configured, entries older than `last_index - retention` are
+    /// automatically pruned during each [`sync`](ArchiveTrait::sync) call,
+    /// provided the inner archive implements [`Prunable`].
+    ///
+    /// A retention of 0 disables pruning (equivalent to not calling this
+    /// method).
+    #[must_use]
+    pub const fn with_retention(mut self, retention: u64) -> Self {
+        self.retention = if retention == 0 { None } else { Some(retention) };
+        self
     }
 
     fn mark_dirty(&mut self, height: u64) {
         self.highest_dirty =
             Some(self.highest_dirty.map_or(height, |existing| existing.max(height)));
+    }
+
+    /// Prune old entries if a retention window is configured.
+    ///
+    /// Called after a successful sync. Computes the pruning cutoff as
+    /// `last_index - retention` and forwards to [`Prunable::prune`].
+    async fn auto_prune(&mut self) -> Result<(), ArchiveError>
+    where
+        A: ArchiveTrait + Prunable,
+    {
+        let Some(retention) = self.retention else {
+            return Ok(());
+        };
+        let Some(last) = self.inner.last_index() else {
+            return Ok(());
+        };
+        if last <= retention {
+            return Ok(());
+        }
+        let min = last - retention;
+        info!(min, last, retention, "auto-pruning archive entries");
+        self.inner.prune(min).await
     }
 
     fn should_sync(&self) -> bool
@@ -219,7 +262,8 @@ where
     }
 
     async fn sync(&mut self) -> Result<(), Self::Error> {
-        ArchiveTrait::sync(self).await
+        ArchiveTrait::sync(self).await?;
+        self.auto_prune().await
     }
 
     async fn get(
@@ -256,7 +300,8 @@ where
     }
 
     async fn sync(&mut self) -> Result<(), Self::Error> {
-        ArchiveTrait::sync(self).await
+        ArchiveTrait::sync(self).await?;
+        self.auto_prune().await
     }
 
     async fn get(
@@ -338,6 +383,15 @@ impl ArchiveInitializer {
 
     /// The default partition prefix for blocks archive.
     pub const DEFAULT_BLOCKS_PREFIX: &'static str = "blocks";
+
+    /// Default archive retention window (number of entries to keep).
+    ///
+    /// At 33 blocks/s this retains ~5 minutes of history, which is sufficient
+    /// for consensus catch-up and block repair while bounding disk usage to
+    /// ~5 MB per archive. The value is chosen to be a multiple of
+    /// [`DEFAULT_PRUNABLE_ITEMS_PER_SECTION`](Self::DEFAULT_PRUNABLE_ITEMS_PER_SECTION)
+    /// (256) so that pruning operates at clean section boundaries.
+    pub const DEFAULT_ARCHIVE_RETENTION: u64 = 10_240;
 }
 
 impl ArchiveInitializer {
@@ -476,11 +530,17 @@ impl ArchiveInitializer {
     /// Combines [`init_prunable`](Self::init_prunable) with
     /// [`CheckpointedArchive`] so that syncs are batched to `checkpoint_interval`
     /// boundaries while pruning remains fully functional.
+    ///
+    /// The `retention` parameter controls automatic pruning: entries older than
+    /// `last_index - retention` are removed on each sync. Pass `0` to disable
+    /// auto-pruning. A sensible default is
+    /// [`DEFAULT_ARCHIVE_RETENTION`](Self::DEFAULT_ARCHIVE_RETENTION).
     pub async fn init_prunable_checkpointed<E, K, V>(
         ctx: E,
         partition_prefix: impl Into<String>,
         codec_config: V::Cfg,
         checkpoint_interval: u64,
+        retention: u64,
     ) -> Result<
         CheckpointedArchive<PrunableArchive<EightCap, E, K, V>>,
         commonware_storage::archive::Error,
@@ -491,7 +551,7 @@ impl ArchiveInitializer {
         V: Codec + Send + Sync,
     {
         let archive = Self::init_prunable(ctx, partition_prefix, codec_config).await?;
-        Ok(CheckpointedArchive::new(archive, checkpoint_interval))
+        Ok(CheckpointedArchive::new(archive, checkpoint_interval).with_retention(retention))
     }
 
     /// Partition suffixes used by the old `immutable::Archive` backend.
@@ -649,6 +709,7 @@ mod tests {
         assert_eq!(ArchiveInitializer::DEFAULT_PAGE_CACHE_SIZE.get(), 8_192);
         assert_eq!(ArchiveInitializer::DEFAULT_FINALIZATIONS_PREFIX, "finalizations");
         assert_eq!(ArchiveInitializer::DEFAULT_BLOCKS_PREFIX, "blocks");
+        assert_eq!(ArchiveInitializer::DEFAULT_ARCHIVE_RETENTION, 10_240);
     }
 
     #[test]
@@ -718,5 +779,19 @@ mod tests {
         let mut archive_one = CheckpointedArchive::new(inner, 1);
         archive_one.mark_dirty(3);
         assert!(archive_one.should_sync());
+    }
+
+    #[test]
+    fn with_retention_zero_disables_pruning() {
+        let inner = FakeArchive { ranges: vec![(1, 100)] };
+        let archive = CheckpointedArchive::new(inner, 1).with_retention(0);
+        assert!(archive.retention.is_none());
+    }
+
+    #[test]
+    fn with_retention_nonzero_enables_pruning() {
+        let inner = FakeArchive { ranges: vec![(1, 100)] };
+        let archive = CheckpointedArchive::new(inner, 1).with_retention(10_240);
+        assert_eq!(archive.retention, Some(10_240));
     }
 }
