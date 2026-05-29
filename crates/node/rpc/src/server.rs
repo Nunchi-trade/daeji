@@ -380,6 +380,7 @@ pub struct RpcServer<S: StateProvider = NoopStateProvider> {
     rate_limit_config: RateLimitConfig,
     max_connections: u32,
     max_subscriptions_per_connection: u32,
+    max_batch_size: u32,
     peer_count: u64,
     pending_tx_broadcast: Option<PendingTxEventSender>,
     mempool_broadcast: Option<MempoolEventSender>,
@@ -399,6 +400,7 @@ impl<S: StateProvider> std::fmt::Debug for RpcServer<S> {
             .field("rate_limit_config", &self.rate_limit_config)
             .field("max_connections", &self.max_connections)
             .field("max_subscriptions_per_connection", &self.max_subscriptions_per_connection)
+            .field("max_batch_size", &self.max_batch_size)
             .finish()
     }
 }
@@ -425,6 +427,7 @@ impl RpcServer<NoopStateProvider> {
             rate_limit_config: RateLimitConfig::default(),
             max_connections: 100,
             max_subscriptions_per_connection: 32,
+            max_batch_size: 100,
             peer_count: 0,
             pending_tx_broadcast: None,
             mempool_broadcast: None,
@@ -445,6 +448,7 @@ impl RpcServer<NoopStateProvider> {
             rate_limit_config: RateLimitConfig::default(),
             max_connections: 100,
             max_subscriptions_per_connection: 32,
+            max_batch_size: 100,
             peer_count: 0,
             pending_tx_broadcast: None,
             mempool_broadcast: None,
@@ -472,6 +476,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             rate_limit_config: RateLimitConfig::default(),
             max_connections: 100,
             max_subscriptions_per_connection: 32,
+            max_batch_size: 100,
             peer_count: 0,
             pending_tx_broadcast: None,
             mempool_broadcast: None,
@@ -537,6 +542,14 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         self
     }
 
+    /// Set the maximum number of calls in a single batch request.
+    /// `0` disables batch requests entirely.
+    #[must_use]
+    pub const fn with_max_batch_size(mut self, max_batch_size: u32) -> Self {
+        self.max_batch_size = max_batch_size;
+        self
+    }
+
     /// Set the initially reported peer count for `net_peerCount`.
     #[must_use]
     pub const fn with_peer_count(mut self, peer_count: u64) -> Self {
@@ -558,6 +571,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             rate_limit_config: config.rate_limit,
             max_connections: config.max_connections,
             max_subscriptions_per_connection: config.max_subscriptions_per_connection,
+            max_batch_size: config.max_batch_size,
             peer_count: 0,
             pending_tx_broadcast: None,
             mempool_broadcast: None,
@@ -582,6 +596,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         let rpc_per_conn_limiter = PerConnectionRateLimiter::new(self.rate_limit_config);
         let max_connections = self.max_connections;
         let max_subscriptions_per_connection = self.max_subscriptions_per_connection;
+        let max_batch_size = self.max_batch_size;
         let state_provider = self.state_provider;
         let peer_count = self.peer_count;
         let pending_tx_broadcast = self.pending_tx_broadcast;
@@ -616,7 +631,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             let server = match Server::builder()
                 .max_connections(max_connections)
                 .max_subscriptions_per_connection(max_subscriptions_per_connection)
-                .set_batch_request_config(BatchRequestConfig::Limit(MAX_BATCH_SIZE))
+                .set_batch_request_config(BatchRequestConfig::Limit(max_batch_size))
                 .enable_ws_ping(PingConfig::new())
                 .set_http_middleware(tower_04::ServiceBuilder::new().layer(jsonrpc_cors_layer))
                 .set_rpc_middleware(rpc_middleware)
@@ -739,6 +754,7 @@ pub struct JsonRpcServer<S: StateProvider = NoopStateProvider> {
     rate_limit_config: RateLimitConfig,
     max_connections: u32,
     max_subscriptions_per_connection: u32,
+    max_batch_size: u32,
     peer_count: u64,
     pending_tx_broadcast: Option<PendingTxEventSender>,
     mempool_broadcast: Option<MempoolEventSender>,
@@ -756,6 +772,7 @@ impl<S: StateProvider> std::fmt::Debug for JsonRpcServer<S> {
             .field("rate_limit_config", &self.rate_limit_config)
             .field("max_connections", &self.max_connections)
             .field("max_subscriptions_per_connection", &self.max_subscriptions_per_connection)
+            .field("max_batch_size", &self.max_batch_size)
             .finish()
     }
 }
@@ -773,6 +790,7 @@ impl JsonRpcServer<NoopStateProvider> {
             rate_limit_config: RateLimitConfig::default(),
             max_connections: 100,
             max_subscriptions_per_connection: 32,
+            max_batch_size: 100,
             peer_count: 0,
             pending_tx_broadcast: None,
             mempool_broadcast: None,
@@ -793,6 +811,7 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
             rate_limit_config: RateLimitConfig::default(),
             max_connections: 100,
             max_subscriptions_per_connection: 32,
+            max_batch_size: 100,
             peer_count: 0,
             pending_tx_broadcast: None,
             mempool_broadcast: None,
@@ -858,6 +877,14 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         self
     }
 
+    /// Set the maximum number of calls in a single batch request.
+    /// `0` disables batch requests entirely.
+    #[must_use]
+    pub const fn with_max_batch_size(mut self, max_batch_size: u32) -> Self {
+        self.max_batch_size = max_batch_size;
+        self
+    }
+
     /// Set the initially reported peer count for `net_peerCount`.
     #[must_use]
     pub const fn with_peer_count(mut self, peer_count: u64) -> Self {
@@ -880,7 +907,7 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         let server = Server::builder()
             .max_connections(self.max_connections)
             .max_subscriptions_per_connection(self.max_subscriptions_per_connection)
-            .set_batch_request_config(BatchRequestConfig::Limit(MAX_BATCH_SIZE))
+            .set_batch_request_config(BatchRequestConfig::Limit(self.max_batch_size))
             .enable_ws_ping(PingConfig::new())
             .set_http_middleware(tower_04::ServiceBuilder::new().layer(cors_layer))
             .set_rpc_middleware(rpc_middleware)
@@ -1056,7 +1083,8 @@ mod tests {
         let config = RpcServerConfig::default()
             .with_rate_limit_burst(7, 11)
             .with_max_connections(13)
-            .with_max_subscriptions_per_connection(17);
+            .with_max_subscriptions_per_connection(17)
+            .with_max_batch_size(50);
 
         let server = RpcServer::from_config(NodeState::new(1, 0), config, NoopStateProvider);
 
@@ -1064,6 +1092,7 @@ mod tests {
         assert_eq!(server.rate_limit_config.burst_size, 11);
         assert_eq!(server.max_connections, 13);
         assert_eq!(server.max_subscriptions_per_connection, 17);
+        assert_eq!(server.max_batch_size, 50);
     }
 
     #[test]
