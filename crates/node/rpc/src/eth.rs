@@ -21,11 +21,12 @@ use tracing::warn;
 use crate::{
     error::RpcError,
     filters::{Filter, FilterChanges, FilterStore},
+    state::NodeState,
     state_provider::StateProvider,
     subscription::{MempoolEventSender, PendingTxEvent, PendingTxEventSender, PendingTxInfo},
     types::{
         BlockNumberOrTag, BlockTag, BlockTransactions, CallRequest, RpcBlock, RpcLog, RpcLogFilter,
-        RpcTransaction, RpcTransactionReceipt,
+        RpcTransaction, RpcTransactionReceipt, SyncInfo, SyncStatus,
     },
 };
 
@@ -153,8 +154,11 @@ pub trait EthApi {
     async fn protocol_version(&self) -> RpcResult<String>;
 
     /// Returns syncing status.
+    ///
+    /// Returns `false` when fully synced, or a `SyncInfo` object with
+    /// `startingBlock`, `currentBlock`, and `highestBlock` when catching up.
     #[method(name = "syncing")]
-    async fn syncing(&self) -> RpcResult<bool>;
+    async fn syncing(&self) -> RpcResult<SyncStatus>;
 
     /// Returns logs matching the given filter.
     #[method(name = "getLogs")]
@@ -299,6 +303,7 @@ pub struct EthApiImpl<S: StateProvider> {
     /// evicting the oldest entries.
     max_pending_txs: usize,
     filter_store: Arc<FilterStore>,
+    node_state: Option<NodeState>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for EthApiImpl<S> {
@@ -343,7 +348,15 @@ impl<S: StateProvider + 'static> EthApiImpl<S> {
             pending_tx_evicted: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             max_pending_txs: MAX_PENDING_TXS,
             filter_store: Arc::new(FilterStore::default()),
+            node_state: None,
         }
+    }
+
+    /// Attach a `NodeState` so that `eth_syncing` can report catch-up status.
+    #[must_use]
+    pub fn with_node_state(mut self, node_state: NodeState) -> Self {
+        self.node_state = Some(node_state);
+        self
     }
 
     /// Attach a pending transaction broadcast channel.
@@ -648,8 +661,17 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
         Ok("0x44".to_string())
     }
 
-    async fn syncing(&self) -> RpcResult<bool> {
-        Ok(false)
+    async fn syncing(&self) -> RpcResult<SyncStatus> {
+        if let Some(ref state) = self.node_state {
+            if state.is_catching_up() {
+                return Ok(SyncStatus::Syncing(SyncInfo {
+                    starting_block: U64::from(state.recovered_height()),
+                    current_block: U64::from(state.last_verified_height()),
+                    highest_block: U64::from(state.current_view()),
+                }));
+            }
+        }
+        Ok(SyncStatus::NotSyncing(false))
     }
 
     async fn get_logs(&self, filter: RpcLogFilter) -> RpcResult<Vec<RpcLog>> {

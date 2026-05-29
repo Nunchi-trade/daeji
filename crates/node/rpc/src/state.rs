@@ -15,6 +15,11 @@ use serde::{Deserialize, Serialize};
 /// Default validator count used by tests and legacy callers.
 pub(crate) const DEFAULT_VALIDATOR_COUNT: u32 = 4;
 
+/// Number of blocks past the recovered height that must be verified via
+/// full execution before the node exits catch-up mode.  Mirrors the
+/// constant of the same name in `app.rs`.
+const CATCH_UP_THRESHOLD: u64 = 64;
+
 /// Network partition status derived from peer connectivity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -68,6 +73,11 @@ struct NodeStateInner {
     nullified_count: AtomicU64,
     peer_count: AtomicU64,
     is_leader: RwLock<bool>,
+    /// Height of the HEAD block restored from archive during startup recovery.
+    /// Zero means the node was started fresh (no recovery).
+    recovered_height: AtomicU64,
+    /// Highest block height that has been verified via full execution.
+    last_verified_height: AtomicU64,
 }
 
 impl NodeState {
@@ -108,6 +118,8 @@ impl NodeState {
                 nullified_count: AtomicU64::new(0),
                 peer_count: AtomicU64::new(0),
                 is_leader: RwLock::new(false),
+                recovered_height: AtomicU64::new(0),
+                last_verified_height: AtomicU64::new(0),
             }),
         }
     }
@@ -150,6 +162,49 @@ impl NodeState {
     /// Update peer count.
     pub fn set_peer_count(&self, count: u64) {
         self.inner.peer_count.store(count, Ordering::Relaxed);
+    }
+
+    /// Set the height of the HEAD block recovered from the archive at startup.
+    ///
+    /// A value of zero (the default) means the node was started fresh.
+    pub fn set_recovered_height(&self, height: u64) {
+        self.inner.recovered_height.store(height, Ordering::Relaxed);
+    }
+
+    /// Return the recovered height (zero if the node was started fresh).
+    pub fn recovered_height(&self) -> u64 {
+        self.inner.recovered_height.load(Ordering::Relaxed)
+    }
+
+    /// Update the highest block height verified via full execution.
+    ///
+    /// Uses `fetch_max` so that out-of-order updates never regress the value.
+    pub fn set_last_verified_height(&self, height: u64) {
+        self.inner.last_verified_height.fetch_max(height, Ordering::Relaxed);
+    }
+
+    /// Return the highest block height verified via full execution.
+    pub fn last_verified_height(&self) -> u64 {
+        self.inner.last_verified_height.load(Ordering::Relaxed)
+    }
+
+    /// Return the current consensus view number.
+    pub fn current_view(&self) -> u64 {
+        self.inner.current_view.load(Ordering::Relaxed)
+    }
+
+    /// Returns `true` when the node is catching up from a snapshot recovery.
+    ///
+    /// A node is catching up when it was recovered from an archive
+    /// (`recovered_height > 0`) and has not yet verified enough blocks
+    /// past the recovery point via full execution.
+    pub fn is_catching_up(&self) -> bool {
+        let recovered = self.inner.recovered_height.load(Ordering::Relaxed);
+        if recovered == 0 {
+            return false;
+        }
+        let verified = self.inner.last_verified_height.load(Ordering::Relaxed);
+        verified < recovered.saturating_add(CATCH_UP_THRESHOLD)
     }
 
     /// Get current node status.
@@ -361,6 +416,51 @@ mod tests {
 
         state.set_finalized_height(100);
         assert_eq!(state.finalized_height(), 100);
+    }
+
+    // -- Sync state tests --
+
+    #[test]
+    fn node_state_not_catching_up_fresh_node() {
+        let state = NodeState::new(1, 0);
+        assert!(!state.is_catching_up());
+        assert_eq!(state.recovered_height(), 0);
+        assert_eq!(state.last_verified_height(), 0);
+    }
+
+    #[test]
+    fn node_state_catching_up_after_recovery() {
+        let state = NodeState::new(1, 0);
+        state.set_recovered_height(1000);
+        state.set_last_verified_height(1000);
+        assert!(state.is_catching_up());
+    }
+
+    #[test]
+    fn node_state_not_catching_up_after_threshold() {
+        let state = NodeState::new(1, 0);
+        state.set_recovered_height(1000);
+        state.set_last_verified_height(1000 + CATCH_UP_THRESHOLD);
+        assert!(!state.is_catching_up());
+    }
+
+    #[test]
+    fn node_state_current_view() {
+        let state = NodeState::new(1, 0);
+        assert_eq!(state.current_view(), 0);
+        state.set_view(42);
+        assert_eq!(state.current_view(), 42);
+    }
+
+    #[test]
+    fn node_state_last_verified_height_never_regresses() {
+        let state = NodeState::new(1, 0);
+        state.set_last_verified_height(100);
+        assert_eq!(state.last_verified_height(), 100);
+        state.set_last_verified_height(50);
+        assert_eq!(state.last_verified_height(), 100);
+        state.set_last_verified_height(200);
+        assert_eq!(state.last_verified_height(), 200);
     }
 
     // -- PartitionStatus tests --

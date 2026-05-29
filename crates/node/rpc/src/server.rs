@@ -523,6 +523,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
                 || EthApiImpl::new(chain_id, state_provider.clone()),
                 |submit| EthApiImpl::with_tx_submit(chain_id, state_provider.clone(), submit),
             );
+            eth_api = eth_api.with_node_state((*node_state_for_jsonrpc).clone());
             if let Some(sender) = pending_tx_broadcast.clone() {
                 eth_api = eth_api.with_pending_tx_broadcast(sender);
             }
