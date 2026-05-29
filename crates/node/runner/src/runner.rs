@@ -495,6 +495,8 @@ async fn replay_finalized_block(
         number: block.height,
         parent_hash: block.parent.0,
         state_root: block.state_root.0,
+        transactions_root: EMPTY_ROOT_HASH,
+        receipts_root: EMPTY_ROOT_HASH,
         timestamp: block_context.header.timestamp,
         gas_limit: block_context.header.gas_limit,
         gas_used: execution.outcome.gas_used,
