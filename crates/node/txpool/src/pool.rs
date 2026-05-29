@@ -463,6 +463,15 @@ impl TransactionPool {
         self.sync_metrics();
     }
 
+    /// Returns the next expected nonce for a sender, accounting for all
+    /// pending (executable) transactions in the pool.
+    ///
+    /// Returns `None` if the sender has no transactions in the pool.
+    pub fn next_nonce(&self, sender: &Address) -> Option<u64> {
+        let inner = self.inner.read();
+        inner.by_sender.get(sender).map(|q| q.next_pending_nonce())
+    }
+
     /// Returns the count of pending (executable) transactions.
     pub fn pending_count(&self) -> usize {
         self.inner.read().pending_count

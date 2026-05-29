@@ -15,6 +15,7 @@ use alloy_eips::eip2718::Decodable2718 as _;
 use alloy_primitives::{Address, B256, Bytes, U64, U256};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use kora_domain::MempoolEvent;
+use kora_txpool::TransactionPool;
 use tokio::sync::RwLock;
 use tracing::warn;
 
@@ -281,6 +282,7 @@ pub struct EthApiImpl<S: StateProvider> {
     chain_id: u64,
     block_height: Arc<std::sync::atomic::AtomicU64>,
     tx_submit: Option<TxSubmitCallback>,
+    txpool: Option<TransactionPool>,
     state_provider: Arc<RwLock<S>>,
     pending_txs: Arc<RwLock<HashMap<B256, RpcTransaction>>>,
     pending_tx_broadcast: Option<PendingTxEventSender>,
@@ -307,6 +309,7 @@ impl<S: StateProvider> std::fmt::Debug for EthApiImpl<S> {
             .field("chain_id", &self.chain_id)
             .field("block_height", &self.block_height)
             .field("tx_submit", &self.tx_submit.is_some())
+            .field("txpool", &self.txpool.is_some())
             .field("gas_oracle_config", &self.gas_oracle_config)
             .finish()
     }
@@ -333,6 +336,7 @@ impl<S: StateProvider + 'static> EthApiImpl<S> {
             chain_id,
             block_height: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             tx_submit,
+            txpool: None,
             state_provider: Arc::new(RwLock::new(state_provider)),
             pending_txs: Arc::new(RwLock::new(HashMap::new())),
             pending_tx_broadcast: None,
@@ -357,6 +361,17 @@ impl<S: StateProvider + 'static> EthApiImpl<S> {
     #[must_use]
     pub fn with_mempool_broadcast(mut self, mempool_broadcast: MempoolEventSender) -> Self {
         self.mempool_broadcast = Some(mempool_broadcast);
+        self
+    }
+
+    /// Attach a transaction pool for pending nonce lookups.
+    ///
+    /// When set, `eth_getTransactionCount` with the `"pending"` block tag
+    /// will account for in-flight mempool transactions instead of returning
+    /// only the finalized on-chain nonce.
+    #[must_use]
+    pub fn with_txpool(mut self, txpool: TransactionPool) -> Self {
+        self.txpool = Some(txpool);
         self
     }
 
@@ -436,8 +451,26 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
         block: Option<BlockNumberOrTag>,
     ) -> RpcResult<U64> {
         let provider = self.state_provider.read().await;
-        let nonce = provider.nonce(address, block).await?;
-        Ok(U64::from(nonce))
+        let finalized_nonce = provider.nonce(address, block.clone()).await?;
+
+        // When the caller asks for the "pending" nonce, check the mempool for
+        // in-flight transactions and return the higher of the finalized nonce
+        // and the pool's next expected nonce.  This matches the behaviour
+        // specified by the Ethereum execution-APIs: `eth_getTransactionCount`
+        // with `"pending"` returns the nonce *after* all pending pool txs.
+        let is_pending = matches!(
+            block,
+            None | Some(BlockNumberOrTag::Tag(BlockTag::Pending | BlockTag::Latest))
+        );
+        if is_pending {
+            if let Some(ref txpool) = self.txpool {
+                if let Some(pool_nonce) = txpool.next_nonce(&address) {
+                    return Ok(U64::from(pool_nonce.max(finalized_nonce)));
+                }
+            }
+        }
+
+        Ok(U64::from(finalized_nonce))
     }
 
     async fn get_code(

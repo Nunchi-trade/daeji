@@ -523,6 +523,9 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
                 || EthApiImpl::new(chain_id, state_provider.clone()),
                 |submit| EthApiImpl::with_tx_submit(chain_id, state_provider.clone(), submit),
             );
+            if let Some(pool) = txpool.clone() {
+                eth_api = eth_api.with_txpool(pool);
+            }
             if let Some(sender) = pending_tx_broadcast.clone() {
                 eth_api = eth_api.with_pending_tx_broadcast(sender);
             }
@@ -763,6 +766,9 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
             || EthApiImpl::new(self.chain_id, self.state_provider.clone()),
             |submit| EthApiImpl::with_tx_submit(self.chain_id, self.state_provider.clone(), submit),
         );
+        if let Some(pool) = self.txpool.clone() {
+            eth_api = eth_api.with_txpool(pool);
+        }
         if let Some(sender) = self.pending_tx_broadcast.clone() {
             eth_api = eth_api.with_pending_tx_broadcast(sender);
         }
