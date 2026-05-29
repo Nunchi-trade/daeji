@@ -15,6 +15,11 @@ use serde::{Deserialize, Serialize};
 /// Default validator count used by tests and legacy callers.
 pub(crate) const DEFAULT_VALIDATOR_COUNT: u32 = 4;
 
+/// Number of blocks past the recovery point that must be fully verified
+/// before the node exits catch-up mode.  Mirrors the constant in
+/// `crates/node/runner/src/app.rs`.
+const CATCH_UP_THRESHOLD: u64 = 64;
+
 /// Network partition status derived from peer connectivity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -66,8 +71,14 @@ struct NodeStateInner {
     finalized_height: AtomicU64,
     proposed_count: AtomicU64,
     nullified_count: AtomicU64,
+    equivocation_count: AtomicU64,
     peer_count: AtomicU64,
     is_leader: RwLock<bool>,
+    /// Height of the HEAD block recovered from an archive at startup.
+    /// Zero means a fresh node (never recovered).
+    recovered_height: AtomicU64,
+    /// Highest block height that has been fully verified via execution.
+    last_verified_height: AtomicU64,
 }
 
 impl NodeState {
@@ -106,8 +117,11 @@ impl NodeState {
                 finalized_height: AtomicU64::new(0),
                 proposed_count: AtomicU64::new(0),
                 nullified_count: AtomicU64::new(0),
+                equivocation_count: AtomicU64::new(0),
                 peer_count: AtomicU64::new(0),
                 is_leader: RwLock::new(false),
+                recovered_height: AtomicU64::new(0),
+                last_verified_height: AtomicU64::new(0),
             }),
         }
     }
@@ -147,9 +161,52 @@ impl NodeState {
         self.inner.nullified_count.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment equivocation event count.
+    pub fn inc_equivocations(&self) {
+        self.inner.equivocation_count.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Update peer count.
     pub fn set_peer_count(&self, count: u64) {
         self.inner.peer_count.store(count, Ordering::Relaxed);
+    }
+
+    /// Set the height of the HEAD block recovered from an archive at startup.
+    ///
+    /// This also initialises `last_verified_height` to the same value,
+    /// matching the semantics in `RevmApplication::with_recovered_height`.
+    pub fn set_recovered_height(&self, height: u64) {
+        self.inner.recovered_height.store(height, Ordering::Relaxed);
+        self.inner.last_verified_height.store(height, Ordering::Relaxed);
+    }
+
+    /// Return the recovered height (zero for fresh nodes).
+    pub fn recovered_height(&self) -> u64 {
+        self.inner.recovered_height.load(Ordering::Relaxed)
+    }
+
+    /// Advance the last verified height (monotonically increasing).
+    pub fn set_last_verified_height(&self, height: u64) {
+        self.inner.last_verified_height.fetch_max(height, Ordering::Relaxed);
+    }
+
+    /// Return the last verified height.
+    pub fn last_verified_height(&self) -> u64 {
+        self.inner.last_verified_height.load(Ordering::Relaxed)
+    }
+
+    /// Returns `true` when the node is catching up after recovery.
+    ///
+    /// A node is catching up when it was recovered from an archive
+    /// (`recovered_height > 0`) and full-execution verification has not
+    /// yet advanced past `recovered_height + CATCH_UP_THRESHOLD` (64).
+    pub fn is_catching_up(&self) -> bool {
+        let recovered = self.inner.recovered_height.load(Ordering::Relaxed);
+        if recovered == 0 {
+            return false;
+        }
+        let verified = self.inner.last_verified_height.load(Ordering::Relaxed);
+        verified < recovered.saturating_add(CATCH_UP_THRESHOLD)
     }
 
     /// Get current node status.
@@ -166,6 +223,7 @@ impl NodeState {
             finalized_count: self.inner.finalized_count.load(Ordering::Relaxed),
             proposed_count: self.inner.proposed_count.load(Ordering::Relaxed),
             nullified_count: self.inner.nullified_count.load(Ordering::Relaxed),
+            equivocation_count: self.inner.equivocation_count.load(Ordering::Relaxed),
             peer_count,
             total_expected_peers,
             partition_status,
@@ -192,6 +250,8 @@ pub struct NodeStatus {
     pub proposed_count: u64,
     /// Number of nullified rounds.
     pub nullified_count: u64,
+    /// Number of equivocation events detected (Byzantine behavior).
+    pub equivocation_count: u64,
     /// Number of connected peers.
     pub peer_count: u64,
     /// Total number of expected peers (validator_count - 1).
@@ -216,6 +276,7 @@ mod tests {
             finalized_count: 50,
             proposed_count: 10,
             nullified_count: 5,
+            equivocation_count: 2,
             peer_count: 3,
             total_expected_peers: 3,
             partition_status: PartitionStatus::Healthy,
@@ -232,6 +293,7 @@ mod tests {
         assert_eq!(status.finalized_count, parsed.finalized_count);
         assert_eq!(status.proposed_count, parsed.proposed_count);
         assert_eq!(status.nullified_count, parsed.nullified_count);
+        assert_eq!(status.equivocation_count, parsed.equivocation_count);
         assert_eq!(status.peer_count, parsed.peer_count);
         assert_eq!(status.total_expected_peers, parsed.total_expected_peers);
         assert_eq!(status.partition_status, parsed.partition_status);
@@ -248,6 +310,7 @@ mod tests {
             finalized_count: 0,
             proposed_count: 0,
             nullified_count: 0,
+            equivocation_count: 0,
             peer_count: 0,
             total_expected_peers: 3,
             partition_status: PartitionStatus::Partitioned,
@@ -262,6 +325,7 @@ mod tests {
         assert!(json.contains("finalizedCount"));
         assert!(json.contains("proposedCount"));
         assert!(json.contains("nullifiedCount"));
+        assert!(json.contains("equivocationCount"));
         assert!(json.contains("peerCount"));
         assert!(json.contains("totalExpectedPeers"));
         assert!(json.contains("partitionStatus"));
@@ -333,11 +397,15 @@ mod tests {
         state.inc_finalized();
         state.inc_proposed();
         state.inc_nullified();
+        state.inc_equivocations();
+        state.inc_equivocations();
+        state.inc_equivocations();
 
         let status = state.status();
         assert_eq!(status.finalized_count, 2);
         assert_eq!(status.proposed_count, 1);
         assert_eq!(status.nullified_count, 1);
+        assert_eq!(status.equivocation_count, 3);
     }
 
     #[test]
@@ -434,5 +502,54 @@ mod tests {
         state.set_peer_count(2);
         let status = state.status();
         assert_eq!(status.partition_status, PartitionStatus::Degraded);
+    }
+
+    // -- Sync status tests --
+
+    #[test]
+    fn fresh_node_not_catching_up() {
+        let state = NodeState::new(1, 0);
+        assert!(!state.is_catching_up());
+        assert_eq!(state.recovered_height(), 0);
+        assert_eq!(state.last_verified_height(), 0);
+    }
+
+    #[test]
+    fn recovered_node_is_catching_up() {
+        let state = NodeState::new(1, 0);
+        state.set_recovered_height(1000);
+        assert!(state.is_catching_up());
+        assert_eq!(state.recovered_height(), 1000);
+        assert_eq!(state.last_verified_height(), 1000);
+    }
+
+    #[test]
+    fn catching_up_ends_after_threshold() {
+        let state = NodeState::new(1, 0);
+        state.set_recovered_height(1000);
+        assert!(state.is_catching_up());
+
+        // Advance verified height to just below threshold
+        state.set_last_verified_height(1000 + CATCH_UP_THRESHOLD - 1);
+        assert!(state.is_catching_up());
+
+        // Advance verified height to exactly the threshold
+        state.set_last_verified_height(1000 + CATCH_UP_THRESHOLD);
+        assert!(!state.is_catching_up());
+    }
+
+    #[test]
+    fn last_verified_height_is_monotonic() {
+        let state = NodeState::new(1, 0);
+        state.set_last_verified_height(100);
+        assert_eq!(state.last_verified_height(), 100);
+
+        // Cannot regress
+        state.set_last_verified_height(50);
+        assert_eq!(state.last_verified_height(), 100);
+
+        // Can advance
+        state.set_last_verified_height(200);
+        assert_eq!(state.last_verified_height(), 200);
     }
 }
