@@ -1,9 +1,11 @@
 # `kora`
 
-[![CI](https://github.com/refcell/kora/actions/workflows/ci.yml/badge.svg)](https://github.com/refcell/kora/actions/workflows/ci.yml)
+[![CI](https://github.com/Nunchi-trade/daeji/actions/workflows/ci.yml/badge.svg)](https://github.com/Nunchi-trade/daeji/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-The main Kora node binary. Implements BLS12-381 threshold consensus via [commonware], EVM execution with [revm], and state storage using [QMDB].
+The main Daeji node binary. Implements BLS12-381 threshold consensus via [commonware], EVM execution with [revm], and state storage using [QMDB].
+
+This binary is still named `kora` while the repository is named Daeji.
 
 [commonware]: https://github.com/commonwarexyz/monorepo
 [revm]: https://github.com/bluealloy/revm
