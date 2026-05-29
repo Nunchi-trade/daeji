@@ -413,17 +413,17 @@ where
             // Monotonicity: block timestamp must be strictly greater than
             // the parent timestamp (matches the contract enforced by
             // `Block::next_timestamp` on the proposer side).
-            if let Some(parent_ts) = parent_timestamp {
-                if block.timestamp <= parent_ts {
-                    warn!(
-                        ?digest,
-                        height = block.height,
-                        block_timestamp = block.timestamp,
-                        parent_timestamp = parent_ts,
-                        "verify_block: timestamp not increasing"
-                    );
-                    return false;
-                }
+            if let Some(parent_ts) = parent_timestamp
+                && block.timestamp <= parent_ts
+            {
+                warn!(
+                    ?digest,
+                    height = block.height,
+                    block_timestamp = block.timestamp,
+                    parent_timestamp = parent_ts,
+                    "verify_block: timestamp not increasing"
+                );
+                return false;
             }
 
             // Future-drift: reject blocks whose timestamp is too far
