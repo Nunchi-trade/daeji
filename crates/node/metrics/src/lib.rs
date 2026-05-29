@@ -1,9 +1,9 @@
 //! Application-level Prometheus metrics for Kora nodes.
 //!
 //! Provides counters, gauges, and histograms for txpool, block building,
-//! finalization, and RPC instrumentation. All metrics are registered with
-//! the commonware runtime's `Metrics` registry so they appear on the
-//! existing `/metrics` endpoint alongside SDK metrics.
+//! finalization, RPC instrumentation, EVM execution, and peer connectivity.
+//! All metrics are registered with the commonware runtime's `Metrics` registry
+//! so they appear on the existing `/metrics` endpoint alongside SDK metrics.
 #![doc(issue_tracker_base_url = "https://github.com/refcell/kora/issues/")]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
@@ -21,6 +21,21 @@ const BLOCK_BUILD_BUCKETS: [f64; 9] = [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.2
 /// available".  Most waits resolve in under 5 ms; the higher buckets detect
 /// CPU-contention-related stalls.
 const SNAPSHOT_POLL_BUCKETS: [f64; 8] = [0.001, 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.15];
+
+/// Default histogram buckets for EVM execution time (seconds).
+///
+/// EVM execution typically ranges from sub-millisecond (empty blocks) to tens
+/// of milliseconds (heavy blocks).  The higher buckets catch pathological
+/// cases such as state-heavy contract deployments.
+const EVM_EXECUTION_BUCKETS: [f64; 9] = [0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5];
+
+/// Default histogram buckets for RPC request latency (seconds).
+///
+/// Most RPC methods (e.g. `eth_blockNumber`, `net_version`) complete in under
+/// 1 ms; state-heavy queries (`eth_call`, `eth_getStorageAt`) may take tens
+/// of milliseconds.
+const RPC_LATENCY_BUCKETS: [f64; 10] =
+    [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 1.0];
 
 /// Application-level metrics for a Kora node.
 ///
@@ -75,6 +90,29 @@ pub struct AppMetrics {
     pub gossip_tx_broadcast_failed: Counter,
     /// Total gossip transactions that failed validation.
     pub gossip_tx_invalid: Counter,
+
+    // -- EVM Execution --
+    /// Histogram of EVM execution time in seconds, excluding proposal
+    /// overhead (snapshot polling, tx selection, state root computation).
+    /// Recorded in both `build_block` and `verify_block` paths.
+    pub evm_execution_seconds: Histogram,
+
+    // -- P2P Connectivity --
+    /// Current number of connected peers.  Updated periodically by the
+    /// partition monitor task in the runner.
+    pub peer_count: Gauge,
+
+    // -- Mempool --
+    /// Current number of transactions in the consensus mempool at the time
+    /// the leader builds a block.  Distinct from `txpool_size` which tracks
+    /// the RPC-facing transaction pool; the mempool is the consensus-layer
+    /// view of pending transactions available for inclusion.
+    pub mempool_size: Gauge,
+
+    // -- RPC --
+    /// Histogram of RPC request durations in seconds, labelled by method
+    /// name (e.g. `eth_blockNumber`, `eth_call`).
+    pub rpc_request_duration: Family<MethodLabel, Histogram>,
 }
 
 /// Label set for metrics that carry a `reason` dimension.
@@ -82,6 +120,13 @@ pub struct AppMetrics {
 pub struct ReasonLabel {
     /// The rejection / error reason.
     pub reason: String,
+}
+
+/// Label set for metrics that carry a `method` dimension (e.g. RPC method name).
+#[derive(Clone, Debug, Hash, PartialEq, Eq, prometheus_client::encoding::EncodeLabelSet)]
+pub struct MethodLabel {
+    /// The RPC method name (e.g. `eth_blockNumber`).
+    pub method: String,
 }
 
 impl AppMetrics {
@@ -104,6 +149,12 @@ impl AppMetrics {
             gossip_tx_received: Counter::default(),
             gossip_tx_broadcast_failed: Counter::default(),
             gossip_tx_invalid: Counter::default(),
+            evm_execution_seconds: Histogram::new(EVM_EXECUTION_BUCKETS),
+            peer_count: Gauge::default(),
+            mempool_size: Gauge::default(),
+            rpc_request_duration: Family::new_with_constructor(|| {
+                Histogram::new(RPC_LATENCY_BUCKETS)
+            }),
         }
     }
 
@@ -189,6 +240,26 @@ impl AppMetrics {
             "kora_gossip_tx_invalid",
             "Total gossip transactions that failed validation",
             self.gossip_tx_invalid.clone(),
+        );
+        registry.register(
+            "kora_evm_execution_seconds",
+            "EVM execution time in seconds (excluding proposal overhead)",
+            self.evm_execution_seconds.clone(),
+        );
+        registry.register(
+            "kora_peer_count",
+            "Current number of connected peers",
+            self.peer_count.clone(),
+        );
+        registry.register(
+            "kora_mempool_size",
+            "Current transaction count in the consensus mempool",
+            self.mempool_size.clone(),
+        );
+        registry.register(
+            "kora_rpc_request_duration_seconds",
+            "RPC request duration in seconds by method",
+            self.rpc_request_duration.clone(),
         );
     }
 }

@@ -45,6 +45,7 @@ parking_lot = "0.12"
 kora-domain = { path = "../domain" }
 kora-executor = { path = "../executor" }
 kora-indexer = { path = "../../storage/indexer" }
+kora-metrics = { path = "../metrics" }
 kora-traits = { path = "../../storage/traits" }
 kora-txpool = { path = "../txpool" }
 

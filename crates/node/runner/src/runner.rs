@@ -614,11 +614,18 @@ fn mark_seen(seen: &SeenSet, hash: B256) -> bool {
 /// count to determine partition status. Warnings and errors are emitted so
 /// operators (and log-based alerting) can detect connectivity issues even
 /// without Prometheus.
-fn spawn_partition_monitor(node_state: kora_rpc::NodeState, context: cw_tokio::Context) {
-    context.with_label("partition-monitor").shared(false).spawn(move |ctx| async move {
+fn spawn_partition_monitor(
+    node_state: kora_rpc::NodeState,
+    context: cw_tokio::Context,
+    metrics: Option<kora_metrics::AppMetrics>,
+) {
+    context.with_label("partition_monitor").shared(false).spawn(move |ctx| async move {
         loop {
             ctx.sleep(PARTITION_CHECK_INTERVAL).await;
             let status = node_state.status();
+            if let Some(ref m) = metrics {
+                m.peer_count.set(status.peer_count as i64);
+            }
             match status.partition_status {
                 kora_rpc::PartitionStatus::Healthy => {
                     trace!(
@@ -1093,7 +1100,8 @@ impl NodeRunner for ProductionRunner {
             )
             .with_tx_submit(tx_submit)
             .with_txpool(txpool.clone())
-            .with_peer_count(peer_count);
+            .with_peer_count(peer_count)
+            .with_metrics(app_metrics.clone());
             if let Some(sender) = pending_tx_broadcast.clone() {
                 rpc = rpc.with_pending_tx_broadcast(sender);
             }
@@ -1103,7 +1111,7 @@ impl NodeRunner for ProductionRunner {
             drop(rpc.start());
             info!(addr = %addr, "RPC server started with live state provider");
 
-            spawn_partition_monitor(node_state.clone(), context.clone());
+            spawn_partition_monitor(node_state.clone(), context.clone(), Some(app_metrics.clone()));
         }
 
         if let Some(metrics_addr) = self.metrics_addr {
@@ -1249,34 +1257,31 @@ impl NodeRunner for ProductionRunner {
             }
         }
 
-        let engine = simplex::Engine::new(
-            scratch_context.with_label("engine"),
-            simplex::Config {
-                scheme: self.scheme.clone(),
-                elector: Random,
-                blocker: NoOpBlocker::<Peer>::new(),
-                automaton: marshaled.clone(),
-                relay: marshaled,
-                reporter,
-                strategy,
-                partition: self.partition_prefix.clone(),
-                mailbox_size: MAILBOX_SIZE,
-                epoch: Epoch::zero(),
-                replay_buffer: simplex_config.replay_buffer_bytes,
-                write_buffer: simplex_config.write_buffer_bytes,
-                leader_timeout: Duration::from_secs(simplex_config.leader_timeout_secs.get()),
-                certification_timeout: Duration::from_secs(
-                    simplex_config.certification_timeout_secs.get(),
-                ),
-                timeout_retry: Duration::from_secs(simplex_config.timeout_retry_secs.get()),
-                fetch_timeout: Duration::from_secs(simplex_config.fetch_timeout_secs.get()),
-                activity_timeout: ViewDelta::new(simplex_config.activity_timeout_views.get()),
-                skip_timeout: ViewDelta::new(simplex_config.skip_timeout_views.get()),
-                fetch_concurrent: simplex_config.fetch_concurrent.get(),
-                page_cache,
-                forwarding: simplex::ForwardingPolicy::SilentLeader,
-            },
-        );
+        let engine = simplex::Engine::new(scratch_context.with_label("engine"), simplex::Config {
+            scheme: self.scheme.clone(),
+            elector: Random,
+            blocker: NoOpBlocker::<Peer>::new(),
+            automaton: marshaled.clone(),
+            relay: marshaled,
+            reporter,
+            strategy,
+            partition: self.partition_prefix.clone(),
+            mailbox_size: MAILBOX_SIZE,
+            epoch: Epoch::zero(),
+            replay_buffer: simplex_config.replay_buffer_bytes,
+            write_buffer: simplex_config.write_buffer_bytes,
+            leader_timeout: Duration::from_secs(simplex_config.leader_timeout_secs.get()),
+            certification_timeout: Duration::from_secs(
+                simplex_config.certification_timeout_secs.get(),
+            ),
+            timeout_retry: Duration::from_secs(simplex_config.timeout_retry_secs.get()),
+            fetch_timeout: Duration::from_secs(simplex_config.fetch_timeout_secs.get()),
+            activity_timeout: ViewDelta::new(simplex_config.activity_timeout_views.get()),
+            skip_timeout: ViewDelta::new(simplex_config.skip_timeout_views.get()),
+            fetch_concurrent: simplex_config.fetch_concurrent.get(),
+            page_cache,
+            forwarding: simplex::ForwardingPolicy::SilentLeader,
+        });
         let engine_handle = engine.start(
             transport.simplex.votes,
             transport.simplex.certs,

@@ -245,6 +245,9 @@ where
             }
         };
         let mempool_len = mempool.len();
+        if let Some(ref m) = self.metrics {
+            m.mempool_size.set(mempool_len as i64);
+        }
         let excluded_len = excluded.len();
         let txs = mempool.build(self.max_txs, &excluded);
 
@@ -319,6 +322,7 @@ where
 
         if let Some(ref m) = self.metrics {
             m.block_build_time.observe(total_elapsed.as_secs_f64());
+            m.evm_execution_seconds.observe(exec_elapsed.as_secs_f64());
             m.block_txs_included.set(block.txs.len() as i64);
         }
 
@@ -473,6 +477,9 @@ where
                 }
             };
         let exec_elapsed = exec_start.elapsed();
+        if let Some(ref m) = self.metrics {
+            m.evm_execution_seconds.observe(exec_elapsed.as_secs_f64());
+        }
 
         let root_start = Instant::now();
         let state_root = match self

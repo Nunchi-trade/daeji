@@ -191,6 +191,7 @@ async fn enforce_http_rate_limit(
 struct RateLimitedRpcService<S> {
     service: S,
     rate_limiter: Option<SharedRateLimiter>,
+    metrics: Option<kora_metrics::AppMetrics>,
 }
 
 /// Subscription method names that require WebSocket transport.
@@ -231,10 +232,20 @@ where
 
         let is_sub = is_subscription_method(request.method_name());
         let id = request.id().into_owned();
+        let method_name = request.method_name().to_string();
+        let metrics = self.metrics.clone();
+        let start = Instant::now();
         let fut = self.service.call(request);
 
         Box::pin(async move {
             let response = fut.await;
+            let elapsed = start.elapsed();
+
+            if let Some(ref m) = metrics {
+                m.rpc_request_duration
+                    .get_or_create(&kora_metrics::MethodLabel { method: method_name })
+                    .observe(elapsed.as_secs_f64());
+            }
 
             // When jsonrpsee receives a subscription call over HTTP it returns
             // ErrorCode::InternalError (-32603) because subscriptions require a
@@ -280,6 +291,7 @@ pub struct RpcServer<S: StateProvider = NoopStateProvider> {
     peer_count: u64,
     pending_tx_broadcast: Option<PendingTxEventSender>,
     mempool_broadcast: Option<MempoolEventSender>,
+    metrics: Option<kora_metrics::AppMetrics>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for RpcServer<S> {
@@ -296,6 +308,7 @@ impl<S: StateProvider> std::fmt::Debug for RpcServer<S> {
             .field("rate_limit_config", &self.rate_limit_config)
             .field("max_connections", &self.max_connections)
             .field("max_subscriptions_per_connection", &self.max_subscriptions_per_connection)
+            .field("metrics", &self.metrics.is_some())
             .finish()
     }
 }
@@ -325,6 +338,7 @@ impl RpcServer<NoopStateProvider> {
             peer_count: 0,
             pending_tx_broadcast: None,
             mempool_broadcast: None,
+            metrics: None,
         }
     }
 
@@ -345,6 +359,7 @@ impl RpcServer<NoopStateProvider> {
             peer_count: 0,
             pending_tx_broadcast: None,
             mempool_broadcast: None,
+            metrics: None,
         }
     }
 }
@@ -372,6 +387,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             peer_count: 0,
             pending_tx_broadcast: None,
             mempool_broadcast: None,
+            metrics: None,
         }
     }
 
@@ -441,6 +457,13 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         self
     }
 
+    /// Attach application-level metrics for RPC request duration tracking.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: kora_metrics::AppMetrics) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
     /// Create from configuration.
     pub fn from_config(state: NodeState, config: RpcServerConfig, state_provider: S) -> Self {
         Self {
@@ -458,6 +481,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             peer_count: 0,
             pending_tx_broadcast: None,
             mempool_broadcast: None,
+            metrics: None,
         }
     }
 
@@ -481,6 +505,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         let peer_count = self.peer_count;
         let pending_tx_broadcast = self.pending_tx_broadcast;
         let mempool_broadcast = self.mempool_broadcast;
+        let rpc_metrics = self.metrics;
 
         let http_handle = tokio::spawn(async move {
             let app = build_http_router(node_state, cors_layer, max_connections, http_rate_limiter);
@@ -501,9 +526,13 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         });
 
         let jsonrpc_handle = tokio::spawn(async move {
-            let rpc_middleware = RpcServiceBuilder::new().layer_fn(move |service| {
-                RateLimitedRpcService { service, rate_limiter: rpc_rate_limiter.clone() }
-            });
+            let rpc_metrics_inner = rpc_metrics.clone();
+            let rpc_middleware =
+                RpcServiceBuilder::new().layer_fn(move |service| RateLimitedRpcService {
+                    service,
+                    rate_limiter: rpc_rate_limiter.clone(),
+                    metrics: rpc_metrics_inner.clone(),
+                });
 
             let server = match Server::builder()
                 .max_connections(max_connections)
@@ -630,6 +659,7 @@ pub struct JsonRpcServer<S: StateProvider = NoopStateProvider> {
     peer_count: u64,
     pending_tx_broadcast: Option<PendingTxEventSender>,
     mempool_broadcast: Option<MempoolEventSender>,
+    metrics: Option<kora_metrics::AppMetrics>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for JsonRpcServer<S> {
@@ -663,6 +693,7 @@ impl JsonRpcServer<NoopStateProvider> {
             peer_count: 0,
             pending_tx_broadcast: None,
             mempool_broadcast: None,
+            metrics: None,
         }
     }
 }
@@ -682,6 +713,7 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
             peer_count: 0,
             pending_tx_broadcast: None,
             mempool_broadcast: None,
+            metrics: None,
         }
     }
 
@@ -747,9 +779,13 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
     /// Start the JSON-RPC server.
     pub async fn start(self) -> Result<ServerHandle, ServerError> {
         let rpc_rate_limiter = SharedRateLimiter::new(self.rate_limit_config);
-        let rpc_middleware = RpcServiceBuilder::new().layer_fn(move |service| {
-            RateLimitedRpcService { service, rate_limiter: rpc_rate_limiter.clone() }
-        });
+        let rpc_metrics = self.metrics;
+        let rpc_middleware =
+            RpcServiceBuilder::new().layer_fn(move |service| RateLimitedRpcService {
+                service,
+                rate_limiter: rpc_rate_limiter.clone(),
+                metrics: rpc_metrics.clone(),
+            });
 
         let server = Server::builder()
             .max_connections(self.max_connections)
@@ -946,7 +982,8 @@ mod tests {
     async fn rpc_rate_limiter_rejects_after_burst() {
         let rate_limiter =
             SharedRateLimiter::new(RateLimitConfig { requests_per_second: 1, burst_size: 1 });
-        let service = RateLimitedRpcService { service: AlwaysOkRpcService, rate_limiter };
+        let service =
+            RateLimitedRpcService { service: AlwaysOkRpcService, rate_limiter, metrics: None };
 
         let first = service.call(rpc_request(1)).await;
         assert!(first.is_success());
@@ -987,6 +1024,7 @@ mod tests {
         let service = RateLimitedRpcService {
             service: InternalErrorOnSubscriptionService,
             rate_limiter: None,
+            metrics: None,
         };
 
         // eth_subscribe should be rewritten from -32603 to -32004.
@@ -1000,7 +1038,11 @@ mod tests {
     async fn subscription_over_ws_passes_through() {
         // When the inner service returns success (WebSocket case), the
         // middleware must not interfere.
-        let service = RateLimitedRpcService { service: AlwaysOkRpcService, rate_limiter: None };
+        let service = RateLimitedRpcService {
+            service: AlwaysOkRpcService,
+            rate_limiter: None,
+            metrics: None,
+        };
 
         let sub_req = RpcRequest::new(Cow::Borrowed("eth_subscribe"), None, Id::Number(1));
         let response = service.call(sub_req).await;
@@ -1013,6 +1055,7 @@ mod tests {
         let service = RateLimitedRpcService {
             service: InternalErrorOnSubscriptionService,
             rate_limiter: None,
+            metrics: None,
         };
 
         let req = rpc_request(1);
