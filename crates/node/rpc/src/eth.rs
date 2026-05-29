@@ -15,6 +15,7 @@ use alloy_eips::eip2718::Decodable2718 as _;
 use alloy_primitives::{Address, B256, Bytes, U64, U256};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use kora_domain::MempoolEvent;
+use kora_txpool::TransactionPool;
 use tokio::sync::RwLock;
 use tracing::warn;
 
@@ -285,6 +286,9 @@ pub struct EthApiImpl<S: StateProvider> {
     pending_txs: Arc<RwLock<HashMap<B256, RpcTransaction>>>,
     pending_tx_broadcast: Option<PendingTxEventSender>,
     mempool_broadcast: Option<MempoolEventSender>,
+    /// Transaction pool used for pending nonce lookups in
+    /// `eth_getTransactionCount("pending")`.
+    txpool: Option<TransactionPool>,
     gas_oracle_config: GasOracleConfig,
     gas_oracle_cache: Arc<RwLock<Option<CachedGasOracleEstimate>>>,
     /// Insertion-ordered record of pending transaction hashes so that
@@ -307,6 +311,7 @@ impl<S: StateProvider> std::fmt::Debug for EthApiImpl<S> {
             .field("chain_id", &self.chain_id)
             .field("block_height", &self.block_height)
             .field("tx_submit", &self.tx_submit.is_some())
+            .field("txpool", &self.txpool.is_some())
             .field("gas_oracle_config", &self.gas_oracle_config)
             .finish()
     }
@@ -337,6 +342,7 @@ impl<S: StateProvider + 'static> EthApiImpl<S> {
             pending_txs: Arc::new(RwLock::new(HashMap::new())),
             pending_tx_broadcast: None,
             mempool_broadcast: None,
+            txpool: None,
             gas_oracle_config,
             gas_oracle_cache: Arc::new(RwLock::new(None)),
             pending_tx_order: Arc::new(RwLock::new(VecDeque::new())),
@@ -357,6 +363,17 @@ impl<S: StateProvider + 'static> EthApiImpl<S> {
     #[must_use]
     pub fn with_mempool_broadcast(mut self, mempool_broadcast: MempoolEventSender) -> Self {
         self.mempool_broadcast = Some(mempool_broadcast);
+        self
+    }
+
+    /// Attach a transaction pool for pending nonce lookups.
+    ///
+    /// When set, `eth_getTransactionCount("pending")` will return the
+    /// next nonce after all pending mempool transactions, rather than
+    /// the finalized on-chain nonce.
+    #[must_use]
+    pub fn with_txpool(mut self, txpool: TransactionPool) -> Self {
+        self.txpool = Some(txpool);
         self
     }
 
@@ -435,9 +452,24 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
         address: Address,
         block: Option<BlockNumberOrTag>,
     ) -> RpcResult<U64> {
+        let is_pending = block.as_ref().is_some_and(BlockNumberOrTag::is_pending);
+
         let provider = self.state_provider.read().await;
-        let nonce = provider.nonce(address, block).await?;
-        Ok(U64::from(nonce))
+        let finalized_nonce = provider.nonce(address, block).await?;
+
+        // When the caller asks for the "pending" nonce, augment the
+        // finalized on-chain nonce with the transaction pool's view so
+        // that sequential sends from one account get strictly increasing
+        // nonces.
+        if is_pending {
+            if let Some(ref txpool) = self.txpool {
+                if let Some(pool_nonce) = txpool.next_nonce(&address) {
+                    return Ok(U64::from(pool_nonce.max(finalized_nonce)));
+                }
+            }
+        }
+
+        Ok(U64::from(finalized_nonce))
     }
 
     async fn get_code(
@@ -1587,10 +1619,11 @@ mod tests {
         async fn insert_block(&self, number: u64, hash: B256) {
             let mut inner = self.inner.write().await;
             inner.head = inner.head.max(number);
-            inner.blocks.insert(
-                number,
-                RpcBlock { hash, number: U64::from(number), ..RpcBlock::default() },
-            );
+            inner.blocks.insert(number, RpcBlock {
+                hash,
+                number: U64::from(number),
+                ..RpcBlock::default()
+            });
         }
 
         async fn insert_log(
@@ -1834,13 +1867,11 @@ mod tests {
 
     #[tokio::test]
     async fn fee_history_rewards_reflect_actual_tips() {
-        let provider = MockFeeStateProvider::new(vec![make_fee_block(
-            0,
-            gwei(1),
-            42_000,
-            30_000_000,
-            vec![gwei(3), gwei(5)],
-        )]);
+        let provider =
+            MockFeeStateProvider::new(vec![make_fee_block(0, gwei(1), 42_000, 30_000_000, vec![
+                gwei(3),
+                gwei(5),
+            ])]);
         let api = EthApiImpl::new(1, provider);
 
         let history = EthApiServer::fee_history(
@@ -1995,13 +2026,10 @@ mod tests {
         };
         // base_fee = 8 gwei, tx gas_price = 12 gwei
         // Without fix: min_gas_price = base_fee + priority_fee could exceed max_price
-        let provider = MockFeeStateProvider::new(vec![make_fee_block(
-            0,
-            gwei(8),
-            21_000,
-            30_000_000,
-            vec![gwei(12)],
-        )]);
+        let provider =
+            MockFeeStateProvider::new(vec![make_fee_block(0, gwei(8), 21_000, 30_000_000, vec![
+                gwei(12),
+            ])]);
         let api = EthApiImpl::new(1, provider).with_gas_oracle_config(config);
 
         let gas_price = EthApiServer::gas_price(&api).await.unwrap();
@@ -2020,13 +2048,10 @@ mod tests {
             min_priority_fee: U256::from(GWEI),
         };
         // base_fee = 10 gwei (above max_price of 5 gwei)
-        let provider = MockFeeStateProvider::new(vec![make_fee_block(
-            0,
-            gwei(10),
-            21_000,
-            30_000_000,
-            vec![gwei(12)],
-        )]);
+        let provider =
+            MockFeeStateProvider::new(vec![make_fee_block(0, gwei(10), 21_000, 30_000_000, vec![
+                gwei(12),
+            ])]);
         let api = EthApiImpl::new(1, provider).with_gas_oracle_config(config);
 
         let gas_price = EthApiServer::gas_price(&api).await.unwrap();
@@ -2211,14 +2236,11 @@ mod tests {
         provider.insert_block(1, B256::repeat_byte(1)).await;
         provider.insert_log(1, target, vec![topic]).await;
         let api = EthApiImpl::new(1, provider.clone());
-        let filter_id = EthApiServer::new_filter(
-            &api,
-            RpcLogFilter {
-                address: Some(AddressFilter::Single(target)),
-                topics: Some(vec![Some(TopicFilter::Single(topic))]),
-                ..RpcLogFilter::default()
-            },
-        )
+        let filter_id = EthApiServer::new_filter(&api, RpcLogFilter {
+            address: Some(AddressFilter::Single(target)),
+            topics: Some(vec![Some(TopicFilter::Single(topic))]),
+            ..RpcLogFilter::default()
+        })
         .await
         .unwrap();
 
@@ -2279,10 +2301,10 @@ mod tests {
         provider.insert_log(1, target, vec![topic]).await;
 
         let api = EthApiImpl::new(1, provider.clone());
-        let filter_id = EthApiServer::new_filter(
-            &api,
-            RpcLogFilter { block_hash: Some(block_hash), ..RpcLogFilter::default() },
-        )
+        let filter_id = EthApiServer::new_filter(&api, RpcLogFilter {
+            block_hash: Some(block_hash),
+            ..RpcLogFilter::default()
+        })
         .await
         .unwrap();
 
