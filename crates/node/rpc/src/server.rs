@@ -1,6 +1,7 @@
 //! HTTP and JSON-RPC server implementation.
 
 use std::{
+    collections::HashMap,
     future::Future,
     net::SocketAddr,
     pin::Pin,
@@ -19,7 +20,7 @@ use axum::{
 use jsonrpsee::{
     core::server::MethodResponse,
     server::{
-        Server, ServerHandle,
+        BatchRequestConfig, ConnectionId, Server, ServerHandle,
         middleware::rpc::{RpcServiceBuilder, RpcServiceT},
     },
     types::{ErrorObjectOwned, Id, Request as RpcRequest},
@@ -29,7 +30,7 @@ use parking_lot::Mutex;
 use prometheus_client::metrics::counter::Counter;
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::{
     config::{CorsConfig, RateLimitConfig, RpcServerConfig},
@@ -94,6 +95,9 @@ fn build_cors_layer(config: &CorsConfig) -> CorsLayer {
     layer.max_age(Duration::from_secs(config.max_age))
 }
 
+/// Global (server-wide) rate limiter used as a backstop to cap total
+/// throughput across all connections.  This is the original single-bucket
+/// limiter, now renamed to clarify its role.
 #[derive(Debug, Clone)]
 struct SharedRateLimiter {
     bucket: Arc<Mutex<TokenBucket>>,
@@ -110,6 +114,75 @@ impl SharedRateLimiter {
 
     fn try_acquire(&self) -> bool {
         self.bucket.lock().try_acquire_at(Instant::now())
+    }
+}
+
+/// Per-connection rate limiter that maintains a separate [`TokenBucket`] for
+/// each jsonrpsee [`ConnectionId`].
+///
+/// Ideally this would key by client IP, but jsonrpsee 0.24 only injects
+/// [`ConnectionId`] (not the peer address) into request extensions.  Since
+/// each TCP connection gets a unique ID, this still isolates independent
+/// clients.  A single client opening many connections will get a separate
+/// budget per connection, which is acceptable -- the global limiter caps
+/// aggregate throughput.
+///
+/// Stale entries are pruned lazily: every [`CLEANUP_INTERVAL`] seconds the
+/// map is scanned and buckets that have been idle longer than the interval
+/// are removed.
+#[derive(Debug, Clone)]
+struct PerConnectionRateLimiter {
+    inner: Arc<Mutex<PerConnectionInner>>,
+    config: RateLimitConfig,
+}
+
+/// Duration of inactivity after which a connection bucket is considered stale
+/// and eligible for eviction.
+const STALE_BUCKET_SECS: u64 = 300;
+
+/// Minimum wall-clock interval between cleanup sweeps.
+const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
+
+#[derive(Debug)]
+struct PerConnectionInner {
+    buckets: HashMap<usize, TokenBucket>,
+    last_cleanup: Instant,
+}
+
+impl PerConnectionRateLimiter {
+    fn new(config: RateLimitConfig) -> Option<Self> {
+        if config.is_disabled() {
+            return None;
+        }
+        Some(Self {
+            inner: Arc::new(Mutex::new(PerConnectionInner {
+                buckets: HashMap::new(),
+                last_cleanup: Instant::now(),
+            })),
+            config,
+        })
+    }
+
+    /// Try to acquire a token for the given connection.  Creates a new bucket
+    /// lazily if this is the first request on `conn_id`.
+    fn try_acquire(&self, conn_id: usize) -> bool {
+        let now = Instant::now();
+        let mut inner = self.inner.lock();
+
+        // Lazy cleanup: periodically prune idle buckets to bound memory.
+        if now.saturating_duration_since(inner.last_cleanup) >= CLEANUP_INTERVAL {
+            let stale_cutoff = Duration::from_secs(STALE_BUCKET_SECS);
+            inner.buckets.retain(|_, bucket| {
+                now.saturating_duration_since(bucket.last_refill) < stale_cutoff
+            });
+            inner.last_cleanup = now;
+        }
+
+        let bucket = inner
+            .buckets
+            .entry(conn_id)
+            .or_insert_with(|| TokenBucket::new(self.config.clone(), now));
+        bucket.try_acquire_at(now)
     }
 }
 
@@ -165,7 +238,7 @@ impl TokenBucket {
     }
 }
 
-fn rate_limit_allows(rate_limiter: &Option<SharedRateLimiter>) -> bool {
+fn global_rate_limit_allows(rate_limiter: &Option<SharedRateLimiter>) -> bool {
     rate_limiter.as_ref().is_none_or(SharedRateLimiter::try_acquire)
 }
 
@@ -181,17 +254,24 @@ async fn enforce_http_rate_limit(
     request: Request,
     next: Next,
 ) -> Response {
-    if !rate_limit_allows(&rate_limiter) {
+    if !global_rate_limit_allows(&rate_limiter) {
         return (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
     }
 
     next.run(request).await
 }
 
+/// Maximum number of JSON-RPC calls allowed in a single batch request.
+/// Prevents a single HTTP POST from draining the entire rate limit budget.
+const MAX_BATCH_SIZE: u32 = 50;
+
 #[derive(Debug, Clone)]
 struct RateLimitedRpcService<S> {
     service: S,
-    rate_limiter: Option<SharedRateLimiter>,
+    /// Per-connection rate limiter (primary defense).
+    per_conn_limiter: Option<PerConnectionRateLimiter>,
+    /// Global rate limiter (backstop for aggregate throughput).
+    global_limiter: Option<SharedRateLimiter>,
     /// Optional counter incremented on every incoming RPC request.
     rpc_requests_total: Option<Counter>,
 }
@@ -230,7 +310,30 @@ where
             counter.inc();
         }
 
-        if !rate_limit_allows(&self.rate_limiter) {
+        // --- Per-connection rate limit (primary) ---
+        if let Some(ref limiter) = self.per_conn_limiter {
+            let conn_id = request.extensions().get::<ConnectionId>().map(|id| id.0);
+
+            match conn_id {
+                Some(id) => {
+                    if !limiter.try_acquire(id) {
+                        return Box::pin(std::future::ready(rate_limited_rpc_response(
+                            request.id().into_owned(),
+                        )));
+                    }
+                }
+                None => {
+                    // ConnectionId is normally always present.  If missing,
+                    // log once and fall through to the global limiter.
+                    warn!(
+                        "RPC request missing ConnectionId in extensions; falling back to global limiter"
+                    );
+                }
+            }
+        }
+
+        // --- Global rate limit (backstop) ---
+        if !global_rate_limit_allows(&self.global_limiter) {
             return Box::pin(std::future::ready(rate_limited_rpc_response(
                 request.id().into_owned(),
             )));
@@ -472,12 +575,12 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             state_provider,
             cors_config: config.cors,
             rate_limit_config: config.rate_limit,
+            rpc_requests_total: None,
             max_connections: config.max_connections,
             max_subscriptions_per_connection: config.max_subscriptions_per_connection,
             peer_count: 0,
             pending_tx_broadcast: None,
             mempool_broadcast: None,
-            rpc_requests_total: None,
         }
     }
 
@@ -494,7 +597,8 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         let txpool = self.txpool;
         let cors_layer = build_cors_layer(&self.cors_config);
         let http_rate_limiter = SharedRateLimiter::new(self.rate_limit_config.clone());
-        let rpc_rate_limiter = SharedRateLimiter::new(self.rate_limit_config);
+        let rpc_global_limiter = SharedRateLimiter::new(self.rate_limit_config.clone());
+        let rpc_per_conn_limiter = PerConnectionRateLimiter::new(self.rate_limit_config);
         let max_connections = self.max_connections;
         let max_subscriptions_per_connection = self.max_subscriptions_per_connection;
         let state_provider = self.state_provider;
@@ -526,13 +630,15 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             let rpc_middleware =
                 RpcServiceBuilder::new().layer_fn(move |service| RateLimitedRpcService {
                     service,
-                    rate_limiter: rpc_rate_limiter.clone(),
+                    per_conn_limiter: rpc_per_conn_limiter.clone(),
+                    global_limiter: rpc_global_limiter.clone(),
                     rpc_requests_total: rpc_requests_total.clone(),
                 });
 
             let server = match Server::builder()
                 .max_connections(max_connections)
                 .max_subscriptions_per_connection(max_subscriptions_per_connection)
+                .set_batch_request_config(BatchRequestConfig::Limit(MAX_BATCH_SIZE))
                 .set_rpc_middleware(rpc_middleware)
                 .build(jsonrpc_addr)
                 .await
@@ -544,10 +650,12 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
                 }
             };
 
+            let eth_node_state = (*node_state_for_jsonrpc).clone();
             let mut eth_api = tx_submit.map_or_else(
                 || EthApiImpl::new(chain_id, state_provider.clone()),
                 |submit| EthApiImpl::with_tx_submit(chain_id, state_provider.clone(), submit),
             );
+            eth_api = eth_api.with_node_state(eth_node_state);
             if let Some(sender) = pending_tx_broadcast.clone() {
                 eth_api = eth_api.with_pending_tx_broadcast(sender);
             }
@@ -782,18 +890,21 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
 
     /// Start the JSON-RPC server.
     pub async fn start(self) -> Result<ServerHandle, ServerError> {
-        let rpc_rate_limiter = SharedRateLimiter::new(self.rate_limit_config);
+        let rpc_global_limiter = SharedRateLimiter::new(self.rate_limit_config.clone());
+        let rpc_per_conn_limiter = PerConnectionRateLimiter::new(self.rate_limit_config);
         let rpc_requests_total = self.rpc_requests_total;
         let rpc_middleware =
             RpcServiceBuilder::new().layer_fn(move |service| RateLimitedRpcService {
                 service,
-                rate_limiter: rpc_rate_limiter.clone(),
+                per_conn_limiter: rpc_per_conn_limiter.clone(),
+                global_limiter: rpc_global_limiter.clone(),
                 rpc_requests_total: rpc_requests_total.clone(),
             });
 
         let server = Server::builder()
             .max_connections(self.max_connections)
             .max_subscriptions_per_connection(self.max_subscriptions_per_connection)
+            .set_batch_request_config(BatchRequestConfig::Limit(MAX_BATCH_SIZE))
             .set_rpc_middleware(rpc_middleware)
             .build(self.addr)
             .await
@@ -857,6 +968,13 @@ mod tests {
 
     fn rpc_request(id: u64) -> RpcRequest<'static> {
         RpcRequest::new(Cow::Borrowed("web3_clientVersion"), None, Id::Number(id))
+    }
+
+    /// Build an [`RpcRequest`] with a [`ConnectionId`] injected in extensions.
+    fn rpc_request_with_conn(id: u64, conn_id: usize) -> RpcRequest<'static> {
+        let mut req = rpc_request(id);
+        req.extensions_mut().insert(ConnectionId(conn_id));
+        req
     }
 
     #[test]
@@ -947,11 +1065,12 @@ mod tests {
     #[test]
     fn disabled_rate_limit_does_not_build_limiter() {
         assert!(SharedRateLimiter::new(RateLimitConfig::disabled()).is_none());
+        assert!(PerConnectionRateLimiter::new(RateLimitConfig::disabled()).is_none());
     }
 
     #[test]
     fn rate_limit_allows_with_no_limiter() {
-        assert!(rate_limit_allows(&None));
+        assert!(global_rate_limit_allows(&None));
     }
 
     #[test]
@@ -984,20 +1103,68 @@ mod tests {
 
     #[tokio::test]
     async fn rpc_rate_limiter_rejects_after_burst() {
-        let rate_limiter =
-            SharedRateLimiter::new(RateLimitConfig { requests_per_second: 1, burst_size: 1 });
+        let per_conn = PerConnectionRateLimiter::new(RateLimitConfig {
+            requests_per_second: 1,
+            burst_size: 1,
+        });
         let service = RateLimitedRpcService {
             service: AlwaysOkRpcService,
-            rate_limiter,
+            per_conn_limiter: per_conn,
+            global_limiter: None,
             rpc_requests_total: None,
         };
 
-        let first = service.call(rpc_request(1)).await;
+        let first = service.call(rpc_request_with_conn(1, 42)).await;
         assert!(first.is_success());
 
-        let second = service.call(rpc_request(2)).await;
+        let second = service.call(rpc_request_with_conn(2, 42)).await;
         assert_eq!(second.as_error_code(), Some(crate::error::codes::LIMIT_EXCEEDED));
         assert!(second.as_result().contains("rate limit exceeded"));
+    }
+
+    #[tokio::test]
+    async fn per_connection_limiter_isolates_connections() {
+        // Two connections each get their own bucket.
+        let per_conn = PerConnectionRateLimiter::new(RateLimitConfig {
+            requests_per_second: 1,
+            burst_size: 1,
+        });
+        let service = RateLimitedRpcService {
+            service: AlwaysOkRpcService,
+            per_conn_limiter: per_conn,
+            global_limiter: None,
+            rpc_requests_total: None,
+        };
+
+        // Connection 1: exhaust its bucket.
+        let resp = service.call(rpc_request_with_conn(1, 1)).await;
+        assert!(resp.is_success());
+        let resp = service.call(rpc_request_with_conn(2, 1)).await;
+        assert_eq!(resp.as_error_code(), Some(crate::error::codes::LIMIT_EXCEEDED));
+
+        // Connection 2: should still be allowed (separate bucket).
+        let resp = service.call(rpc_request_with_conn(3, 2)).await;
+        assert!(resp.is_success());
+    }
+
+    #[tokio::test]
+    async fn global_limiter_caps_aggregate_throughput() {
+        // Even though per-connection allows the request, the global limiter
+        // can reject it.
+        let global =
+            SharedRateLimiter::new(RateLimitConfig { requests_per_second: 1, burst_size: 1 });
+        let service = RateLimitedRpcService {
+            service: AlwaysOkRpcService,
+            per_conn_limiter: None,
+            global_limiter: global,
+        };
+
+        let first = service.call(rpc_request_with_conn(1, 1)).await;
+        assert!(first.is_success());
+
+        // Second request from a different connection is still blocked by global.
+        let second = service.call(rpc_request_with_conn(2, 2)).await;
+        assert_eq!(second.as_error_code(), Some(crate::error::codes::LIMIT_EXCEEDED));
     }
 
     /// A mock service that returns InternalError (-32603) for subscription
@@ -1030,7 +1197,8 @@ mod tests {
     async fn subscription_over_http_returns_method_not_supported() {
         let service = RateLimitedRpcService {
             service: InternalErrorOnSubscriptionService,
-            rate_limiter: None,
+            per_conn_limiter: None,
+            global_limiter: None,
             rpc_requests_total: None,
         };
 
@@ -1047,7 +1215,8 @@ mod tests {
         // middleware must not interfere.
         let service = RateLimitedRpcService {
             service: AlwaysOkRpcService,
-            rate_limiter: None,
+            per_conn_limiter: None,
+            global_limiter: None,
             rpc_requests_total: None,
         };
 
@@ -1061,7 +1230,8 @@ mod tests {
         // An InternalError on a regular method must NOT be rewritten.
         let service = RateLimitedRpcService {
             service: InternalErrorOnSubscriptionService,
-            rate_limiter: None,
+            per_conn_limiter: None,
+            global_limiter: None,
             rpc_requests_total: None,
         };
 
