@@ -138,20 +138,17 @@ impl TestHarness {
         // Start simulated network
         let mut sim_control = start_network(&context, participants_set).await;
         sim_control
-            .connect_all(
-                &participants_vec,
-                SimLinkConfig {
-                    latency: config.link.latency,
-                    jitter: config.link.jitter,
-                    success_rate: config.link.success_rate,
-                },
-            )
+            .connect_all(&participants_vec, SimLinkConfig {
+                latency: config.link.latency,
+                jitter: config.link.jitter,
+                success_rate: config.link.success_rate,
+            })
             .await
             .context("connect_all")?;
         let sim_control = Arc::new(Mutex::new(sim_control));
 
         // Start all nodes
-        let bootstrap = setup.to_bootstrap();
+        let bootstrap = setup.to_bootstrap(config.chain_id);
         let (nodes, mut finalized_rx) = start_all_nodes(
             &context,
             &sim_control,
@@ -369,9 +366,8 @@ async fn start_single_node(
     }
 
     // Start consensus engine
-    let engine = simplex::Engine::new(
-        context.with_label(&format!("engine_{index}")),
-        simplex::Config {
+    let engine =
+        simplex::Engine::new(context.with_label(&format!("engine_{index}")), simplex::Config {
             scheme,
             elector: Random,
             blocker,
@@ -393,8 +389,7 @@ async fn start_single_node(
             fetch_concurrent: 8,
             page_cache,
             forwarding: simplex::ForwardingPolicy::Disabled,
-        },
-    );
+        });
     engine.start(channels.simplex.votes, channels.simplex.certs, channels.simplex.resolver);
 
     debug!(index, "Node started");
