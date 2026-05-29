@@ -344,6 +344,28 @@ impl TopicFilter {
     }
 }
 
+/// Ethereum sync status returned by `eth_syncing`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SyncStatus {
+    /// Node is currently syncing.
+    Syncing(SyncInfo),
+    /// Node is not syncing (returns `false`).
+    NotSyncing(bool),
+}
+
+/// Sync progress information.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncInfo {
+    /// Block number at which syncing started.
+    pub starting_block: U64,
+    /// Current block number being processed.
+    pub current_block: U64,
+    /// Highest known block number.
+    pub highest_block: U64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
