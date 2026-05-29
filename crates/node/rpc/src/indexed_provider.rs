@@ -32,20 +32,26 @@ pub struct IndexedStateProvider<S> {
     index: Arc<BlockIndex>,
     state: S,
     executor: Arc<RevmExecutor>,
+    fee_recipient: Address,
 }
 
 impl<S> IndexedStateProvider<S> {
     /// Creates a new indexed state provider with an explicit executor.
     #[must_use]
-    pub const fn new(index: Arc<BlockIndex>, state: S, executor: Arc<RevmExecutor>) -> Self {
-        Self { index, state, executor }
+    pub fn new(
+        index: Arc<BlockIndex>,
+        state: S,
+        executor: Arc<RevmExecutor>,
+        fee_recipient: Address,
+    ) -> Self {
+        Self { index, state, executor, fee_recipient }
     }
 
     /// Creates a new indexed state provider with a default executor for the
     /// given chain id.
     #[must_use]
     pub fn with_chain_id(index: Arc<BlockIndex>, state: S, chain_id: u64) -> Self {
-        Self::new(index, state, Arc::new(RevmExecutor::new(chain_id)))
+        Self::new(index, state, Arc::new(RevmExecutor::new(chain_id)), Address::ZERO)
     }
 }
 
@@ -55,6 +61,7 @@ impl<S: Clone> Clone for IndexedStateProvider<S> {
             index: Arc::clone(&self.index),
             state: self.state.clone(),
             executor: Arc::clone(&self.executor),
+            fee_recipient: self.fee_recipient,
         }
     }
 }
@@ -294,7 +301,7 @@ impl<S> IndexedStateProvider<S> {
             mix_hash: block.mix_hash,
             nonce: Default::default(),
             base_fee_per_gas: block.base_fee_per_gas.map(U256::from),
-            miner: Address::ZERO,
+            miner: self.fee_recipient,
             difficulty: U256::ZERO,
             total_difficulty: U256::ZERO,
             uncles: vec![],

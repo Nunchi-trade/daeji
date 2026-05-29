@@ -518,6 +518,7 @@ impl From<ThresholdScheme> for ConstantSchemeProvider {
 #[derive(Clone, Debug)]
 struct RevmContextProvider {
     gas_limit: u64,
+    fee_recipient: Address,
     block_index: Arc<BlockIndex>,
 }
 
@@ -534,7 +535,7 @@ impl BlockContextProvider for RevmContextProvider {
             number: block.height,
             timestamp: block.timestamp,
             gas_limit: self.gas_limit,
-            beneficiary: Address::ZERO,
+            beneficiary: self.fee_recipient,
             base_fee_per_gas: Some(kora_config::INITIAL_BASE_FEE),
             ..Default::default()
         };
@@ -995,7 +996,9 @@ impl NodeRunner for ProductionRunner {
             (None, None)
         };
 
-        let context_provider = RevmContextProvider { gas_limit, block_index: block_index.clone() };
+        let fee_recipient = config.execution.fee_recipient.unwrap_or(Address::ZERO);
+        let context_provider =
+            RevmContextProvider { gas_limit, fee_recipient, block_index: block_index.clone() };
         let recovered_head_height = recover_finalized_state(
             &ledger,
             &block_index,
@@ -1040,8 +1043,12 @@ impl NodeRunner for ProductionRunner {
             // up to 256 blocks behind head).
             let live_state = LiveState::new(ledger.clone());
             let rpc_executor = Arc::new(RevmExecutor::new(self.chain_id));
-            let indexed_provider =
-                kora_rpc::IndexedStateProvider::new(block_index.clone(), live_state, rpc_executor);
+            let indexed_provider = kora_rpc::IndexedStateProvider::new(
+                block_index.clone(),
+                live_state,
+                rpc_executor,
+                fee_recipient,
+            );
             let tx_ledger = ledger.clone();
             let chain_id = self.chain_id;
             let tx_pool = txpool.clone();
@@ -1219,6 +1226,7 @@ impl NodeRunner for ProductionRunner {
             executor,
             block_cfg.max_txs,
             gas_limit,
+            fee_recipient,
         );
         app = app.with_metrics(app_metrics);
         if let Some((height, _)) = recovered_head_height {
@@ -1249,34 +1257,31 @@ impl NodeRunner for ProductionRunner {
             }
         }
 
-        let engine = simplex::Engine::new(
-            scratch_context.with_label("engine"),
-            simplex::Config {
-                scheme: self.scheme.clone(),
-                elector: Random,
-                blocker: NoOpBlocker::<Peer>::new(),
-                automaton: marshaled.clone(),
-                relay: marshaled,
-                reporter,
-                strategy,
-                partition: self.partition_prefix.clone(),
-                mailbox_size: MAILBOX_SIZE,
-                epoch: Epoch::zero(),
-                replay_buffer: simplex_config.replay_buffer_bytes,
-                write_buffer: simplex_config.write_buffer_bytes,
-                leader_timeout: Duration::from_secs(simplex_config.leader_timeout_secs.get()),
-                certification_timeout: Duration::from_secs(
-                    simplex_config.certification_timeout_secs.get(),
-                ),
-                timeout_retry: Duration::from_secs(simplex_config.timeout_retry_secs.get()),
-                fetch_timeout: Duration::from_secs(simplex_config.fetch_timeout_secs.get()),
-                activity_timeout: ViewDelta::new(simplex_config.activity_timeout_views.get()),
-                skip_timeout: ViewDelta::new(simplex_config.skip_timeout_views.get()),
-                fetch_concurrent: simplex_config.fetch_concurrent.get(),
-                page_cache,
-                forwarding: simplex::ForwardingPolicy::SilentLeader,
-            },
-        );
+        let engine = simplex::Engine::new(scratch_context.with_label("engine"), simplex::Config {
+            scheme: self.scheme.clone(),
+            elector: Random,
+            blocker: NoOpBlocker::<Peer>::new(),
+            automaton: marshaled.clone(),
+            relay: marshaled,
+            reporter,
+            strategy,
+            partition: self.partition_prefix.clone(),
+            mailbox_size: MAILBOX_SIZE,
+            epoch: Epoch::zero(),
+            replay_buffer: simplex_config.replay_buffer_bytes,
+            write_buffer: simplex_config.write_buffer_bytes,
+            leader_timeout: Duration::from_secs(simplex_config.leader_timeout_secs.get()),
+            certification_timeout: Duration::from_secs(
+                simplex_config.certification_timeout_secs.get(),
+            ),
+            timeout_retry: Duration::from_secs(simplex_config.timeout_retry_secs.get()),
+            fetch_timeout: Duration::from_secs(simplex_config.fetch_timeout_secs.get()),
+            activity_timeout: ViewDelta::new(simplex_config.activity_timeout_views.get()),
+            skip_timeout: ViewDelta::new(simplex_config.skip_timeout_views.get()),
+            fetch_concurrent: simplex_config.fetch_concurrent.get(),
+            page_cache,
+            forwarding: simplex::ForwardingPolicy::SilentLeader,
+        });
         let engine_handle = engine.start(
             transport.simplex.votes,
             transport.simplex.certs,
