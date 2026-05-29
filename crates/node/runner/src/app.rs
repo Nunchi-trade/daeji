@@ -1,7 +1,7 @@
 //! REVM-based consensus application implementation.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -21,12 +21,13 @@ use commonware_runtime::{Clock, Metrics, Spawner};
 use futures::StreamExt;
 use kora_consensus::{BlockExecution, SnapshotStore, components::InMemorySnapshotStore};
 use kora_domain::{Block, ConsensusDigest};
-use kora_executor::{BlockContext, BlockExecutor};
+use kora_executor::{BaseFeeParams, BlockContext, BlockExecutor, calculate_base_fee};
 use kora_ledger::LedgerService;
 use kora_metrics::AppMetrics;
 use kora_overlay::OverlayState;
 use kora_qmdb_ledger::QmdbState;
 use kora_rpc::NodeState;
+use parking_lot::Mutex;
 use rand::Rng;
 use tracing::{debug, error, info, trace, warn};
 
@@ -79,6 +80,25 @@ fn unix_timestamp_secs<Env: Clock>(env: &Env) -> u64 {
 /// execution, NOT by certificate trust) reaches `recovered_height + 64`.
 const CATCH_UP_THRESHOLD: u64 = 64;
 
+/// Maximum number of entries retained in the block metadata cache.
+///
+/// The cache only needs to cover the depth of the unfinalized chain
+/// (typically `MAX_PROPOSAL_LAG` = 64 blocks). Using 256 provides ample
+/// headroom while bounding memory.
+const BLOCK_META_CACHE_CAP: usize = 256;
+
+/// Per-block execution metadata cached for EIP-1559 base fee calculation.
+///
+/// After a block is built or verified, we store the gas usage and the
+/// base fee that was set in its header so that the *next* block can
+/// compute the correct EIP-1559 base fee from the parent's metadata.
+#[derive(Clone, Copy, Debug)]
+struct BlockMeta {
+    gas_used: u64,
+    base_fee: u64,
+    gas_limit: u64,
+}
+
 /// REVM-based consensus application.
 #[derive(Clone)]
 pub struct RevmApplication<S, E> {
@@ -88,6 +108,14 @@ pub struct RevmApplication<S, E> {
     gas_limit: u64,
     node_state: Option<NodeState>,
     metrics: Option<AppMetrics>,
+    /// EIP-1559 base fee parameters (elasticity multiplier, max change denominator).
+    base_fee_params: BaseFeeParams,
+    /// Per-block metadata cache for dynamic base fee calculation.
+    ///
+    /// Maps `block_digest -> BlockMeta` so that when building/verifying the
+    /// *next* block we can look up the parent's gas_used and base_fee to
+    /// compute the correct EIP-1559 base fee.
+    block_meta: Arc<Mutex<HashMap<ConsensusDigest, BlockMeta>>>,
     /// Height of the HEAD block that was restored from the archive during
     /// startup recovery.  This value is set once at startup and never
     /// changes; it anchors the catch-up window.
@@ -132,6 +160,8 @@ where
             gas_limit,
             node_state: None,
             metrics: None,
+            base_fee_params: BaseFeeParams::DEFAULT,
+            block_meta: Arc::new(Mutex::new(HashMap::new())),
             recovered_height: Arc::new(AtomicU64::new(0)),
             last_verified_height: Arc::new(AtomicU64::new(0)),
             _scheme: std::marker::PhantomData,
@@ -168,16 +198,67 @@ where
         self
     }
 
-    fn block_context(&self, height: u64, timestamp: u64, prevrandao: B256) -> BlockContext {
+    /// Build a [`BlockContext`] for the given height.
+    ///
+    /// For the genesis block (height 0) and for blocks whose parent metadata
+    /// is unavailable, the base fee falls back to [`kora_config::INITIAL_BASE_FEE`].
+    /// Otherwise the base fee is dynamically computed from the parent's
+    /// gas usage via the EIP-1559 algorithm ([`calculate_base_fee`]).
+    fn block_context(
+        &self,
+        height: u64,
+        timestamp: u64,
+        prevrandao: B256,
+        parent_digest: ConsensusDigest,
+    ) -> BlockContext {
+        let base_fee = if height == 0 {
+            kora_config::INITIAL_BASE_FEE
+        } else {
+            let meta = self.block_meta.lock().get(&parent_digest).copied();
+            match meta {
+                Some(parent) => calculate_base_fee(
+                    parent.base_fee,
+                    parent.gas_used,
+                    parent.gas_limit,
+                    &self.base_fee_params,
+                ),
+                None => {
+                    // Parent metadata is unavailable (e.g. after restart before
+                    // the parent has been re-executed).  Fall back to the initial
+                    // base fee.  This is safe because validators will also lack
+                    // the parent metadata and will compute the same fallback.
+                    trace!(
+                        height,
+                        ?parent_digest,
+                        "block_context: parent block metadata not cached, \
+                         falling back to INITIAL_BASE_FEE"
+                    );
+                    kora_config::INITIAL_BASE_FEE
+                }
+            }
+        };
+
         let header = Header {
             number: height,
             timestamp,
             gas_limit: self.gas_limit,
             beneficiary: Address::ZERO,
-            base_fee_per_gas: Some(kora_config::INITIAL_BASE_FEE),
+            base_fee_per_gas: Some(base_fee),
             ..Default::default()
         };
         BlockContext::new(header, B256::ZERO, prevrandao)
+    }
+
+    /// Cache execution metadata for a block so that future blocks can
+    /// compute their EIP-1559 base fee from this block's gas usage.
+    fn cache_block_meta(&self, digest: ConsensusDigest, gas_used: u64, base_fee: u64) {
+        let mut cache = self.block_meta.lock();
+        // Evict oldest entries when the cache is full.  This is a simple
+        // strategy; the cache is small enough that a full clear is cheap.
+        if cache.len() >= BLOCK_META_CACHE_CAP {
+            cache.clear();
+        }
+        cache.insert(digest, BlockMeta { gas_used, base_fee, gas_limit: self.gas_limit });
     }
 
     async fn get_prevrandao(&self, parent_digest: ConsensusDigest) -> B256 {
@@ -271,7 +352,7 @@ where
 
         let prevrandao = self.get_prevrandao(parent_digest).await;
         let height = parent.height + 1;
-        let context = self.block_context(height, timestamp, prevrandao);
+        let context = self.block_context(height, timestamp, prevrandao, parent_digest);
         let txs_bytes: Vec<Bytes> = txs.iter().map(|tx| tx.bytes.clone()).collect();
 
         let exec_start = Instant::now();
@@ -314,6 +395,14 @@ where
         let block = Block::new(parent.id(), height, timestamp, prevrandao, state_root, txs);
 
         let block_digest = block.commitment();
+
+        // Cache this block's execution metadata so that the next block can
+        // compute its EIP-1559 base fee from our gas usage.
+        self.cache_block_meta(
+            block_digest,
+            outcome.gas_used,
+            context.header.base_fee_per_gas.unwrap_or(kora_config::INITIAL_BASE_FEE),
+        );
 
         let total_elapsed = start.elapsed();
 
@@ -445,7 +534,8 @@ where
         };
         let snapshot_elapsed = start.elapsed();
 
-        let context = self.block_context(block.height, block.timestamp, block.prevrandao);
+        let context =
+            self.block_context(block.height, block.timestamp, block.prevrandao, parent_digest);
         let exec_start = Instant::now();
         let execution =
             match BlockExecution::execute(&parent_snapshot, &self.executor, &context, &block.txs)
@@ -543,6 +633,14 @@ where
             )
             .await;
 
+        // Cache this block's execution metadata so that subsequent blocks
+        // can compute their EIP-1559 base fee from our gas usage.
+        self.cache_block_meta(
+            digest,
+            execution.outcome.gas_used,
+            context.header.base_fee_per_gas.unwrap_or(kora_config::INITIAL_BASE_FEE),
+        );
+
         // Full execution verification succeeded.  Advance the verified
         // height so that the catch-up window eventually closes once we
         // have verified blocks past the recovery point.
@@ -617,7 +715,20 @@ where
     type Block = Block;
 
     fn genesis(&mut self) -> impl std::future::Future<Output = Self::Block> + Send {
-        async move { self.ledger.genesis_block() }
+        let block_meta = self.block_meta.clone();
+        let gas_limit = self.gas_limit;
+        async move {
+            let genesis = self.ledger.genesis_block();
+            // Seed the block metadata cache with the genesis block so that
+            // block 1 can compute its EIP-1559 base fee from genesis data.
+            let digest = genesis.commitment();
+            block_meta.lock().insert(digest, BlockMeta {
+                gas_used: 0,
+                base_fee: kora_config::INITIAL_BASE_FEE,
+                gas_limit,
+            });
+            genesis
+        }
     }
 
     fn propose<A>(

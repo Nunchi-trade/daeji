@@ -12,13 +12,13 @@ use tracing::warn;
 
 use crate::{ConsensusError, Digest, Mempool, Snapshot, SnapshotStore, TxId};
 
-fn block_context(height: u64, timestamp: u64, prevrandao: B256) -> BlockContext {
+fn block_context(height: u64, timestamp: u64, prevrandao: B256, base_fee: u64) -> BlockContext {
     let header = Header {
         number: height,
         timestamp,
         gas_limit: kora_config::DEFAULT_GAS_LIMIT,
         beneficiary: Address::ZERO,
-        base_fee_per_gas: Some(kora_config::INITIAL_BASE_FEE),
+        base_fee_per_gas: Some(base_fee),
         ..Default::default()
     };
     BlockContext::new(header, B256::ZERO, prevrandao)
@@ -99,7 +99,8 @@ where
         let height = parent.height + 1;
         let timestamp = Block::next_timestamp(now_secs, parent.timestamp)
             .ok_or(ConsensusError::TimestampOverflow { parent_timestamp: parent.timestamp })?;
-        let context = block_context(height, timestamp, prevrandao);
+        // TODO(#260): pass parent gas_used to compute dynamic base fee
+        let context = block_context(height, timestamp, prevrandao, kora_config::INITIAL_BASE_FEE);
         let txs_bytes: Vec<Bytes> = txs.iter().map(|tx| tx.bytes.clone()).collect();
         let outcome = self
             .executor
@@ -144,7 +145,8 @@ where
         let height = parent.height + 1;
         let timestamp = Block::next_timestamp(now_secs, parent.timestamp)
             .ok_or(ConsensusError::TimestampOverflow { parent_timestamp: parent.timestamp })?;
-        let context = block_context(height, timestamp, prevrandao);
+        // TODO(#260): pass parent gas_used to compute dynamic base fee
+        let context = block_context(height, timestamp, prevrandao, kora_config::INITIAL_BASE_FEE);
         let txs_bytes: Vec<Bytes> = txs.iter().map(|tx| tx.bytes.clone()).collect();
         let outcome = self
             .executor

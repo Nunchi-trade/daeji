@@ -530,12 +530,32 @@ impl RevmContextProvider {
 
 impl BlockContextProvider for RevmContextProvider {
     fn context(&self, block: &Block) -> BlockContext {
+        // Compute the EIP-1559 base fee from the parent block's metadata.
+        // During finalization replay, the parent block has already been
+        // indexed, so we can look up its gas_used and base_fee directly.
+        let base_fee = if block.height == 0 {
+            kora_config::INITIAL_BASE_FEE
+        } else {
+            let parent_number = block.height.saturating_sub(1);
+            self.block_index
+                .get_block_by_number(parent_number)
+                .map(|parent| {
+                    kora_executor::calculate_base_fee(
+                        parent.base_fee_per_gas.unwrap_or(kora_config::INITIAL_BASE_FEE),
+                        parent.gas_used,
+                        parent.gas_limit,
+                        &kora_executor::BaseFeeParams::DEFAULT,
+                    )
+                })
+                .unwrap_or(kora_config::INITIAL_BASE_FEE)
+        };
+
         let header = Header {
             number: block.height,
             timestamp: block.timestamp,
             gas_limit: self.gas_limit,
             beneficiary: Address::ZERO,
-            base_fee_per_gas: Some(kora_config::INITIAL_BASE_FEE),
+            base_fee_per_gas: Some(base_fee),
             ..Default::default()
         };
         let recent_hashes = self.recent_block_hashes(block.height);
@@ -1249,34 +1269,31 @@ impl NodeRunner for ProductionRunner {
             }
         }
 
-        let engine = simplex::Engine::new(
-            scratch_context.with_label("engine"),
-            simplex::Config {
-                scheme: self.scheme.clone(),
-                elector: Random,
-                blocker: NoOpBlocker::<Peer>::new(),
-                automaton: marshaled.clone(),
-                relay: marshaled,
-                reporter,
-                strategy,
-                partition: self.partition_prefix.clone(),
-                mailbox_size: MAILBOX_SIZE,
-                epoch: Epoch::zero(),
-                replay_buffer: simplex_config.replay_buffer_bytes,
-                write_buffer: simplex_config.write_buffer_bytes,
-                leader_timeout: Duration::from_secs(simplex_config.leader_timeout_secs.get()),
-                certification_timeout: Duration::from_secs(
-                    simplex_config.certification_timeout_secs.get(),
-                ),
-                timeout_retry: Duration::from_secs(simplex_config.timeout_retry_secs.get()),
-                fetch_timeout: Duration::from_secs(simplex_config.fetch_timeout_secs.get()),
-                activity_timeout: ViewDelta::new(simplex_config.activity_timeout_views.get()),
-                skip_timeout: ViewDelta::new(simplex_config.skip_timeout_views.get()),
-                fetch_concurrent: simplex_config.fetch_concurrent.get(),
-                page_cache,
-                forwarding: simplex::ForwardingPolicy::SilentLeader,
-            },
-        );
+        let engine = simplex::Engine::new(scratch_context.with_label("engine"), simplex::Config {
+            scheme: self.scheme.clone(),
+            elector: Random,
+            blocker: NoOpBlocker::<Peer>::new(),
+            automaton: marshaled.clone(),
+            relay: marshaled,
+            reporter,
+            strategy,
+            partition: self.partition_prefix.clone(),
+            mailbox_size: MAILBOX_SIZE,
+            epoch: Epoch::zero(),
+            replay_buffer: simplex_config.replay_buffer_bytes,
+            write_buffer: simplex_config.write_buffer_bytes,
+            leader_timeout: Duration::from_secs(simplex_config.leader_timeout_secs.get()),
+            certification_timeout: Duration::from_secs(
+                simplex_config.certification_timeout_secs.get(),
+            ),
+            timeout_retry: Duration::from_secs(simplex_config.timeout_retry_secs.get()),
+            fetch_timeout: Duration::from_secs(simplex_config.fetch_timeout_secs.get()),
+            activity_timeout: ViewDelta::new(simplex_config.activity_timeout_views.get()),
+            skip_timeout: ViewDelta::new(simplex_config.skip_timeout_views.get()),
+            fetch_concurrent: simplex_config.fetch_concurrent.get(),
+            page_cache,
+            forwarding: simplex::ForwardingPolicy::SilentLeader,
+        });
         let engine_handle = engine.start(
             transport.simplex.votes,
             transport.simplex.certs,
