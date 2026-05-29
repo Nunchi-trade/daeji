@@ -39,6 +39,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 # Misc
+dashmap = "6"
 parking_lot = "0.12"
 
 # Kora crates
