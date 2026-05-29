@@ -19,7 +19,7 @@ use alloy_consensus::{
     transaction::{SignerRecoverable as _, to_eip155_value},
 };
 use alloy_eips::eip2718::Decodable2718 as _;
-use alloy_primitives::{B256, Bytes, U256, keccak256, logs_bloom};
+use alloy_primitives::{B256, Bloom, Bytes, U256, keccak256, logs_bloom};
 use commonware_consensus::{
     Block as _, Reporter,
     marshal::Update,
@@ -1033,22 +1033,6 @@ fn index_finalized_block(
     let tx_bytes_total: u64 = block.txs.iter().map(|tx| tx.bytes.len() as u64).sum();
     let block_size = 508 + tx_bytes_total;
 
-    let indexed_block = IndexedBlock {
-        hash: block_hash,
-        number: block.height,
-        parent_hash: block.parent.0,
-        state_root: block.state_root.0,
-        transactions_root,
-        receipts_root,
-        timestamp: block.timestamp,
-        gas_limit: block_context.header.gas_limit,
-        gas_used: outcome.gas_used,
-        base_fee_per_gas: block_context.header.base_fee_per_gas,
-        mix_hash: block.prevrandao,
-        size: block_size,
-        transaction_hashes,
-    };
-
     let indexed_txs = tx_metadata
         .iter()
         .enumerate()
@@ -1079,7 +1063,7 @@ fn index_finalized_block(
         .collect();
 
     let mut next_log_index = 0u64;
-    let indexed_receipts = outcome
+    let indexed_receipts: Vec<IndexedReceipt> = outcome
         .receipts
         .iter()
         .enumerate()
@@ -1129,6 +1113,29 @@ fn index_finalized_block(
             })
         })
         .collect();
+
+    // Compute block-level Bloom as the bitwise OR of all receipt Blooms.
+    let mut block_logs_bloom = Bloom::ZERO;
+    for receipt in &indexed_receipts {
+        block_logs_bloom |= receipt.logs_bloom;
+    }
+
+    let indexed_block = IndexedBlock {
+        hash: block_hash,
+        number: block.height,
+        parent_hash: block.parent.0,
+        state_root: block.state_root.0,
+        transactions_root,
+        receipts_root,
+        timestamp: block.timestamp,
+        gas_limit: block_context.header.gas_limit,
+        gas_used: outcome.gas_used,
+        base_fee_per_gas: block_context.header.base_fee_per_gas,
+        mix_hash: block.prevrandao,
+        size: block_size,
+        logs_bloom: block_logs_bloom,
+        transaction_hashes,
+    };
 
     index.insert_block(indexed_block, indexed_txs, indexed_receipts);
 }

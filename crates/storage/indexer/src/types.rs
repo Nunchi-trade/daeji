@@ -40,6 +40,8 @@ pub struct IndexedBlock {
     pub mix_hash: B256,
     /// Approximate block size in bytes (header overhead + sum of raw tx sizes).
     pub size: u64,
+    /// Block-level Bloom filter (bitwise OR of all receipt Bloom filters).
+    pub logs_bloom: Bloom,
     /// Hashes of transactions included in this block.
     pub transaction_hashes: Vec<B256>,
 }

@@ -192,6 +192,7 @@ fn seed_genesis_block_index(index: &BlockIndex, genesis: &Block, gas_limit: u64)
             base_fee_per_gas: Some(kora_config::INITIAL_BASE_FEE),
             mix_hash: genesis.prevrandao,
             size: 508,
+            logs_bloom: alloy_primitives::Bloom::ZERO,
             transaction_hashes: Vec::new(),
         },
         Vec::new(),
@@ -224,6 +225,7 @@ fn index_recovered_block(
         base_fee_per_gas: block_context.header.base_fee_per_gas,
         mix_hash: block.prevrandao,
         size: 508 + tx_bytes_total,
+        logs_bloom: alloy_primitives::Bloom::ZERO,
         transaction_hashes,
     };
     index.insert_block(indexed_block, Vec::new(), Vec::new());
