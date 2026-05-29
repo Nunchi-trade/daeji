@@ -418,6 +418,8 @@ async fn replay_finalized_block(
 
     let merged_changes = parent_snapshot.state.merge_changes(execution.outcome.changes.clone());
     let next_state = kora_overlay::OverlayState::new(parent_snapshot.state.base(), merged_changes);
+    let gas_used = execution.outcome.gas_used;
+    let base_fee = block_context.header.base_fee_per_gas.unwrap_or(kora_config::INITIAL_BASE_FEE);
     ledger
         .insert_snapshot(
             digest,
@@ -426,6 +428,8 @@ async fn replay_finalized_block(
             state_root,
             execution.outcome.changes,
             &block.txs,
+            gas_used,
+            base_fee,
         )
         .await;
     Ok(())
@@ -526,16 +530,39 @@ impl RevmContextProvider {
     fn recent_block_hashes(&self, current_height: u64) -> std::collections::HashMap<u64, B256> {
         self.block_index.recent_block_hashes(current_height)
     }
+
+    /// Compute the EIP-1559 base fee for a block at the given `height`.
+    ///
+    /// For the genesis block (height 0) this returns [`kora_config::INITIAL_BASE_FEE`].
+    /// For all other blocks the parent is looked up in the block index.  If the
+    /// parent is not yet indexed (can happen during the finalization pipeline
+    /// for the very first block after genesis) the initial base fee is returned
+    /// as a safe fallback.
+    fn base_fee_for_height(&self, height: u64) -> u64 {
+        if height == 0 {
+            return kora_config::INITIAL_BASE_FEE;
+        }
+        match self.block_index.get_block_by_number(height - 1) {
+            Some(parent) => kora_executor::calculate_base_fee(
+                parent.base_fee_per_gas.unwrap_or(kora_config::INITIAL_BASE_FEE),
+                parent.gas_used,
+                parent.gas_limit,
+                &kora_executor::BaseFeeParams::DEFAULT,
+            ),
+            None => kora_config::INITIAL_BASE_FEE,
+        }
+    }
 }
 
 impl BlockContextProvider for RevmContextProvider {
     fn context(&self, block: &Block) -> BlockContext {
+        let base_fee = self.base_fee_for_height(block.height);
         let header = Header {
             number: block.height,
             timestamp: block.timestamp,
             gas_limit: self.gas_limit,
             beneficiary: Address::ZERO,
-            base_fee_per_gas: Some(kora_config::INITIAL_BASE_FEE),
+            base_fee_per_gas: Some(base_fee),
             ..Default::default()
         };
         let recent_hashes = self.recent_block_hashes(block.height);
@@ -1249,34 +1276,31 @@ impl NodeRunner for ProductionRunner {
             }
         }
 
-        let engine = simplex::Engine::new(
-            scratch_context.with_label("engine"),
-            simplex::Config {
-                scheme: self.scheme.clone(),
-                elector: Random,
-                blocker: NoOpBlocker::<Peer>::new(),
-                automaton: marshaled.clone(),
-                relay: marshaled,
-                reporter,
-                strategy,
-                partition: self.partition_prefix.clone(),
-                mailbox_size: MAILBOX_SIZE,
-                epoch: Epoch::zero(),
-                replay_buffer: simplex_config.replay_buffer_bytes,
-                write_buffer: simplex_config.write_buffer_bytes,
-                leader_timeout: Duration::from_secs(simplex_config.leader_timeout_secs.get()),
-                certification_timeout: Duration::from_secs(
-                    simplex_config.certification_timeout_secs.get(),
-                ),
-                timeout_retry: Duration::from_secs(simplex_config.timeout_retry_secs.get()),
-                fetch_timeout: Duration::from_secs(simplex_config.fetch_timeout_secs.get()),
-                activity_timeout: ViewDelta::new(simplex_config.activity_timeout_views.get()),
-                skip_timeout: ViewDelta::new(simplex_config.skip_timeout_views.get()),
-                fetch_concurrent: simplex_config.fetch_concurrent.get(),
-                page_cache,
-                forwarding: simplex::ForwardingPolicy::SilentLeader,
-            },
-        );
+        let engine = simplex::Engine::new(scratch_context.with_label("engine"), simplex::Config {
+            scheme: self.scheme.clone(),
+            elector: Random,
+            blocker: NoOpBlocker::<Peer>::new(),
+            automaton: marshaled.clone(),
+            relay: marshaled,
+            reporter,
+            strategy,
+            partition: self.partition_prefix.clone(),
+            mailbox_size: MAILBOX_SIZE,
+            epoch: Epoch::zero(),
+            replay_buffer: simplex_config.replay_buffer_bytes,
+            write_buffer: simplex_config.write_buffer_bytes,
+            leader_timeout: Duration::from_secs(simplex_config.leader_timeout_secs.get()),
+            certification_timeout: Duration::from_secs(
+                simplex_config.certification_timeout_secs.get(),
+            ),
+            timeout_retry: Duration::from_secs(simplex_config.timeout_retry_secs.get()),
+            fetch_timeout: Duration::from_secs(simplex_config.fetch_timeout_secs.get()),
+            activity_timeout: ViewDelta::new(simplex_config.activity_timeout_views.get()),
+            skip_timeout: ViewDelta::new(simplex_config.skip_timeout_views.get()),
+            fetch_concurrent: simplex_config.fetch_concurrent.get(),
+            page_cache,
+            forwarding: simplex::ForwardingPolicy::SilentLeader,
+        });
         let engine_handle = engine.start(
             transport.simplex.votes,
             transport.simplex.certs,

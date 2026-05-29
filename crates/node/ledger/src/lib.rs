@@ -351,10 +351,14 @@ impl LedgerView {
         root: StateRoot,
         qmdb_changes: QmdbChangeSet,
         txs: &[Tx],
+        gas_used: u64,
+        base_fee_per_gas: u64,
     ) {
         let mut inner = self.inner.lock().await;
         let ids = tx_ids(txs);
-        inner.snapshots.insert(digest, Snapshot::new(Some(parent), state, root, qmdb_changes, ids));
+        let snapshot = Snapshot::new(Some(parent), state, root, qmdb_changes, ids)
+            .with_execution_fees(gas_used, base_fee_per_gas);
+        inner.snapshots.insert(digest, snapshot);
         inner.head = digest;
         drop(inner);
         self.snapshot_notify.notify_waiters();
@@ -496,7 +500,8 @@ impl LedgerView {
                                 snapshot.state_root,
                                 QmdbChangeSet::default(),
                                 snapshot.tx_ids,
-                            ),
+                            )
+                            .with_execution_fees(snapshot.gas_used, snapshot.base_fee_per_gas),
                         );
                     }
                     inner.snapshots.mark_persisted(&chain);
@@ -668,8 +673,12 @@ impl LedgerService {
         root: StateRoot,
         changes: QmdbChangeSet,
         txs: &[Tx],
+        gas_used: u64,
+        base_fee_per_gas: u64,
     ) {
-        self.view.insert_snapshot(digest, parent, state, root, changes, txs).await;
+        self.view
+            .insert_snapshot(digest, parent, state, root, changes, txs, gas_used, base_fee_per_gas)
+            .await;
     }
 
     /// Cache a fully constructed snapshot.
@@ -871,8 +880,19 @@ mod tests {
         let block = Block::new(parent.id(), height, timestamp, PREVRANDAO, root, txs);
         let digest = block.commitment();
         let next_state = OverlayState::new(parent_snapshot.state.base(), merged_changes);
+        let gas_used = outcome.gas_used;
+        let base_fee = context.header.base_fee_per_gas.unwrap_or(kora_config::INITIAL_BASE_FEE);
         service
-            .insert_snapshot(digest, parent_digest, next_state, root, outcome.changes, &block.txs)
+            .insert_snapshot(
+                digest,
+                parent_digest,
+                next_state,
+                root,
+                outcome.changes,
+                &block.txs,
+                gas_used,
+                base_fee,
+            )
             .await;
         BuiltBlock { block, digest }
     }
@@ -887,11 +907,10 @@ mod tests {
             let to_key = key_from_byte(TO_BYTE_A);
             let from = Evm::address_from_key(&from_key);
             let to = Evm::address_from_key(&to_key);
-            let setup = setup_ledger(
-                context,
-                "revm-ledger-merge",
-                vec![(from, U256::from(GENESIS_BALANCE)), (to, U256::ZERO)],
-            )
+            let setup = setup_ledger(context, "revm-ledger-merge", vec![
+                (from, U256::from(GENESIS_BALANCE)),
+                (to, U256::ZERO),
+            ])
             .await;
             let parent_snapshot = setup
                 .service
@@ -942,11 +961,10 @@ mod tests {
             let to_key = key_from_byte(TO_BYTE_A);
             let from = Evm::address_from_key(&from_key);
             let to = Evm::address_from_key(&to_key);
-            let setup = setup_ledger(
-                context,
-                "revm-ledger-compact-chain",
-                vec![(from, U256::from(GENESIS_BALANCE)), (to, U256::ZERO)],
-            )
+            let setup = setup_ledger(context, "revm-ledger-compact-chain", vec![
+                (from, U256::from(GENESIS_BALANCE)),
+                (to, U256::ZERO),
+            ])
             .await;
             let parent_snapshot = setup
                 .service
@@ -1027,11 +1045,10 @@ mod tests {
             let to_key = key_from_byte(TO_BYTE_A);
             let from = Evm::address_from_key(&from_key);
             let to = Evm::address_from_key(&to_key);
-            let setup = setup_ledger(
-                context,
-                "revm-ledger-empty-child",
-                vec![(from, U256::from(GENESIS_BALANCE)), (to, U256::ZERO)],
-            )
+            let setup = setup_ledger(context, "revm-ledger-empty-child", vec![
+                (from, U256::from(GENESIS_BALANCE)),
+                (to, U256::ZERO),
+            ])
             .await;
             let parent_snapshot = setup
                 .service
@@ -1071,11 +1088,10 @@ mod tests {
             let to_key = key_from_byte(TO_BYTE_A);
             let from = Evm::address_from_key(&from_key);
             let to = Evm::address_from_key(&to_key);
-            let setup = setup_ledger(
-                context,
-                "revm-ledger-duplicate",
-                vec![(from, U256::from(GENESIS_BALANCE)), (to, U256::ZERO)],
-            )
+            let setup = setup_ledger(context, "revm-ledger-duplicate", vec![
+                (from, U256::from(GENESIS_BALANCE)),
+                (to, U256::ZERO),
+            ])
             .await;
             let parent_snapshot = setup
                 .service
@@ -1172,16 +1188,12 @@ mod tests {
             let to_key_b = key_from_byte(TO_BYTE_B);
             let from_b = Evm::address_from_key(&from_key_b);
             let to_b = Evm::address_from_key(&to_key_b);
-            let setup = setup_ledger(
-                context,
-                "revm-ledger-unrelated",
-                vec![
-                    (from_a, U256::from(GENESIS_BALANCE)),
-                    (to_a, U256::ZERO),
-                    (from_b, U256::from(DUPLICATE_BALANCE)),
-                    (to_b, U256::ZERO),
-                ],
-            )
+            let setup = setup_ledger(context, "revm-ledger-unrelated", vec![
+                (from_a, U256::from(GENESIS_BALANCE)),
+                (to_a, U256::ZERO),
+                (from_b, U256::from(DUPLICATE_BALANCE)),
+                (to_b, U256::ZERO),
+            ])
             .await;
             let parent_snapshot = setup
                 .service
@@ -1241,11 +1253,10 @@ mod tests {
             let to_key = key_from_byte(TO_BYTE_A);
             let from = Evm::address_from_key(&from_key);
             let to = Evm::address_from_key(&to_key);
-            let setup = setup_ledger(
-                context,
-                "revm-ledger-updates",
-                vec![(from, U256::from(GENESIS_BALANCE)), (to, U256::ZERO)],
-            )
+            let setup = setup_ledger(context, "revm-ledger-updates", vec![
+                (from, U256::from(GENESIS_BALANCE)),
+                (to, U256::ZERO),
+            ])
             .await;
             let parent_snapshot = setup
                 .service

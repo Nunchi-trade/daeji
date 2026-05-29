@@ -168,13 +168,37 @@ where
         self
     }
 
-    fn block_context(&self, height: u64, timestamp: u64, prevrandao: B256) -> BlockContext {
+    /// Build a [`BlockContext`] for height `height`, computing the EIP-1559
+    /// base fee dynamically from the parent block's gas usage.
+    ///
+    /// For the genesis block (height 0) the base fee is
+    /// [`kora_config::INITIAL_BASE_FEE`].  For all subsequent blocks it is
+    /// derived from the parent via [`kora_executor::calculate_base_fee`].
+    fn block_context(
+        &self,
+        height: u64,
+        timestamp: u64,
+        prevrandao: B256,
+        parent_gas_used: u64,
+        parent_gas_limit: u64,
+        parent_base_fee: u64,
+    ) -> BlockContext {
+        let base_fee = if height == 0 {
+            kora_config::INITIAL_BASE_FEE
+        } else {
+            kora_executor::calculate_base_fee(
+                parent_base_fee,
+                parent_gas_used,
+                parent_gas_limit,
+                &kora_executor::BaseFeeParams::DEFAULT,
+            )
+        };
         let header = Header {
             number: height,
             timestamp,
             gas_limit: self.gas_limit,
             beneficiary: Address::ZERO,
-            base_fee_per_gas: Some(kora_config::INITIAL_BASE_FEE),
+            base_fee_per_gas: Some(base_fee),
             ..Default::default()
         };
         BlockContext::new(header, B256::ZERO, prevrandao)
@@ -271,7 +295,14 @@ where
 
         let prevrandao = self.get_prevrandao(parent_digest).await;
         let height = parent.height + 1;
-        let context = self.block_context(height, timestamp, prevrandao);
+        let context = self.block_context(
+            height,
+            timestamp,
+            prevrandao,
+            parent_snapshot.gas_used,
+            self.gas_limit,
+            parent_snapshot.base_fee_per_gas,
+        );
         let txs_bytes: Vec<Bytes> = txs.iter().map(|tx| tx.bytes.clone()).collect();
 
         let exec_start = Instant::now();
@@ -445,7 +476,14 @@ where
         };
         let snapshot_elapsed = start.elapsed();
 
-        let context = self.block_context(block.height, block.timestamp, block.prevrandao);
+        let context = self.block_context(
+            block.height,
+            block.timestamp,
+            block.prevrandao,
+            parent_snapshot.gas_used,
+            self.gas_limit,
+            parent_snapshot.base_fee_per_gas,
+        );
         let exec_start = Instant::now();
         let execution =
             match BlockExecution::execute(&parent_snapshot, &self.executor, &context, &block.txs)
@@ -532,6 +570,9 @@ where
         let merged_changes = parent_snapshot.state.merge_changes(execution.outcome.changes.clone());
         let next_state = OverlayState::new(parent_snapshot.state.base(), merged_changes);
 
+        let block_gas_used = execution.outcome.gas_used;
+        let block_base_fee =
+            context.header.base_fee_per_gas.unwrap_or(kora_config::INITIAL_BASE_FEE);
         self.ledger
             .insert_snapshot(
                 digest,
@@ -540,6 +581,8 @@ where
                 state_root,
                 execution.outcome.changes,
                 &block.txs,
+                block_gas_used,
+                block_base_fee,
             )
             .await;
 

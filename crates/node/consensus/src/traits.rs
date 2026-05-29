@@ -28,10 +28,28 @@ pub struct Snapshot<S> {
     pub changes: ChangeSet,
     /// Transaction IDs included in this snapshot's block.
     pub tx_ids: BTreeSet<TxId>,
+    /// Total gas consumed by the block that produced this snapshot.
+    ///
+    /// Used by the EIP-1559 base fee calculation for the *next* block:
+    /// `calculate_base_fee(parent_base_fee, parent_gas_used, parent_gas_limit, …)`.
+    /// Defaults to `0` (genesis / catch-up snapshots where gas accounting is
+    /// not available).
+    pub gas_used: u64,
+    /// Base fee per gas that was in effect for the block that produced this
+    /// snapshot.
+    ///
+    /// Used together with [`Self::gas_used`] by the EIP-1559 algorithm to
+    /// derive the next block's base fee.  Defaults to
+    /// [`kora_config::INITIAL_BASE_FEE`] for genesis and catch-up snapshots.
+    pub base_fee_per_gas: u64,
 }
 
 impl<S> Snapshot<S> {
     /// Create a new snapshot.
+    ///
+    /// `gas_used` and `base_fee_per_gas` default to genesis values (`0` and
+    /// `INITIAL_BASE_FEE` respectively).  Call [`Self::with_execution_fees`]
+    /// after construction to set them for production blocks.
     pub const fn new(
         parent: Option<Digest>,
         state: S,
@@ -39,7 +57,27 @@ impl<S> Snapshot<S> {
         changes: ChangeSet,
         tx_ids: BTreeSet<TxId>,
     ) -> Self {
-        Self { parent, state, state_root, changes, tx_ids }
+        Self {
+            parent,
+            state,
+            state_root,
+            changes,
+            tx_ids,
+            gas_used: 0,
+            base_fee_per_gas: kora_config::INITIAL_BASE_FEE,
+        }
+    }
+
+    /// Attach execution fee metadata to the snapshot.
+    ///
+    /// This records the block's total gas usage and the base fee that was in
+    /// effect, so that the *next* block can compute its EIP-1559 base fee
+    /// from the parent snapshot.
+    #[must_use]
+    pub const fn with_execution_fees(mut self, gas_used: u64, base_fee_per_gas: u64) -> Self {
+        self.gas_used = gas_used;
+        self.base_fee_per_gas = base_fee_per_gas;
+        self
     }
 }
 
@@ -127,5 +165,16 @@ mod tests {
             Snapshot::new(None, (), StateRoot(B256::ZERO), ChangeSet::new(), BTreeSet::new());
         assert!(snapshot.parent.is_none());
         assert_eq!(snapshot.state_root, StateRoot(B256::ZERO));
+        assert_eq!(snapshot.gas_used, 0);
+        assert_eq!(snapshot.base_fee_per_gas, kora_config::INITIAL_BASE_FEE);
+    }
+
+    #[test]
+    fn snapshot_with_execution_fees() {
+        let snapshot: Snapshot<()> =
+            Snapshot::new(None, (), StateRoot(B256::ZERO), ChangeSet::new(), BTreeSet::new())
+                .with_execution_fees(21_000, 2_000_000_000);
+        assert_eq!(snapshot.gas_used, 21_000);
+        assert_eq!(snapshot.base_fee_per_gas, 2_000_000_000);
     }
 }

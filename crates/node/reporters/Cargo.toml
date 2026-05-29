@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 # Local crates
+kora-config = { path = "../config" }
 kora-consensus = { path = "../consensus" }
 kora-domain = { path = "../domain" }
 kora-executor = { path = "../executor" }
