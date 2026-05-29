@@ -168,6 +168,7 @@ fn seed_genesis_block_index(index: &BlockIndex, genesis: &Block, gas_limit: u64)
             gas_used: 0,
             base_fee_per_gas: Some(kora_config::INITIAL_BASE_FEE),
             mix_hash: genesis.prevrandao,
+            logs_bloom: alloy_primitives::Bloom::ZERO,
             transaction_hashes: Vec::new(),
         },
         Vec::new(),
@@ -196,6 +197,7 @@ fn index_recovered_block(
         gas_used: 0,
         base_fee_per_gas: block_context.header.base_fee_per_gas,
         mix_hash: block.prevrandao,
+        logs_bloom: alloy_primitives::Bloom::ZERO,
         transaction_hashes,
     };
     index.insert_block(indexed_block, Vec::new(), Vec::new());
@@ -1249,34 +1251,31 @@ impl NodeRunner for ProductionRunner {
             }
         }
 
-        let engine = simplex::Engine::new(
-            scratch_context.with_label("engine"),
-            simplex::Config {
-                scheme: self.scheme.clone(),
-                elector: Random,
-                blocker: NoOpBlocker::<Peer>::new(),
-                automaton: marshaled.clone(),
-                relay: marshaled,
-                reporter,
-                strategy,
-                partition: self.partition_prefix.clone(),
-                mailbox_size: MAILBOX_SIZE,
-                epoch: Epoch::zero(),
-                replay_buffer: simplex_config.replay_buffer_bytes,
-                write_buffer: simplex_config.write_buffer_bytes,
-                leader_timeout: Duration::from_secs(simplex_config.leader_timeout_secs.get()),
-                certification_timeout: Duration::from_secs(
-                    simplex_config.certification_timeout_secs.get(),
-                ),
-                timeout_retry: Duration::from_secs(simplex_config.timeout_retry_secs.get()),
-                fetch_timeout: Duration::from_secs(simplex_config.fetch_timeout_secs.get()),
-                activity_timeout: ViewDelta::new(simplex_config.activity_timeout_views.get()),
-                skip_timeout: ViewDelta::new(simplex_config.skip_timeout_views.get()),
-                fetch_concurrent: simplex_config.fetch_concurrent.get(),
-                page_cache,
-                forwarding: simplex::ForwardingPolicy::SilentLeader,
-            },
-        );
+        let engine = simplex::Engine::new(scratch_context.with_label("engine"), simplex::Config {
+            scheme: self.scheme.clone(),
+            elector: Random,
+            blocker: NoOpBlocker::<Peer>::new(),
+            automaton: marshaled.clone(),
+            relay: marshaled,
+            reporter,
+            strategy,
+            partition: self.partition_prefix.clone(),
+            mailbox_size: MAILBOX_SIZE,
+            epoch: Epoch::zero(),
+            replay_buffer: simplex_config.replay_buffer_bytes,
+            write_buffer: simplex_config.write_buffer_bytes,
+            leader_timeout: Duration::from_secs(simplex_config.leader_timeout_secs.get()),
+            certification_timeout: Duration::from_secs(
+                simplex_config.certification_timeout_secs.get(),
+            ),
+            timeout_retry: Duration::from_secs(simplex_config.timeout_retry_secs.get()),
+            fetch_timeout: Duration::from_secs(simplex_config.fetch_timeout_secs.get()),
+            activity_timeout: ViewDelta::new(simplex_config.activity_timeout_views.get()),
+            skip_timeout: ViewDelta::new(simplex_config.skip_timeout_views.get()),
+            fetch_concurrent: simplex_config.fetch_concurrent.get(),
+            page_cache,
+            forwarding: simplex::ForwardingPolicy::SilentLeader,
+        });
         let engine_handle = engine.start(
             transport.simplex.votes,
             transport.simplex.certs,

@@ -23,6 +23,8 @@ pub struct IndexedBlock {
     pub base_fee_per_gas: Option<u64>,
     /// Mix hash / prevrandao value for this block.
     pub mix_hash: B256,
+    /// Block-level Bloom filter (bitwise OR of all receipt Bloom filters).
+    pub logs_bloom: Bloom,
     /// Hashes of transactions included in this block.
     pub transaction_hashes: Vec<B256>,
 }

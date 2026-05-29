@@ -283,10 +283,7 @@ impl<S> IndexedStateProvider<S> {
             state_root: block.state_root,
             transactions_root: B256::ZERO,
             receipts_root: B256::ZERO,
-            // EIP-1474: logsBloom must be a 256-byte (512 hex char) value.
-            // An empty `Bytes` breaks client-side deserializers that expect
-            // a fixed-size bloom.
-            logs_bloom: Bytes::from(vec![0u8; 256]),
+            logs_bloom: Bytes::copy_from_slice(block.logs_bloom.as_slice()),
             timestamp: U64::from(block.timestamp),
             gas_limit: U64::from(block.gas_limit),
             gas_used: U64::from(block.gas_used),
@@ -517,6 +514,7 @@ mod tests {
             gas_used: 21_000,
             base_fee_per_gas: Some(1_000_000_000),
             mix_hash: B256::ZERO,
+            logs_bloom: Bloom::ZERO,
             transaction_hashes: vec![],
         }
     }
