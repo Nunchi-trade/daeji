@@ -14,7 +14,7 @@ test:
 
 # Run e2e tests serially
 test-e2e:
-    cargo test -p kora-e2e --all-features --lib -- --test-threads=1
+    cargo nextest run -p kora-e2e --all-features --run-ignored all -j1 --no-tests=fail
 
 # Run doc tests
 test-doc:
