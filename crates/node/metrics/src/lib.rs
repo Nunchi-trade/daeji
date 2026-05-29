@@ -86,6 +86,11 @@ pub struct AppMetrics {
     pub gossip_tx_broadcast_failed: Counter,
     /// Total gossip transactions that failed validation.
     pub gossip_tx_invalid: Counter,
+
+    // -- Equivocation --
+    /// Total equivocation events detected, labelled by type
+    /// (`conflicting_notarize`, `conflicting_finalize`, `nullify_finalize`).
+    pub equivocations: Family<EquivocationTypeLabel, Counter>,
 }
 
 /// Label set for metrics that carry a `reason` dimension.
@@ -93,6 +98,14 @@ pub struct AppMetrics {
 pub struct ReasonLabel {
     /// The rejection / error reason.
     pub reason: String,
+}
+
+/// Label set for equivocation metrics, distinguishing the type of Byzantine fault.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, prometheus_client::encoding::EncodeLabelSet)]
+pub struct EquivocationTypeLabel {
+    /// The equivocation type (`conflicting_notarize`, `conflicting_finalize`,
+    /// `nullify_finalize`).
+    pub r#type: String,
 }
 
 impl AppMetrics {
@@ -117,6 +130,7 @@ impl AppMetrics {
             gossip_tx_received: Counter::default(),
             gossip_tx_broadcast_failed: Counter::default(),
             gossip_tx_invalid: Counter::default(),
+            equivocations: Family::default(),
         }
     }
 
@@ -212,6 +226,11 @@ impl AppMetrics {
             "kora_gossip_tx_invalid",
             "Total gossip transactions that failed validation",
             self.gossip_tx_invalid.clone(),
+        );
+        registry.register(
+            "kora_equivocations",
+            "Total equivocation events detected by type",
+            self.equivocations.clone(),
         );
     }
 }

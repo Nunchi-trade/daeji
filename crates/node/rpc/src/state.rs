@@ -71,6 +71,7 @@ struct NodeStateInner {
     finalized_height: AtomicU64,
     proposed_count: AtomicU64,
     nullified_count: AtomicU64,
+    equivocation_count: AtomicU64,
     peer_count: AtomicU64,
     is_leader: RwLock<bool>,
     /// Height of the HEAD block recovered from an archive at startup.
@@ -116,6 +117,7 @@ impl NodeState {
                 finalized_height: AtomicU64::new(0),
                 proposed_count: AtomicU64::new(0),
                 nullified_count: AtomicU64::new(0),
+                equivocation_count: AtomicU64::new(0),
                 peer_count: AtomicU64::new(0),
                 is_leader: RwLock::new(false),
                 recovered_height: AtomicU64::new(0),
@@ -157,6 +159,11 @@ impl NodeState {
     /// Increment nullified round count.
     pub fn inc_nullified(&self) {
         self.inner.nullified_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment equivocation event count.
+    pub fn inc_equivocations(&self) {
+        self.inner.equivocation_count.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Update peer count.
@@ -216,6 +223,7 @@ impl NodeState {
             finalized_count: self.inner.finalized_count.load(Ordering::Relaxed),
             proposed_count: self.inner.proposed_count.load(Ordering::Relaxed),
             nullified_count: self.inner.nullified_count.load(Ordering::Relaxed),
+            equivocation_count: self.inner.equivocation_count.load(Ordering::Relaxed),
             peer_count,
             total_expected_peers,
             partition_status,
@@ -242,6 +250,8 @@ pub struct NodeStatus {
     pub proposed_count: u64,
     /// Number of nullified rounds.
     pub nullified_count: u64,
+    /// Number of equivocation events detected (Byzantine behavior).
+    pub equivocation_count: u64,
     /// Number of connected peers.
     pub peer_count: u64,
     /// Total number of expected peers (validator_count - 1).
@@ -266,6 +276,7 @@ mod tests {
             finalized_count: 50,
             proposed_count: 10,
             nullified_count: 5,
+            equivocation_count: 2,
             peer_count: 3,
             total_expected_peers: 3,
             partition_status: PartitionStatus::Healthy,
@@ -282,6 +293,7 @@ mod tests {
         assert_eq!(status.finalized_count, parsed.finalized_count);
         assert_eq!(status.proposed_count, parsed.proposed_count);
         assert_eq!(status.nullified_count, parsed.nullified_count);
+        assert_eq!(status.equivocation_count, parsed.equivocation_count);
         assert_eq!(status.peer_count, parsed.peer_count);
         assert_eq!(status.total_expected_peers, parsed.total_expected_peers);
         assert_eq!(status.partition_status, parsed.partition_status);
@@ -298,6 +310,7 @@ mod tests {
             finalized_count: 0,
             proposed_count: 0,
             nullified_count: 0,
+            equivocation_count: 0,
             peer_count: 0,
             total_expected_peers: 3,
             partition_status: PartitionStatus::Partitioned,
@@ -312,6 +325,7 @@ mod tests {
         assert!(json.contains("finalizedCount"));
         assert!(json.contains("proposedCount"));
         assert!(json.contains("nullifiedCount"));
+        assert!(json.contains("equivocationCount"));
         assert!(json.contains("peerCount"));
         assert!(json.contains("totalExpectedPeers"));
         assert!(json.contains("partitionStatus"));
@@ -383,11 +397,15 @@ mod tests {
         state.inc_finalized();
         state.inc_proposed();
         state.inc_nullified();
+        state.inc_equivocations();
+        state.inc_equivocations();
+        state.inc_equivocations();
 
         let status = state.status();
         assert_eq!(status.finalized_count, 2);
         assert_eq!(status.proposed_count, 1);
         assert_eq!(status.nullified_count, 1);
+        assert_eq!(status.equivocation_count, 3);
     }
 
     #[test]
