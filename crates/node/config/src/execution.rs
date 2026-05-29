@@ -50,10 +50,10 @@ fn serialize_optional_address<S>(addr: &Option<Address>, serializer: S) -> Resul
 where
     S: serde::Serializer,
 {
-    match addr {
-        Some(a) => serializer.serialize_str(&format!("{a:#x}")),
-        None => serializer.serialize_none(),
-    }
+    addr.as_ref().map_or_else(
+        || serializer.serialize_none(),
+        |a| serializer.serialize_str(&format!("{a:#x}")),
+    )
 }
 
 fn deserialize_optional_address<'de, D>(deserializer: D) -> Result<Option<Address>, D::Error>
@@ -61,13 +61,13 @@ where
     D: serde::Deserializer<'de>,
 {
     let opt: Option<String> = Option::deserialize(deserializer)?;
-    match opt {
-        None => Ok(None),
-        Some(s) => {
+    opt.map_or_else(
+        || Ok(None),
+        |s| {
             let s = s.trim();
             s.parse::<Address>().map(Some).map_err(serde::de::Error::custom)
-        }
-    }
+        },
+    )
 }
 
 #[cfg(test)]
