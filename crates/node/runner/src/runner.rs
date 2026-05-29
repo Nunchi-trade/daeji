@@ -20,7 +20,9 @@ use commonware_consensus::{
     },
     types::{Epoch, FixedEpocher, ViewDelta},
 };
-use commonware_cryptography::{Committable as _, bls12381::primitives::variant::MinSig, ed25519};
+use commonware_cryptography::{
+    Committable as _, Hasher as _, Sha256, bls12381::primitives::variant::MinSig, ed25519,
+};
 use commonware_p2p::{Blocker, Manager, Receiver as _, Recipients, Sender as _, TrackedPeers};
 use commonware_runtime::{
     Clock as _, Handle as RuntimeHandle, Metrics as _, Spawner, ThreadPooler as _,
@@ -31,7 +33,7 @@ use commonware_utils::{NZU64, NZUsize, acknowledgement::Exact, ordered::Set};
 use futures::StreamExt;
 use kora_consensus::BlockExecution;
 use kora_domain::{Block, BlockCfg, BootstrapConfig, ConsensusDigest, LedgerEvent, Tx, TxCfg};
-use kora_executor::{BlockContext, RevmExecutor};
+use kora_executor::{BaseFeeParams, BlockContext, RevmExecutor, calculate_base_fee};
 use kora_indexer::{BlockIndex, IndexedBlock};
 use kora_ledger::{LedgerService, LedgerView, LiveState};
 use kora_marshal::{ArchiveInitializer, BroadcastInitializer, PeerInitializer};
@@ -175,6 +177,46 @@ fn seed_genesis_block_index(index: &BlockIndex, genesis: &Block, gas_limit: u64)
     );
 }
 
+/// Compute the consensus digest for a block hash (BlockId).
+///
+/// Mirrors `digest_for_block_id` in `kora_domain::block` which is private.
+fn consensus_digest_for_hash(block_hash: B256) -> ConsensusDigest {
+    let mut hasher = Sha256::default();
+    hasher.update(block_hash.as_slice());
+    hasher.finalize()
+}
+
+/// Seed the [`RevmApplication`] block-fee cache with entries from the
+/// [`BlockIndex`] so that the first blocks after restart derive a correct
+/// EIP-1559 base fee.
+///
+/// Seeds the last few blocks ending at `head_height`.
+fn seed_block_fee_cache(
+    app: &RevmApplication<ThresholdScheme, RevmExecutor>,
+    block_index: &BlockIndex,
+    head_height: u64,
+) {
+    // Seed the last few blocks so that both the HEAD and its recent
+    // ancestors are available for base-fee derivation.
+    let start = head_height.saturating_sub(4);
+    let mut entries = Vec::new();
+    for h in start..=head_height {
+        if let Some(indexed) = block_index.get_block_by_number(h) {
+            let digest = consensus_digest_for_hash(indexed.hash);
+            let base_fee = indexed.base_fee_per_gas.unwrap_or(kora_config::INITIAL_BASE_FEE);
+            entries.push((digest, indexed.gas_used, base_fee));
+        }
+    }
+    if !entries.is_empty() {
+        app.seed_block_fees(&entries);
+        debug!(
+            head_height,
+            seeded = entries.len(),
+            "seeded block-fee cache from block index for EIP-1559 base fee recovery"
+        );
+    }
+}
+
 fn seed_hash(seed: impl commonware_codec::Encode) -> B256 {
     keccak256(seed.encode())
 }
@@ -267,6 +309,7 @@ where
             provider,
             data_dir,
             chain_id,
+            block_index,
         )
         .await?;
         info!(
@@ -289,6 +332,7 @@ async fn restore_checkpoint_and_replay_tail(
     provider: &RevmContextProvider,
     data_dir: &Path,
     chain_id: u64,
+    block_index: &BlockIndex,
 ) -> anyhow::Result<(u64, bool)> {
     let Some((_, head)) = recovered_blocks.last_key_value() else {
         return Ok((0, false));
@@ -340,7 +384,7 @@ async fn restore_checkpoint_and_replay_tail(
                     );
                     break;
                 }
-                replay_finalized_block(ledger, provider, &executor, block).await?;
+                replay_finalized_block(ledger, provider, &executor, block, block_index).await?;
                 restored_height = block.height;
                 restored_digest = block.commitment();
                 replayed_tail = true;
@@ -390,6 +434,7 @@ async fn replay_finalized_block(
     provider: &RevmContextProvider,
     executor: &RevmExecutor,
     block: &Block,
+    block_index: &BlockIndex,
 ) -> anyhow::Result<()> {
     let digest = block.commitment();
     if ledger.query_state_root(digest).await.is_some() {
@@ -415,6 +460,24 @@ async fn replay_finalized_block(
         block.state_root,
         state_root
     );
+
+    // Re-index the block with the real gas_used from execution so that
+    // subsequent blocks can derive their EIP-1559 base fee correctly.
+    // The initial `index_recovered_block` call stored gas_used=0 because
+    // the archive does not include execution results.
+    let indexed_block = IndexedBlock {
+        hash: block.id().0,
+        number: block.height,
+        parent_hash: block.parent.0,
+        state_root: block.state_root.0,
+        timestamp: block_context.header.timestamp,
+        gas_limit: block_context.header.gas_limit,
+        gas_used: execution.outcome.gas_used,
+        base_fee_per_gas: block_context.header.base_fee_per_gas,
+        mix_hash: block.prevrandao,
+        transaction_hashes: block.txs.iter().map(|tx| keccak256(&tx.bytes)).collect(),
+    };
+    block_index.insert_block(indexed_block, Vec::new(), Vec::new());
 
     let merged_changes = parent_snapshot.state.merge_changes(execution.outcome.changes.clone());
     let next_state = kora_overlay::OverlayState::new(parent_snapshot.state.base(), merged_changes);
@@ -530,12 +593,32 @@ impl RevmContextProvider {
 
 impl BlockContextProvider for RevmContextProvider {
     fn context(&self, block: &Block) -> BlockContext {
+        // Compute EIP-1559 base fee from the parent block's gas usage.
+        // The parent should already be indexed when finalizing in order.
+        // Fall back to INITIAL_BASE_FEE for genesis (height 0) or if the
+        // parent is not yet indexed (e.g. during catch-up).
+        let base_fee = if block.height == 0 {
+            kora_config::INITIAL_BASE_FEE
+        } else {
+            self.block_index
+                .get_block_by_number(block.height - 1)
+                .map(|parent| {
+                    calculate_base_fee(
+                        parent.base_fee_per_gas.unwrap_or(kora_config::INITIAL_BASE_FEE),
+                        parent.gas_used,
+                        parent.gas_limit,
+                        &BaseFeeParams::DEFAULT,
+                    )
+                })
+                .unwrap_or(kora_config::INITIAL_BASE_FEE)
+        };
+
         let header = Header {
             number: block.height,
             timestamp: block.timestamp,
             gas_limit: self.gas_limit,
             beneficiary: Address::ZERO,
-            base_fee_per_gas: Some(kora_config::INITIAL_BASE_FEE),
+            base_fee_per_gas: Some(base_fee),
             ..Default::default()
         };
         let recent_hashes = self.recent_block_hashes(block.height);
@@ -1223,6 +1306,11 @@ impl NodeRunner for ProductionRunner {
         app = app.with_metrics(app_metrics);
         if let Some((height, _)) = recovered_head_height {
             app = app.with_recovered_height(height);
+            // Seed the block-fee cache from the block index so that the
+            // first blocks after restart can compute a correct EIP-1559
+            // base fee.  We seed the last few blocks to cover the parent
+            // of the next proposed/verified block.
+            seed_block_fee_cache(&app, &block_index, height);
         }
         if let Some((state, _)) = &self.rpc_config {
             app = app.with_node_state(state.clone());
@@ -1249,34 +1337,31 @@ impl NodeRunner for ProductionRunner {
             }
         }
 
-        let engine = simplex::Engine::new(
-            scratch_context.with_label("engine"),
-            simplex::Config {
-                scheme: self.scheme.clone(),
-                elector: Random,
-                blocker: NoOpBlocker::<Peer>::new(),
-                automaton: marshaled.clone(),
-                relay: marshaled,
-                reporter,
-                strategy,
-                partition: self.partition_prefix.clone(),
-                mailbox_size: MAILBOX_SIZE,
-                epoch: Epoch::zero(),
-                replay_buffer: simplex_config.replay_buffer_bytes,
-                write_buffer: simplex_config.write_buffer_bytes,
-                leader_timeout: Duration::from_secs(simplex_config.leader_timeout_secs.get()),
-                certification_timeout: Duration::from_secs(
-                    simplex_config.certification_timeout_secs.get(),
-                ),
-                timeout_retry: Duration::from_secs(simplex_config.timeout_retry_secs.get()),
-                fetch_timeout: Duration::from_secs(simplex_config.fetch_timeout_secs.get()),
-                activity_timeout: ViewDelta::new(simplex_config.activity_timeout_views.get()),
-                skip_timeout: ViewDelta::new(simplex_config.skip_timeout_views.get()),
-                fetch_concurrent: simplex_config.fetch_concurrent.get(),
-                page_cache,
-                forwarding: simplex::ForwardingPolicy::SilentLeader,
-            },
-        );
+        let engine = simplex::Engine::new(scratch_context.with_label("engine"), simplex::Config {
+            scheme: self.scheme.clone(),
+            elector: Random,
+            blocker: NoOpBlocker::<Peer>::new(),
+            automaton: marshaled.clone(),
+            relay: marshaled,
+            reporter,
+            strategy,
+            partition: self.partition_prefix.clone(),
+            mailbox_size: MAILBOX_SIZE,
+            epoch: Epoch::zero(),
+            replay_buffer: simplex_config.replay_buffer_bytes,
+            write_buffer: simplex_config.write_buffer_bytes,
+            leader_timeout: Duration::from_secs(simplex_config.leader_timeout_secs.get()),
+            certification_timeout: Duration::from_secs(
+                simplex_config.certification_timeout_secs.get(),
+            ),
+            timeout_retry: Duration::from_secs(simplex_config.timeout_retry_secs.get()),
+            fetch_timeout: Duration::from_secs(simplex_config.fetch_timeout_secs.get()),
+            activity_timeout: ViewDelta::new(simplex_config.activity_timeout_views.get()),
+            skip_timeout: ViewDelta::new(simplex_config.skip_timeout_views.get()),
+            fetch_concurrent: simplex_config.fetch_concurrent.get(),
+            page_cache,
+            forwarding: simplex::ForwardingPolicy::SilentLeader,
+        });
         let engine_handle = engine.start(
             transport.simplex.votes,
             transport.simplex.certs,
