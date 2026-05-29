@@ -21,11 +21,12 @@ use tracing::warn;
 use crate::{
     error::RpcError,
     filters::{Filter, FilterChanges, FilterStore},
+    state::NodeState,
     state_provider::StateProvider,
     subscription::{MempoolEventSender, PendingTxEvent, PendingTxEventSender, PendingTxInfo},
     types::{
         BlockNumberOrTag, BlockTag, BlockTransactions, CallRequest, RpcBlock, RpcLog, RpcLogFilter,
-        RpcTransaction, RpcTransactionReceipt,
+        RpcTransaction, RpcTransactionReceipt, SyncInfo, SyncStatus,
     },
 };
 
@@ -154,7 +155,7 @@ pub trait EthApi {
 
     /// Returns syncing status.
     #[method(name = "syncing")]
-    async fn syncing(&self) -> RpcResult<bool>;
+    async fn syncing(&self) -> RpcResult<SyncStatus>;
 
     /// Returns logs matching the given filter.
     #[method(name = "getLogs")]
@@ -299,6 +300,8 @@ pub struct EthApiImpl<S: StateProvider> {
     /// evicting the oldest entries.
     max_pending_txs: usize,
     filter_store: Arc<FilterStore>,
+    /// Shared node state for sync status reporting.
+    node_state: Option<NodeState>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for EthApiImpl<S> {
@@ -343,6 +346,7 @@ impl<S: StateProvider + 'static> EthApiImpl<S> {
             pending_tx_evicted: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             max_pending_txs: MAX_PENDING_TXS,
             filter_store: Arc::new(FilterStore::default()),
+            node_state: None,
         }
     }
 
@@ -357,6 +361,13 @@ impl<S: StateProvider + 'static> EthApiImpl<S> {
     #[must_use]
     pub fn with_mempool_broadcast(mut self, mempool_broadcast: MempoolEventSender) -> Self {
         self.mempool_broadcast = Some(mempool_broadcast);
+        self
+    }
+
+    /// Attach shared node state for sync status reporting.
+    #[must_use]
+    pub fn with_node_state(mut self, node_state: NodeState) -> Self {
+        self.node_state = Some(node_state);
         self
     }
 
@@ -648,8 +659,19 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
         Ok("0x44".to_string())
     }
 
-    async fn syncing(&self) -> RpcResult<bool> {
-        Ok(false)
+    async fn syncing(&self) -> RpcResult<SyncStatus> {
+        if let Some(ref state) = self.node_state
+            && state.is_catching_up()
+        {
+            let current_block = self.current_block_number().await;
+            Ok(SyncStatus::Syncing(SyncInfo {
+                starting_block: U64::from(state.recovered_height()),
+                current_block: U64::from(current_block),
+                highest_block: U64::from(current_block),
+            }))
+        } else {
+            Ok(SyncStatus::NotSyncing(false))
+        }
     }
 
     async fn get_logs(&self, filter: RpcLogFilter) -> RpcResult<Vec<RpcLog>> {
@@ -1587,10 +1609,11 @@ mod tests {
         async fn insert_block(&self, number: u64, hash: B256) {
             let mut inner = self.inner.write().await;
             inner.head = inner.head.max(number);
-            inner.blocks.insert(
-                number,
-                RpcBlock { hash, number: U64::from(number), ..RpcBlock::default() },
-            );
+            inner.blocks.insert(number, RpcBlock {
+                hash,
+                number: U64::from(number),
+                ..RpcBlock::default()
+            });
         }
 
         async fn insert_log(
@@ -1834,13 +1857,11 @@ mod tests {
 
     #[tokio::test]
     async fn fee_history_rewards_reflect_actual_tips() {
-        let provider = MockFeeStateProvider::new(vec![make_fee_block(
-            0,
-            gwei(1),
-            42_000,
-            30_000_000,
-            vec![gwei(3), gwei(5)],
-        )]);
+        let provider =
+            MockFeeStateProvider::new(vec![make_fee_block(0, gwei(1), 42_000, 30_000_000, vec![
+                gwei(3),
+                gwei(5),
+            ])]);
         let api = EthApiImpl::new(1, provider);
 
         let history = EthApiServer::fee_history(
@@ -1995,13 +2016,10 @@ mod tests {
         };
         // base_fee = 8 gwei, tx gas_price = 12 gwei
         // Without fix: min_gas_price = base_fee + priority_fee could exceed max_price
-        let provider = MockFeeStateProvider::new(vec![make_fee_block(
-            0,
-            gwei(8),
-            21_000,
-            30_000_000,
-            vec![gwei(12)],
-        )]);
+        let provider =
+            MockFeeStateProvider::new(vec![make_fee_block(0, gwei(8), 21_000, 30_000_000, vec![
+                gwei(12),
+            ])]);
         let api = EthApiImpl::new(1, provider).with_gas_oracle_config(config);
 
         let gas_price = EthApiServer::gas_price(&api).await.unwrap();
@@ -2020,13 +2038,10 @@ mod tests {
             min_priority_fee: U256::from(GWEI),
         };
         // base_fee = 10 gwei (above max_price of 5 gwei)
-        let provider = MockFeeStateProvider::new(vec![make_fee_block(
-            0,
-            gwei(10),
-            21_000,
-            30_000_000,
-            vec![gwei(12)],
-        )]);
+        let provider =
+            MockFeeStateProvider::new(vec![make_fee_block(0, gwei(10), 21_000, 30_000_000, vec![
+                gwei(12),
+            ])]);
         let api = EthApiImpl::new(1, provider).with_gas_oracle_config(config);
 
         let gas_price = EthApiServer::gas_price(&api).await.unwrap();
@@ -2211,14 +2226,11 @@ mod tests {
         provider.insert_block(1, B256::repeat_byte(1)).await;
         provider.insert_log(1, target, vec![topic]).await;
         let api = EthApiImpl::new(1, provider.clone());
-        let filter_id = EthApiServer::new_filter(
-            &api,
-            RpcLogFilter {
-                address: Some(AddressFilter::Single(target)),
-                topics: Some(vec![Some(TopicFilter::Single(topic))]),
-                ..RpcLogFilter::default()
-            },
-        )
+        let filter_id = EthApiServer::new_filter(&api, RpcLogFilter {
+            address: Some(AddressFilter::Single(target)),
+            topics: Some(vec![Some(TopicFilter::Single(topic))]),
+            ..RpcLogFilter::default()
+        })
         .await
         .unwrap();
 
@@ -2279,10 +2291,10 @@ mod tests {
         provider.insert_log(1, target, vec![topic]).await;
 
         let api = EthApiImpl::new(1, provider.clone());
-        let filter_id = EthApiServer::new_filter(
-            &api,
-            RpcLogFilter { block_hash: Some(block_hash), ..RpcLogFilter::default() },
-        )
+        let filter_id = EthApiServer::new_filter(&api, RpcLogFilter {
+            block_hash: Some(block_hash),
+            ..RpcLogFilter::default()
+        })
         .await
         .unwrap();
 
