@@ -30,9 +30,14 @@ impl BlockExecution {
         E: BlockExecutor<S, Tx = Bytes>,
     {
         let txs_bytes: Vec<Bytes> = txs.iter().map(|tx| tx.bytes.clone()).collect();
-        let outcome = executor
-            .execute(&parent_snapshot.state, context, &txs_bytes)
-            .map_err(|e| ConsensusError::Execution(e.to_string()))?;
+        let executor = executor.clone();
+        let state = parent_snapshot.state.clone();
+        let context = context.clone();
+        let outcome =
+            tokio::task::spawn_blocking(move || executor.execute(&state, &context, &txs_bytes))
+                .await
+                .map_err(|e| ConsensusError::Execution(format!("spawn_blocking join error: {e}")))?
+                .map_err(|e| ConsensusError::Execution(e.to_string()))?;
         Ok(Self { outcome })
     }
 }

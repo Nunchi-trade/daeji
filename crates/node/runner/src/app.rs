@@ -275,9 +275,15 @@ where
         let txs_bytes: Vec<Bytes> = txs.iter().map(|tx| tx.bytes.clone()).collect();
 
         let exec_start = Instant::now();
-        let outcome = match self.executor.execute(&parent_snapshot.state, &context, &txs_bytes) {
-            Ok(outcome) => outcome,
-            Err(err) => {
+        let executor = self.executor.clone();
+        let state = parent_snapshot.state.clone();
+        let outcome = match tokio::task::spawn_blocking(move || {
+            executor.execute(&state, &context, &txs_bytes)
+        })
+        .await
+        {
+            Ok(Ok(outcome)) => outcome,
+            Ok(Err(err)) => {
                 error!(
                     parent = ?parent_digest,
                     height,
@@ -287,6 +293,15 @@ where
                     error_debug = ?err,
                     "build_block: block execution failed -- \
                      this may indicate a bad transaction, OOM, or state corruption"
+                );
+                return None;
+            }
+            Err(join_err) => {
+                error!(
+                    parent = ?parent_digest,
+                    height,
+                    error = %join_err,
+                    "build_block: spawn_blocking join error"
                 );
                 return None;
             }
