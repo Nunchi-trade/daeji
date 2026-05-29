@@ -15,6 +15,14 @@ use prometheus_client::metrics::{
 /// Default histogram buckets for block build time (seconds).
 const BLOCK_BUILD_BUCKETS: [f64; 9] = [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0];
 
+/// Default histogram buckets for EVM execution time (seconds).
+///
+/// Captures the time spent in the EVM executor (`BlockExecutor::execute`)
+/// excluding proposal overhead (snapshot lookup, tx selection, state root
+/// computation).  Most executions complete in under 10 ms; the higher
+/// buckets detect pathological transactions or state-cache misses.
+const EVM_EXEC_BUCKETS: [f64; 9] = [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0];
+
 /// Default histogram buckets for snapshot poll wait time (seconds).
 ///
 /// Captures the delay between "leader needs parent snapshot" and "snapshot
@@ -77,6 +85,16 @@ pub struct AppMetrics {
     /// (both persisted and unpersisted).
     pub snapshot_store_total: Gauge,
 
+    // -- EVM Execution --
+    /// Histogram of EVM execution time in seconds (excluding proposal
+    /// overhead such as snapshot lookup, tx selection, and state root
+    /// computation).  Recorded in both `build_block` and `verify_block`.
+    pub evm_execution_seconds: Histogram,
+
+    // -- RPC --
+    /// Total number of JSON-RPC requests received (including rate-limited).
+    pub rpc_requests_total: Counter,
+
     // -- Transaction Gossip --
     /// Total transactions broadcast to peers via gossip.
     pub gossip_tx_broadcast: Counter,
@@ -126,6 +144,8 @@ impl AppMetrics {
             blocks_finalized: Counter::default(),
             unpersisted_snapshot_depth: Gauge::default(),
             snapshot_store_total: Gauge::default(),
+            evm_execution_seconds: Histogram::new(EVM_EXEC_BUCKETS),
+            rpc_requests_total: Counter::default(),
             gossip_tx_broadcast: Counter::default(),
             gossip_tx_received: Counter::default(),
             gossip_tx_broadcast_failed: Counter::default(),
@@ -206,6 +226,16 @@ impl AppMetrics {
             "kora_snapshot_store_total",
             "Total snapshots currently held in the in-memory store",
             self.snapshot_store_total.clone(),
+        );
+        registry.register(
+            "kora_evm_execution_seconds",
+            "EVM execution time per block in seconds",
+            self.evm_execution_seconds.clone(),
+        );
+        registry.register(
+            "kora_rpc_requests",
+            "Total JSON-RPC requests received",
+            self.rpc_requests_total.clone(),
         );
         registry.register(
             "kora_gossip_tx_broadcast",
