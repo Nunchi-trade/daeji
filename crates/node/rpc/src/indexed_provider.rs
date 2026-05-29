@@ -21,6 +21,12 @@ use crate::{
     },
 };
 
+/// Maximum number of blocks that can be scanned in a single `eth_getLogs`
+/// request. Matches the limit used by Infura and prevents a single
+/// unauthenticated request from holding index read-locks for an extended
+/// period. Callers needing a wider range must paginate.
+const MAX_LOG_BLOCK_RANGE: u64 = 10_000;
+
 /// State provider that combines indexed block data with live state queries.
 ///
 /// Uses [`BlockIndex`] for block, transaction, and receipt lookups, delegates
@@ -181,18 +187,55 @@ impl<S: StateDbRead + Send + Sync + 'static> StateProvider for IndexedStateProvi
     }
 
     async fn get_logs(&self, filter: RpcLogFilter) -> Result<Vec<RpcLog>, RpcError> {
-        let from_block =
-            filter.from_block.as_ref().map(|b| self.resolve_block_number(b)).transpose()?;
-        let to_block =
-            filter.to_block.as_ref().map(|b| self.resolve_block_number(b)).transpose()?;
+        let head = self.index.head_block_number();
 
-        let mut log_filter = LogFilter::new();
-        if let Some(from) = from_block {
-            log_filter = log_filter.from_block(from);
+        // EIP-234: blockHash is mutually exclusive with fromBlock/toBlock.
+        if filter.block_hash.is_some() && (filter.from_block.is_some() || filter.to_block.is_some())
+        {
+            return Err(RpcError::InvalidParams(
+                "blockHash is mutually exclusive with fromBlock/toBlock".into(),
+            ));
         }
-        if let Some(to) = to_block {
-            log_filter = log_filter.to_block(to);
+
+        // Resolve block range -- either from blockHash or from/toBlock.
+        let (from_block, to_block) = if let Some(block_hash) = &filter.block_hash {
+            let block = self
+                .index
+                .get_block_by_hash(block_hash)
+                .ok_or_else(|| RpcError::InvalidParams("block not found".into()))?;
+            (block.number, block.number)
+        } else {
+            let from = filter
+                .from_block
+                .as_ref()
+                .map(|b| self.resolve_block_number(b))
+                .transpose()?
+                .unwrap_or(0);
+            let to = filter
+                .to_block
+                .as_ref()
+                .map(|b| self.resolve_block_number(b))
+                .transpose()?
+                .unwrap_or(head)
+                .min(head);
+            (from, to)
+        };
+
+        // Validate range direction.
+        if from_block > to_block {
+            return Err(RpcError::InvalidParams(format!(
+                "fromBlock ({from_block}) is greater than toBlock ({to_block})",
+            )));
         }
+
+        // Enforce maximum block range to prevent DoS.
+        if to_block.saturating_sub(from_block) > MAX_LOG_BLOCK_RANGE {
+            return Err(RpcError::InvalidParams(format!(
+                "block range ({from_block}..{to_block}) exceeds maximum of {MAX_LOG_BLOCK_RANGE}",
+            )));
+        }
+
+        let mut log_filter = LogFilter::new().from_block(from_block).to_block(to_block);
         if let Some(addr_filter) = filter.address {
             log_filter = log_filter.address(addr_filter.into_vec());
         }
@@ -1141,5 +1184,171 @@ mod tests {
         // MockState returns B256::ZERO code_hash, so code() returns empty bytes
         let code = provider.code(Address::ZERO, None).await.unwrap();
         assert!(code.is_empty());
+    }
+
+    // --- get_logs range limit and blockHash tests ---
+
+    #[tokio::test]
+    async fn get_logs_rejects_range_exceeding_limit() {
+        let index = Arc::new(BlockIndex::new());
+        index.insert_block(create_test_block(20_000, B256::repeat_byte(1)), vec![], vec![]);
+        let provider = IndexedStateProvider::with_chain_id(index, MockState, 1337);
+
+        let err = provider
+            .get_logs(RpcLogFilter {
+                from_block: Some(BlockNumberOrTag::Number(U64::from(0))),
+                to_block: Some(BlockNumberOrTag::Number(U64::from(10_001))),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RpcError::InvalidParams(_)));
+        assert!(err.to_string().contains("exceeds maximum"));
+    }
+
+    #[tokio::test]
+    async fn get_logs_allows_range_at_limit() {
+        let index = Arc::new(BlockIndex::new());
+        index.insert_block(create_test_block(10_000, B256::repeat_byte(1)), vec![], vec![]);
+        let provider = IndexedStateProvider::with_chain_id(index, MockState, 1337);
+
+        let logs = provider
+            .get_logs(RpcLogFilter {
+                from_block: Some(BlockNumberOrTag::Number(U64::from(0))),
+                to_block: Some(BlockNumberOrTag::Number(U64::from(10_000))),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(logs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_logs_rejects_from_greater_than_to() {
+        let index = Arc::new(BlockIndex::new());
+        index.insert_block(create_test_block(10, B256::repeat_byte(1)), vec![], vec![]);
+        let provider = IndexedStateProvider::with_chain_id(index, MockState, 1337);
+
+        let err = provider
+            .get_logs(RpcLogFilter {
+                from_block: Some(BlockNumberOrTag::Number(U64::from(10))),
+                to_block: Some(BlockNumberOrTag::Number(U64::from(5))),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RpcError::InvalidParams(_)));
+        assert!(err.to_string().contains("greater than"));
+    }
+
+    #[tokio::test]
+    async fn get_logs_block_hash_returns_single_block_logs() {
+        let index = Arc::new(BlockIndex::new());
+        let block_hash = B256::repeat_byte(5);
+        let tx_hash = B256::repeat_byte(2);
+        let log_address = Address::repeat_byte(0xcc);
+        let receipt = IndexedReceipt {
+            transaction_hash: tx_hash,
+            block_hash,
+            block_number: 5,
+            transaction_index: 0,
+            from: Address::ZERO,
+            to: None,
+            cumulative_gas_used: 21_000,
+            gas_used: 21_000,
+            contract_address: None,
+            logs: vec![IndexedLog {
+                address: log_address,
+                topics: vec![],
+                data: Bytes::new(),
+                log_index: 0,
+                block_number: 5,
+                block_hash,
+                transaction_hash: tx_hash,
+                transaction_index: 0,
+            }],
+            logs_bloom: Bloom::ZERO,
+            tx_type: 0,
+            effective_gas_price: 1_000_000_000,
+            status: true,
+        };
+        index.insert_block(create_test_block(5, block_hash), vec![], vec![receipt]);
+
+        let provider = IndexedStateProvider::with_chain_id(index, MockState, 1337);
+        let logs = provider
+            .get_logs(RpcLogFilter { block_hash: Some(block_hash), ..Default::default() })
+            .await
+            .unwrap();
+
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].address, log_address);
+        assert_eq!(logs[0].block_hash, block_hash);
+    }
+
+    #[tokio::test]
+    async fn get_logs_block_hash_with_from_block_returns_error() {
+        let index = Arc::new(BlockIndex::new());
+        let block_hash = B256::repeat_byte(5);
+        index.insert_block(create_test_block(5, block_hash), vec![], vec![]);
+        let provider = IndexedStateProvider::with_chain_id(index, MockState, 1337);
+
+        let err = provider
+            .get_logs(RpcLogFilter {
+                block_hash: Some(block_hash),
+                from_block: Some(BlockNumberOrTag::Number(U64::from(0))),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RpcError::InvalidParams(_)));
+        assert!(err.to_string().contains("mutually exclusive"));
+    }
+
+    #[tokio::test]
+    async fn get_logs_block_hash_with_to_block_returns_error() {
+        let index = Arc::new(BlockIndex::new());
+        let block_hash = B256::repeat_byte(5);
+        index.insert_block(create_test_block(5, block_hash), vec![], vec![]);
+        let provider = IndexedStateProvider::with_chain_id(index, MockState, 1337);
+
+        let err = provider
+            .get_logs(RpcLogFilter {
+                block_hash: Some(block_hash),
+                to_block: Some(BlockNumberOrTag::Number(U64::from(10))),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RpcError::InvalidParams(_)));
+        assert!(err.to_string().contains("mutually exclusive"));
+    }
+
+    #[tokio::test]
+    async fn get_logs_nonexistent_block_hash_returns_error() {
+        let index = Arc::new(BlockIndex::new());
+        index.insert_block(create_test_block(5, B256::repeat_byte(5)), vec![], vec![]);
+        let provider = IndexedStateProvider::with_chain_id(index, MockState, 1337);
+
+        let err = provider
+            .get_logs(RpcLogFilter {
+                block_hash: Some(B256::repeat_byte(0xff)),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RpcError::InvalidParams(_)));
+        assert!(err.to_string().contains("block not found"));
+    }
+
+    #[tokio::test]
+    async fn get_logs_defaults_clamp_to_head() {
+        let index = Arc::new(BlockIndex::new());
+        // Head is at block 100; no from/to specified should scan 0..=100
+        // which is 101 blocks, within the 10_000 limit.
+        index.insert_block(create_test_block(100, B256::repeat_byte(1)), vec![], vec![]);
+        let provider = IndexedStateProvider::with_chain_id(index, MockState, 1337);
+
+        let logs = provider.get_logs(RpcLogFilter::default()).await.unwrap();
+        assert!(logs.is_empty());
     }
 }

@@ -147,9 +147,14 @@ impl BlockIndex {
     }
 
     /// Gets logs matching the given filter.
+    ///
+    /// The `to_block` is clamped to the current chain tip to prevent
+    /// iterating over non-existent blocks when a caller provides an
+    /// excessively large block number.
     pub fn get_logs(&self, filter: &LogFilter) -> Vec<IndexedLog> {
+        let head = self.head_block_number();
         let from_block = filter.from_block.unwrap_or(0);
-        let to_block = filter.to_block.unwrap_or_else(|| self.head_block_number());
+        let to_block = filter.to_block.unwrap_or(head).min(head);
 
         let mut result = Vec::new();
 
@@ -508,5 +513,50 @@ mod tests {
         assert!(hashes.contains_key(&1));
         assert!(hashes.contains_key(&2));
         assert!(!hashes.contains_key(&3));
+    }
+
+    #[test]
+    fn test_get_logs_clamps_to_block_to_head() {
+        let index = BlockIndex::new();
+        let block_hash = B256::repeat_byte(1);
+        let contract_addr = Address::repeat_byte(0xAB);
+        let topic = B256::repeat_byte(0xCD);
+
+        let log = IndexedLog {
+            address: contract_addr,
+            topics: vec![topic],
+            data: Bytes::new(),
+            log_index: 0,
+            block_number: 1,
+            block_hash,
+            transaction_hash: B256::repeat_byte(2),
+            transaction_index: 0,
+        };
+
+        let receipt = IndexedReceipt {
+            transaction_hash: B256::repeat_byte(2),
+            block_hash,
+            block_number: 1,
+            transaction_index: 0,
+            from: Address::ZERO,
+            to: None,
+            cumulative_gas_used: 21_000,
+            gas_used: 21_000,
+            contract_address: None,
+            logs: vec![log],
+            logs_bloom: Bloom::ZERO,
+            tx_type: 0,
+            effective_gas_price: 1_000_000_000,
+            status: true,
+        };
+
+        index.insert_block(create_test_block(1, block_hash), vec![], vec![receipt]);
+
+        // Request to_block far beyond head -- should clamp to head (1) and
+        // return immediately instead of iterating billions of empty slots.
+        let filter = LogFilter::new().from_block(0).to_block(u64::MAX);
+        let logs = index.get_logs(&filter);
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].address, contract_addr);
     }
 }

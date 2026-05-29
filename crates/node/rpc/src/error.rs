@@ -78,6 +78,10 @@ pub enum RpcError {
     /// Unsupported operation (e.g. historical state queries).
     #[error("unsupported: {0}")]
     Unsupported(String),
+
+    /// Invalid parameters (e.g. block range too large, conflicting filters).
+    #[error("invalid params: {0}")]
+    InvalidParams(String),
 }
 
 impl From<RpcError> for ErrorObjectOwned {
@@ -94,6 +98,7 @@ impl From<RpcError> for ErrorObjectOwned {
             RpcError::Internal(_) => (codes::INTERNAL_ERROR, err.to_string()),
             RpcError::NotImplemented => (codes::METHOD_NOT_SUPPORTED, err.to_string()),
             RpcError::Unsupported(_) => (codes::INVALID_PARAMS, err.to_string()),
+            RpcError::InvalidParams(_) => (codes::INVALID_PARAMS, err.to_string()),
         };
         ErrorObjectOwned::owned(code, message, None::<()>)
     }
@@ -269,6 +274,20 @@ mod tests {
         let obj: ErrorObjectOwned = err.into();
         assert_eq!(obj.code(), codes::INVALID_PARAMS);
         assert!(obj.message().contains("historical state"));
+    }
+
+    #[test]
+    fn rpc_error_display_invalid_params() {
+        let err = RpcError::InvalidParams("block range exceeds maximum of 10000".to_string());
+        assert_eq!(err.to_string(), "invalid params: block range exceeds maximum of 10000");
+    }
+
+    #[test]
+    fn rpc_error_to_error_object_invalid_params() {
+        let err = RpcError::InvalidParams("block range too large".to_string());
+        let obj: ErrorObjectOwned = err.into();
+        assert_eq!(obj.code(), codes::INVALID_PARAMS);
+        assert!(obj.message().contains("block range too large"));
     }
 
     #[test]
