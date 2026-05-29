@@ -4,7 +4,7 @@
 //! to bridge the async QMDB traits into the sync REVM interface. This is acceptable for
 //! in-memory stores but may block the async runtime for I/O-bound stores.
 
-use std::sync::Arc;
+use std::sync::{Arc, atomic::Ordering};
 
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use kora_qmdb::{AccountEncoding, ChangeSet, QmdbBatchable, QmdbGettable, StorageKey};
@@ -17,6 +17,7 @@ use revm::{
     primitives::AddressMap,
     state::Account,
 };
+use tracing::error;
 
 use crate::{error::HandleError, qmdb::QmdbHandle};
 
@@ -225,22 +226,28 @@ where
 
             let code = account.info.code.as_ref().map(|c| c.bytes().to_vec());
 
-            changeset.accounts.insert(
-                address,
-                AccountUpdate {
-                    created: account.is_created(),
-                    selfdestructed: account.is_selfdestructed(),
-                    nonce: account.info.nonce,
-                    balance: account.info.balance,
-                    code_hash: account.info.code_hash,
-                    code,
-                    storage,
-                },
-            );
+            changeset.accounts.insert(address, AccountUpdate {
+                created: account.is_created(),
+                selfdestructed: account.is_selfdestructed(),
+                nonce: account.info.nonce,
+                balance: account.info.balance,
+                code_hash: account.info.code_hash,
+                code,
+                storage,
+            });
         }
 
-        // Ignore errors in DatabaseCommit (matches REVM's signature)
-        let _ = block_on(Self::commit(self, changeset));
+        // REVM's `DatabaseCommit::commit` returns `()`, so we cannot propagate
+        // errors through the return type.  Instead we log at error level and
+        // set an atomic flag that callers can check after execution.
+        if let Err(err) = block_on(Self::commit(self, changeset)) {
+            error!(
+                %err,
+                "CRITICAL: DatabaseCommit failed — QMDB write error swallowed by infallible \
+                 REVM trait. Subsequent transactions in this block may execute against stale state."
+            );
+            self.commit_failed.store(true, Ordering::SeqCst);
+        }
     }
 }
 

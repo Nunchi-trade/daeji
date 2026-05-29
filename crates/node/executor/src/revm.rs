@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use alloy_consensus::Header;
 use alloy_primitives::{B256, Bytes, U256, keccak256};
 use kora_qmdb::{AccountUpdate, ChangeSet};
-use kora_traits::StateDb;
+use kora_traits::{StateDb, StateDbRead};
 use revm::{
     Context, DatabaseCommit as _, ExecuteEvm, Journal, MainBuilder,
     bytecode::Bytecode,
@@ -453,6 +453,13 @@ impl<S: StateDb> BlockExecutor<S> for RevmExecutor {
             }
 
             outcome.gas_used = cumulative_gas;
+        }
+
+        // Check the side-channel flag for DatabaseCommit failures.
+        // REVM's DatabaseCommit::commit() is infallible, so QMDB write errors
+        // are recorded via an atomic flag on the state handle and checked here.
+        if state.take_commit_failure() {
+            return Err(ExecutionError::StateCommit);
         }
 
         // --- post-execution hook ---
