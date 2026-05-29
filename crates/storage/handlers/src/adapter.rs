@@ -225,22 +225,24 @@ where
 
             let code = account.info.code.as_ref().map(|c| c.bytes().to_vec());
 
-            changeset.accounts.insert(
-                address,
-                AccountUpdate {
-                    created: account.is_created(),
-                    selfdestructed: account.is_selfdestructed(),
-                    nonce: account.info.nonce,
-                    balance: account.info.balance,
-                    code_hash: account.info.code_hash,
-                    code,
-                    storage,
-                },
-            );
+            changeset.accounts.insert(address, AccountUpdate {
+                created: account.is_created(),
+                selfdestructed: account.is_selfdestructed(),
+                nonce: account.info.nonce,
+                balance: account.info.balance,
+                code_hash: account.info.code_hash,
+                code,
+                storage,
+            });
         }
 
-        // Ignore errors in DatabaseCommit (matches REVM's signature)
-        let _ = block_on(Self::commit(self, changeset));
+        if let Err(e) = block_on(Self::commit(self, changeset)) {
+            tracing::error!(
+                error = %e,
+                "CRITICAL: DatabaseCommit failed — QMDB write error swallowed by REVM trait. \
+                 Subsequent transactions in this block may execute against stale state."
+            );
+        }
     }
 }
 

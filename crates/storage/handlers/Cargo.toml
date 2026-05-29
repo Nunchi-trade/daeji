@@ -20,6 +20,7 @@ futures.workspace = true
 revm = { workspace = true, features = ["std", "asyncdb"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
