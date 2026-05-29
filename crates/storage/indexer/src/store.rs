@@ -125,8 +125,8 @@ impl BlockIndex {
             let by_number = self.blocks_by_number.read();
             by_number
                 .iter()
-                .filter(|(&num, _)| num < min_block_number)
-                .map(|(&num, &hash)| (num, hash))
+                .filter(|(num, _)| **num < min_block_number)
+                .map(|(num, hash)| (*num, *hash))
                 .collect()
         };
 
