@@ -2,7 +2,10 @@ use std::{
     collections::{BTreeMap, HashSet},
     ffi::OsString,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -84,38 +87,97 @@ type CertArchive = Finalization<ThresholdScheme, ConsensusDigest>;
 type MarshalMailbox = Mailbox<ThresholdScheme, Standard<Block>>;
 type NodeStateRptr = NodeStateReporter<ThresholdScheme>;
 
-/// A no-op [`Blocker`] that never permanently bans peers.
+/// A [`Blocker`] that tracks banned peers and optionally suppresses bans
+/// during catch-up.
+///
+/// ## Motivation
 ///
 /// When a restarted node catches up, the resolver's `verify_block()` may return
-/// `false` because parent state snapshots are missing (not because the peer sent
-/// invalid data). The default blocker (`transport.oracle`) permanently blocks
-/// that peer, and in a 4-validator cluster all 3 peers get blocked within
-/// milliseconds, making catch-up impossible.
+/// `false` because parent state snapshots are missing -- not because the peer
+/// sent invalid data. The previous `NoOpBlocker` suppressed **all** bans
+/// globally (including in the simplex consensus engine), which meant Byzantine
+/// peers caught equivocating were never ejected.
 ///
-/// This struct implements [`Blocker`] with an empty `block()` method so that
-/// the resolver and simplex engine never permanently ban peers for transient
-/// verification failures. The P2P oracle still handles peer *discovery* and
-/// *tracking*; only the punitive blocking path is disabled.
+/// `GraduatedBlocker` splits the behaviour:
 ///
-/// This is a Kora-side workaround. The ideal upstream fix would add
-/// retry/back-off semantics to the resolver so it can distinguish transient
-/// failures from genuinely Byzantine behaviour.
+/// - **Resolver** (`catching_up = true` during backfill): ban requests are
+///   logged but suppressed so that transient verification failures during
+///   catch-up don't permanently block peers needed for backfill.
+/// - **Simplex engine** (`catching_up = false`): ban requests are always
+///   enforced. Equivocating peers are recorded in the shared `blocked` set and
+///   logged at `WARN` level.
+///
+/// Callers can inspect the blocked set via [`GraduatedBlocker::is_blocked`] and
+/// [`GraduatedBlocker::blocked_peers`]. Integration with the P2P transport
+/// layer to actively disconnect blocked peers is left to a follow-up.
 #[derive(Clone, Debug)]
-struct NoOpBlocker<P> {
-    _marker: std::marker::PhantomData<P>,
+struct GraduatedBlocker<P: commonware_cryptography::PublicKey> {
+    /// Set of peers that have been blocked.
+    blocked: Arc<parking_lot::RwLock<HashSet<P>>>,
+    /// When `true`, ban requests are suppressed (logged but not recorded).
+    /// This flag should be `true` only for the resolver during catch-up.
+    catching_up: Arc<AtomicBool>,
 }
 
-impl<P> NoOpBlocker<P> {
-    const fn new() -> Self {
-        Self { _marker: std::marker::PhantomData }
+impl<P: commonware_cryptography::PublicKey> GraduatedBlocker<P> {
+    /// Create a new `GraduatedBlocker`.
+    ///
+    /// * `catching_up` -- if `true`, block requests are suppressed until the
+    ///   flag is cleared via [`set_caught_up`](Self::set_caught_up).
+    fn new(catching_up: bool) -> Self {
+        Self {
+            blocked: Arc::new(parking_lot::RwLock::new(HashSet::new())),
+            catching_up: Arc::new(AtomicBool::new(catching_up)),
+        }
+    }
+
+    /// Create a new `GraduatedBlocker` that shares its blocked-set and
+    /// catching-up flag with another instance.
+    ///
+    /// This is useful when the resolver and engine should share the same
+    /// blocked peer state.
+    #[allow(dead_code)]
+    fn with_shared_state(
+        blocked: Arc<parking_lot::RwLock<HashSet<P>>>,
+        catching_up: Arc<AtomicBool>,
+    ) -> Self {
+        Self { blocked, catching_up }
+    }
+
+    /// Mark the node as caught up, enabling ban enforcement.
+    #[allow(dead_code)]
+    fn set_caught_up(&self) {
+        self.catching_up.store(false, Ordering::Release);
+        info!("GraduatedBlocker: catch-up complete, ban enforcement enabled");
+    }
+
+    /// Check whether a specific peer has been blocked.
+    #[allow(dead_code)]
+    fn is_blocked(&self, peer: &P) -> bool {
+        self.blocked.read().contains(peer)
+    }
+
+    /// Return a snapshot of all currently blocked peers.
+    #[allow(dead_code)]
+    fn blocked_peers(&self) -> HashSet<P> {
+        self.blocked.read().clone()
     }
 }
 
-impl<P: commonware_cryptography::PublicKey> Blocker for NoOpBlocker<P> {
+impl<P: commonware_cryptography::PublicKey> Blocker for GraduatedBlocker<P> {
     type PublicKey = P;
 
     fn block(&mut self, peer: Self::PublicKey) -> impl std::future::Future<Output = ()> + Send {
-        warn!(?peer, "NoOpBlocker: ignoring block request for peer (catch-up safe)");
+        if self.catching_up.load(Ordering::Acquire) {
+            warn!(?peer, "GraduatedBlocker: block request suppressed during catch-up");
+        } else {
+            let inserted = self.blocked.write().insert(peer.clone());
+            if inserted {
+                warn!(?peer, "GraduatedBlocker: blocking Byzantine peer");
+            } else {
+                debug!(?peer, "GraduatedBlocker: peer already blocked");
+            }
+        }
         async {}
     }
 }
@@ -1182,11 +1244,17 @@ impl NodeRunner for ProductionRunner {
 
         let scheme_provider = ConstantSchemeProvider::from(self.scheme.clone());
 
+        // During restart (catch-up), the resolver may encounter transient
+        // verification failures when parent state snapshots are missing. Suppress
+        // bans for the resolver during catch-up to avoid blocking peers needed
+        // for backfill. The simplex engine always enforces bans.
+        let is_catching_up = recovered_head_height.is_some();
+        let resolver_blocker = GraduatedBlocker::<Peer>::new(is_catching_up);
         let resolver = PeerInitializer::init::<_, _, _, Block, _, _, _>(
             &context.with_label("resolver"),
             my_pk.clone(),
             transport.oracle.clone(),
-            NoOpBlocker::<Peer>::new(),
+            resolver_blocker,
             transport.marshal.backfill,
         );
 
@@ -1249,34 +1317,31 @@ impl NodeRunner for ProductionRunner {
             }
         }
 
-        let engine = simplex::Engine::new(
-            scratch_context.with_label("engine"),
-            simplex::Config {
-                scheme: self.scheme.clone(),
-                elector: Random,
-                blocker: NoOpBlocker::<Peer>::new(),
-                automaton: marshaled.clone(),
-                relay: marshaled,
-                reporter,
-                strategy,
-                partition: self.partition_prefix.clone(),
-                mailbox_size: MAILBOX_SIZE,
-                epoch: Epoch::zero(),
-                replay_buffer: simplex_config.replay_buffer_bytes,
-                write_buffer: simplex_config.write_buffer_bytes,
-                leader_timeout: Duration::from_secs(simplex_config.leader_timeout_secs.get()),
-                certification_timeout: Duration::from_secs(
-                    simplex_config.certification_timeout_secs.get(),
-                ),
-                timeout_retry: Duration::from_secs(simplex_config.timeout_retry_secs.get()),
-                fetch_timeout: Duration::from_secs(simplex_config.fetch_timeout_secs.get()),
-                activity_timeout: ViewDelta::new(simplex_config.activity_timeout_views.get()),
-                skip_timeout: ViewDelta::new(simplex_config.skip_timeout_views.get()),
-                fetch_concurrent: simplex_config.fetch_concurrent.get(),
-                page_cache,
-                forwarding: simplex::ForwardingPolicy::SilentLeader,
-            },
-        );
+        let engine = simplex::Engine::new(scratch_context.with_label("engine"), simplex::Config {
+            scheme: self.scheme.clone(),
+            elector: Random,
+            blocker: GraduatedBlocker::<Peer>::new(false),
+            automaton: marshaled.clone(),
+            relay: marshaled,
+            reporter,
+            strategy,
+            partition: self.partition_prefix.clone(),
+            mailbox_size: MAILBOX_SIZE,
+            epoch: Epoch::zero(),
+            replay_buffer: simplex_config.replay_buffer_bytes,
+            write_buffer: simplex_config.write_buffer_bytes,
+            leader_timeout: Duration::from_secs(simplex_config.leader_timeout_secs.get()),
+            certification_timeout: Duration::from_secs(
+                simplex_config.certification_timeout_secs.get(),
+            ),
+            timeout_retry: Duration::from_secs(simplex_config.timeout_retry_secs.get()),
+            fetch_timeout: Duration::from_secs(simplex_config.fetch_timeout_secs.get()),
+            activity_timeout: ViewDelta::new(simplex_config.activity_timeout_views.get()),
+            skip_timeout: ViewDelta::new(simplex_config.skip_timeout_views.get()),
+            fetch_concurrent: simplex_config.fetch_concurrent.get(),
+            page_cache,
+            forwarding: simplex::ForwardingPolicy::SilentLeader,
+        });
         let engine_handle = engine.start(
             transport.simplex.votes,
             transport.simplex.certs,
