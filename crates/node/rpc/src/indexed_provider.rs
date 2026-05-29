@@ -38,7 +38,7 @@ pub struct IndexedStateProvider<S> {
 impl<S> IndexedStateProvider<S> {
     /// Creates a new indexed state provider with an explicit executor.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         index: Arc<BlockIndex>,
         state: S,
         executor: Arc<RevmExecutor>,
