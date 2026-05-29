@@ -723,7 +723,7 @@ impl<S> TestApplication<S> {
 
         let state_root = self
             .ledger
-            .compute_root_from_store(parent_digest, outcome.changes.clone())
+            .compute_root_from_store(parent_digest, &outcome.changes)
             .await
             .ok()?;
 
@@ -770,7 +770,7 @@ impl<S> TestApplication<S> {
 
         let state_root = match self
             .ledger
-            .compute_root_from_store(parent_digest, execution.outcome.changes.clone())
+            .compute_root_from_store(parent_digest, &execution.outcome.changes)
             .await
         {
             Ok(root) => root,
