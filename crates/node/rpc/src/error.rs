@@ -82,6 +82,10 @@ pub enum RpcError {
     #[error("method not implemented")]
     NotImplemented,
 
+    /// Invalid method parameters.
+    #[error("invalid params: {0}")]
+    InvalidParams(String),
+
     /// Unsupported operation (e.g. historical state queries).
     #[error("unsupported: {0}")]
     Unsupported(String),
@@ -102,6 +106,7 @@ impl From<RpcError> for ErrorObjectOwned {
                     RpcError::InvalidBlockNumber(_) => (codes::INVALID_PARAMS, other.to_string()),
                     RpcError::InvalidTransaction(_) => (codes::INVALID_PARAMS, other.to_string()),
                     RpcError::ExecutionFailed(_) => (codes::EXECUTION_ERROR, other.to_string()),
+                    RpcError::InvalidParams(_) => (codes::INVALID_PARAMS, other.to_string()),
                     RpcError::StateError(_) => (codes::INTERNAL_ERROR, other.to_string()),
                     RpcError::Internal(_) => (codes::INTERNAL_ERROR, other.to_string()),
                     RpcError::NotImplemented => (codes::METHOD_NOT_SUPPORTED, other.to_string()),
@@ -271,6 +276,20 @@ mod tests {
         let err = RpcError::NotImplemented;
         let obj: ErrorObjectOwned = err.into();
         assert_eq!(obj.code(), codes::METHOD_NOT_SUPPORTED);
+    }
+
+    #[test]
+    fn rpc_error_display_invalid_params() {
+        let err = RpcError::InvalidParams("block range exceeds maximum".to_string());
+        assert_eq!(err.to_string(), "invalid params: block range exceeds maximum");
+    }
+
+    #[test]
+    fn rpc_error_to_error_object_invalid_params() {
+        let err = RpcError::InvalidParams("too wide".to_string());
+        let obj: ErrorObjectOwned = err.into();
+        assert_eq!(obj.code(), codes::INVALID_PARAMS);
+        assert!(obj.message().contains("too wide"));
     }
 
     #[test]
