@@ -261,10 +261,6 @@ async fn enforce_http_rate_limit(
     next.run(request).await
 }
 
-/// Maximum number of JSON-RPC calls allowed in a single batch request.
-/// Prevents a single HTTP POST from draining the entire rate limit budget.
-const MAX_BATCH_SIZE: u32 = 50;
-
 #[derive(Debug, Clone)]
 struct RateLimitedRpcService<S> {
     service: S,
