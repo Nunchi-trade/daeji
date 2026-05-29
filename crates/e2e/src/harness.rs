@@ -243,6 +243,7 @@ impl BlockContextProvider for TestContextProvider {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start_all_nodes(
     context: &tokio::Context,
     sim_control: &Arc<Mutex<SimControl<ed25519::PublicKey>>>,
@@ -685,7 +686,7 @@ impl<S> std::fmt::Debug for TestApplication<S> {
 }
 
 impl<S> TestApplication<S> {
-    fn new(max_txs: usize, ledger: LedgerView, chain_id: u64, gas_limit: u64) -> Self {
+    const fn new(max_txs: usize, ledger: LedgerView, chain_id: u64, gas_limit: u64) -> Self {
         Self {
             ledger,
             executor: RevmExecutor::new(chain_id),
@@ -832,8 +833,8 @@ where
     type Context = Context<ConsensusDigest, S::PublicKey>;
     type Block = Block;
 
-    fn genesis(&mut self) -> impl std::future::Future<Output = Self::Block> + Send {
-        async move { self.ledger.genesis_block() }
+    async fn genesis(&mut self) -> Self::Block {
+        self.ledger.genesis_block()
     }
 
     fn propose<A: BlockProvider<Block = Self::Block>>(
@@ -857,28 +858,26 @@ where
     Env: Rng + Spawner + Metrics + Clock,
     S: CertScheme + Send + Sync + 'static,
 {
-    fn verify<A: BlockProvider<Block = Self::Block>>(
+    async fn verify<A: BlockProvider<Block = Self::Block>>(
         &mut self,
         _context: (Env, Self::Context),
         mut ancestry: AncestorStream<A, Self::Block>,
-    ) -> impl std::future::Future<Output = bool> + Send {
-        async move {
-            let mut blocks_to_verify = Vec::new();
-            while let Some(block) = ancestry.next().await {
-                let digest = block.commitment();
-                if self.ledger.query_state_root(digest).await.is_some() {
-                    break;
-                }
-                blocks_to_verify.push(block);
+    ) -> bool {
+        let mut blocks_to_verify = Vec::new();
+        while let Some(block) = ancestry.next().await {
+            let digest = block.commitment();
+            if self.ledger.query_state_root(digest).await.is_some() {
+                break;
             }
-
-            for block in blocks_to_verify.into_iter().rev() {
-                if !self.verify_block(&block).await {
-                    return false;
-                }
-            }
-
-            true
+            blocks_to_verify.push(block);
         }
+
+        for block in blocks_to_verify.into_iter().rev() {
+            if !self.verify_block(&block).await {
+                return false;
+            }
+        }
+
+        true
     }
 }

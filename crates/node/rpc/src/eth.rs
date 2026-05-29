@@ -373,7 +373,7 @@ impl<S: StateProvider + 'static> EthApiImpl<S> {
 
     /// Override the maximum number of pending transactions held in memory.
     #[cfg(test)]
-    fn with_max_pending_txs(mut self, max_pending_txs: usize) -> Self {
+    const fn with_max_pending_txs(mut self, max_pending_txs: usize) -> Self {
         self.max_pending_txs = max_pending_txs;
         self
     }
