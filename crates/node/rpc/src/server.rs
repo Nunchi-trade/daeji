@@ -509,7 +509,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             let server = match Server::builder()
                 .max_connections(max_connections)
                 .max_subscriptions_per_connection(max_subscriptions_per_connection)
-                .set_http_middleware(tower::ServiceBuilder::new().layer(jsonrpc_cors_layer))
+                .set_http_middleware(tower_04::ServiceBuilder::new().layer(jsonrpc_cors_layer))
                 .set_rpc_middleware(rpc_middleware)
                 .build(jsonrpc_addr)
                 .await
@@ -767,7 +767,7 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         let server = Server::builder()
             .max_connections(self.max_connections)
             .max_subscriptions_per_connection(self.max_subscriptions_per_connection)
-            .set_http_middleware(tower::ServiceBuilder::new().layer(cors_layer))
+            .set_http_middleware(tower_04::ServiceBuilder::new().layer(cors_layer))
             .set_rpc_middleware(rpc_middleware)
             .build(self.addr)
             .await
