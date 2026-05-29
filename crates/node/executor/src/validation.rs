@@ -43,13 +43,6 @@ impl<'a> TxValidator<'a> {
         Self { config, base_fee, blob_base_fee: None }
     }
 
-    /// Set the blob base fee for Cancun+ validation.
-    #[must_use]
-    pub const fn with_blob_base_fee(mut self, blob_base_fee: u128) -> Self {
-        self.blob_base_fee = Some(blob_base_fee);
-        self
-    }
-
     /// Validate a transaction before execution.
     pub async fn validate<S: StateDb>(
         &self,
