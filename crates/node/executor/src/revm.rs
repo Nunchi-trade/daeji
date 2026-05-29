@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use alloy_consensus::Header;
 use alloy_primitives::{B256, Bytes, U256, keccak256};
 use kora_qmdb::{AccountUpdate, ChangeSet};
-use kora_traits::{StateDb, StateDbRead};
+use kora_traits::StateDb;
 use revm::{
     Context, DatabaseCommit as _, ExecuteEvm, Journal, MainBuilder,
     bytecode::Bytecode,

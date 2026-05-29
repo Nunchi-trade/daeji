@@ -4,7 +4,7 @@
 //! to bridge the async QMDB traits into the sync REVM interface. This is acceptable for
 //! in-memory stores but may block the async runtime for I/O-bound stores.
 
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::Arc;
 
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use kora_qmdb::{AccountEncoding, ChangeSet, QmdbBatchable, QmdbGettable, StorageKey};
@@ -226,15 +226,18 @@ where
 
             let code = account.info.code.as_ref().map(|c| c.bytes().to_vec());
 
-            changeset.accounts.insert(address, AccountUpdate {
-                created: account.is_created(),
-                selfdestructed: account.is_selfdestructed(),
-                nonce: account.info.nonce,
-                balance: account.info.balance,
-                code_hash: account.info.code_hash,
-                code,
-                storage,
-            });
+            changeset.accounts.insert(
+                address,
+                AccountUpdate {
+                    created: account.is_created(),
+                    selfdestructed: account.is_selfdestructed(),
+                    nonce: account.info.nonce,
+                    balance: account.info.balance,
+                    code_hash: account.info.code_hash,
+                    code,
+                    storage,
+                },
+            );
         }
 
         // REVM's `DatabaseCommit::commit` returns `()`, so we cannot propagate
@@ -246,7 +249,7 @@ where
                 "CRITICAL: DatabaseCommit failed — QMDB write error swallowed by infallible \
                  REVM trait. Subsequent transactions in this block may execute against stale state."
             );
-            self.commit_failed.store(true, Ordering::SeqCst);
+            self.mark_commit_failed();
         }
     }
 }

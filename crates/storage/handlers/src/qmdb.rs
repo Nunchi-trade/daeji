@@ -108,6 +108,15 @@ impl<A, S, C> QmdbHandle<A, S, C> {
         self.commit_failed.swap(false, Ordering::SeqCst)
     }
 
+    /// Record that a [`revm::database_interface::DatabaseCommit::commit`] call
+    /// has failed.
+    ///
+    /// This is called from the `DatabaseCommit` implementation in `adapter.rs`
+    /// when a QMDB write error occurs during the infallible REVM commit.
+    pub(crate) fn mark_commit_failed(&self) {
+        self.commit_failed.store(true, Ordering::SeqCst);
+    }
+
     /// Acquire read lock on the underlying store.
     pub async fn read(&self) -> RwLockReadGuard<'_, QmdbStore<A, S, C>> {
         self.inner.read().await
@@ -141,15 +150,18 @@ where
 
         let mut changes = ChangeSet::new();
         for (address, balance) in allocs {
-            changes.accounts.insert(address, AccountUpdate {
-                created: true,
-                selfdestructed: false,
-                nonce: 0,
-                balance,
-                code_hash: KECCAK256_EMPTY,
-                code: None,
-                storage: BTreeMap::new(),
-            });
+            changes.accounts.insert(
+                address,
+                AccountUpdate {
+                    created: true,
+                    selfdestructed: false,
+                    nonce: 0,
+                    balance,
+                    code_hash: KECCAK256_EMPTY,
+                    code: None,
+                    storage: BTreeMap::new(),
+                },
+            );
         }
         self.commit(changes).await
     }
