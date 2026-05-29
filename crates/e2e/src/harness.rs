@@ -325,7 +325,12 @@ async fn start_single_node(
     let test_node = TestNode::new(index, ledger.clone());
 
     // Create application
-    let app = TestApplication::<ThresholdScheme>::new(block_cfg.max_txs, state.clone());
+    let app = TestApplication::<ThresholdScheme>::new(
+        block_cfg.max_txs,
+        state.clone(),
+        chain_id,
+        gas_limit,
+    );
 
     // Create finalized reporter
     let executor = RevmExecutor::new(chain_id);
@@ -680,12 +685,12 @@ impl<S> std::fmt::Debug for TestApplication<S> {
 }
 
 impl<S> TestApplication<S> {
-    const fn new(max_txs: usize, ledger: LedgerView) -> Self {
+    fn new(max_txs: usize, ledger: LedgerView, chain_id: u64, gas_limit: u64) -> Self {
         Self {
             ledger,
-            executor: RevmExecutor::new(1337),
+            executor: RevmExecutor::new(chain_id),
             max_txs,
-            gas_limit: 30_000_000,
+            gas_limit,
             _scheme: std::marker::PhantomData,
         }
     }
@@ -721,11 +726,8 @@ impl<S> TestApplication<S> {
 
         let outcome = self.executor.execute(&parent_snapshot.state, &context, &txs_bytes).ok()?;
 
-        let state_root = self
-            .ledger
-            .compute_root_from_store(parent_digest, outcome.changes.clone())
-            .await
-            .ok()?;
+        let state_root =
+            self.ledger.compute_root_from_store(parent_digest, &outcome.changes).await.ok()?;
 
         let block = Block::new(parent.id(), height, timestamp, prevrandao, state_root, txs);
 
@@ -770,7 +772,7 @@ impl<S> TestApplication<S> {
 
         let state_root = match self
             .ledger
-            .compute_root_from_store(parent_digest, execution.outcome.changes.clone())
+            .compute_root_from_store(parent_digest, &execution.outcome.changes)
             .await
         {
             Ok(root) => root,

@@ -2066,6 +2066,8 @@ mod tests {
                     s: U256::ZERO,
                 },
             ]),
+            withdrawals: vec![],
+            withdrawals_root: B256::ZERO,
         };
         let receipts = vec![
             make_test_receipt(tx0_hash, block_hash, 0, 50_000),
