@@ -500,11 +500,15 @@ async fn replay_finalized_block(
         number: block.height,
         parent_hash: block.parent.0,
         state_root: block.state_root.0,
+        transactions_root: B256::ZERO,
+        receipts_root: B256::ZERO,
         timestamp: block_context.header.timestamp,
         gas_limit: block_context.header.gas_limit,
         gas_used: execution.outcome.gas_used,
         base_fee_per_gas: block_context.header.base_fee_per_gas,
         mix_hash: block.prevrandao,
+        size: 0,
+        logs_bloom: alloy_primitives::Bloom::ZERO,
         transaction_hashes: block.txs.iter().map(|tx| keccak256(&tx.bytes)).collect(),
     };
     block_index.insert_block(indexed_block, Vec::new(), Vec::new());
