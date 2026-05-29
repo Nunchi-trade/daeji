@@ -14,17 +14,18 @@ use std::{
 };
 
 use alloy_consensus::{
-    Transaction as _, TxEnvelope,
+    ReceiptEnvelope, ReceiptWithBloom, Transaction as _, TxEnvelope,
+    proofs::{calculate_receipt_root, calculate_transaction_root},
     transaction::{SignerRecoverable as _, to_eip155_value},
 };
 use alloy_eips::eip2718::Decodable2718 as _;
 use alloy_primitives::{B256, Bloom, Bytes, U256, keccak256, logs_bloom};
 use commonware_consensus::{
-    Block as _, Reporter,
+    Block as _, Reporter, Viewable as _,
     marshal::Update,
     simplex::{
         scheme::bls12381_threshold::vrf::{Scheme, Seedable as _},
-        types::Activity,
+        types::{Activity, Attributable as _},
     },
 };
 use commonware_cryptography::{Committable as _, bls12381::primitives::variant::Variant};
@@ -36,7 +37,7 @@ use kora_domain::{Block, ConsensusDigest, MempoolEvent, PublicKey, StateRoot};
 use kora_executor::{BlockContext, BlockExecutor, ExecutionOutcome};
 use kora_indexer::{BlockIndex, IndexedBlock, IndexedLog, IndexedReceipt, IndexedTransaction};
 use kora_ledger::{LedgerError, LedgerService};
-use kora_metrics::AppMetrics;
+use kora_metrics::{AppMetrics, EquivocationTypeLabel};
 use kora_overlay::OverlayState;
 use kora_qmdb_ledger::QmdbState;
 use kora_rpc::{MempoolEventSender, NodeState};
@@ -64,7 +65,6 @@ const DEFAULT_CHECKPOINT_INTERVAL: u64 = 1;
 /// distinguish transient errors (worth retrying) from permanent ones
 /// (indicating state divergence or eviction).
 #[derive(Debug, Error)]
-#[allow(dead_code)]
 enum FinalizationError {
     /// Block execution failed during finalization replay.
     #[error("execution failed: {0}")]
@@ -78,16 +78,6 @@ enum FinalizationError {
     /// This is a deterministic mismatch and is NOT retryable.
     #[error("state root mismatch: expected {expected:?}, computed {computed:?}")]
     StateRootMismatch { expected: StateRoot, computed: StateRoot },
-
-    /// The parent snapshot needed for re-execution was not found and
-    /// may still be in-flight (catch-up race). Retryable with a short delay.
-    #[error("missing parent snapshot (transient): digest={digest:?} parent={parent_digest:?}")]
-    MissingParentSnapshot { digest: ConsensusDigest, parent_digest: ConsensusDigest },
-
-    /// The parent snapshot was persisted and then evicted from memory.
-    /// The snapshot data is gone; retrying will not help.
-    #[error("parent snapshot evicted: digest={digest:?} parent={parent_digest:?}")]
-    ParentSnapshotEvicted { digest: ConsensusDigest, parent_digest: ConsensusDigest },
 
     /// The spawned persistence task panicked or was cancelled.
     #[error("persist task failed: {0}")]
@@ -105,12 +95,9 @@ impl FinalizationError {
         match self {
             // Deterministic: local state has diverged, retry produces the same mismatch.
             Self::StateRootMismatch { .. } => false,
-            // Evicted: the snapshot data is gone permanently, retry is futile.
-            Self::ParentSnapshotEvicted { .. } => false,
             // All other failures may be transient (I/O, OOM, race condition).
             Self::ExecutionFailed(_)
             | Self::RootComputationFailed(_)
-            | Self::MissingParentSnapshot { .. }
             | Self::PersistTaskFailed(_)
             | Self::PersistFailed(_) => true,
         }
@@ -122,8 +109,6 @@ impl FinalizationError {
             Self::ExecutionFailed(_) => "execution_failed",
             Self::RootComputationFailed(_) => "root_computation_failed",
             Self::StateRootMismatch { .. } => "state_root_mismatch",
-            Self::MissingParentSnapshot { .. } => "missing_parent_snapshot",
-            Self::ParentSnapshotEvicted { .. } => "parent_snapshot_evicted",
             Self::PersistTaskFailed(_) => "persist_task_failed",
             Self::PersistFailed(_) => "persist_failed",
         }
@@ -152,7 +137,33 @@ async fn seed_report_inner<V: Variant>(
                 )
                 .await;
         }
-        _ => {}
+        Activity::ConflictingNotarize(ref proof) => {
+            warn!(
+                signer = ?proof.signer(),
+                view = ?proof.view(),
+                "EQUIVOCATION: conflicting notarize detected"
+            );
+        }
+        Activity::ConflictingFinalize(ref proof) => {
+            warn!(
+                signer = ?proof.signer(),
+                view = ?proof.view(),
+                "EQUIVOCATION: conflicting finalize detected"
+            );
+        }
+        Activity::NullifyFinalize(ref proof) => {
+            warn!(
+                signer = ?proof.signer(),
+                view = ?proof.view(),
+                "EQUIVOCATION: nullify-finalize conflict detected"
+            );
+        }
+        // Normal per-vote and aggregate events that don't affect seed state.
+        Activity::Notarize(_)
+        | Activity::Certification(_)
+        | Activity::Nullify(_)
+        | Activity::Nullification(_)
+        | Activity::Finalize(_) => {}
     }
 }
 
@@ -240,11 +251,50 @@ async fn handle_finalized_update<E, P>(
                 } else {
                     m.finalization_failures.inc();
                 }
+
+                // Update snapshot store depth gauges so operators can detect
+                // when the persistence pipeline falls behind block production.
+                let (total, unpersisted) = state.snapshot_store_stats().await;
+                m.snapshot_store_total.set(total as i64);
+                m.unpersisted_snapshot_depth.set(unpersisted as i64);
+            }
+
+            // If finalization permanently failed, the node's QMDB state has
+            // diverged from the consensus chain.  Continuing would produce
+            // incorrect state roots for all subsequent blocks, cause failed
+            // proposals when this node is leader, and vote against valid blocks
+            // from other validators.
+            //
+            // We deliberately do NOT acknowledge the checkpoint to the marshal
+            // so it does not garbage-collect data that was never persisted.
+            // Then we abort the process to prevent silent state divergence.
+            //
+            // See: https://github.com/Nunchi-trade/daeji/issues/269
+            if let Err(ref e) = result {
+                error!(
+                    block_height = block.height,
+                    error = %e,
+                    error_kind = e.metric_label(),
+                    "FATAL: finalization permanently failed -- \
+                     aborting to prevent state divergence. \
+                     The node must be restarted after investigating the root cause."
+                );
+                // Prune mempool before halting so a restart does not re-propose
+                // transactions from the finalized block.
+                state.prune_mempool(&block.txs).await;
+                // Allow a brief window for log buffers to flush.
+                ::tokio::time::sleep(Duration::from_millis(200)).await;
+                std::process::abort();
             }
 
             if let Ok((Some(outcome), Some(block_context))) = result.as_ref() {
                 if let Some(index) = block_index.as_ref() {
                     index_finalized_block(index, &block, block_context, outcome);
+                    // Prune old blocks to bound memory usage (see issue #262).
+                    let min_height = block.height.saturating_sub(BlockIndex::MAX_RETAINED_BLOCKS);
+                    if min_height > 0 {
+                        index.prune_before(min_height);
+                    }
                 }
 
                 // Record selfdestructed addresses for future GC.
@@ -257,20 +307,13 @@ async fn handle_finalized_update<E, P>(
 
             acknowledge_checkpoint(pending_acks, block.height, checkpoint_interval, ack).await;
 
-            // Always prune the mempool regardless of whether finalization succeeded.
-            // The block is consensus-finalized, so its transactions must never be
-            // re-proposed even if local execution or persistence failed.
+            // Prune the mempool -- the block is consensus-finalized, so its
+            // transactions must never be re-proposed.
             state.prune_mempool(&block.txs).await;
 
-            // After pruning included transactions, also evict any remaining
-            // transactions whose nonces are now stale relative to finalized
-            // state.  This catches transactions from senders whose nonces
-            // advanced in the finalized block but whose specific transactions
-            // were not the ones included (e.g. the same nonce was fulfilled
-            // by a different transaction).
-            if result.is_ok() {
-                state.prune_stale_nonces().await;
-            }
+            // Evict any remaining transactions whose nonces are now stale
+            // relative to finalized state.
+            state.prune_stale_nonces().await;
 
             publish_mempool_inclusions(mempool_broadcast.as_ref(), &block);
         }
@@ -600,11 +643,9 @@ mod finalize_error_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use alloy_consensus::Header;
-    use alloy_primitives::{Address, B256, Bytes, U256};
+    use alloy_primitives::{B256, Bytes};
     use commonware_runtime::Runner as _;
-    use commonware_utils::acknowledgement::{Acknowledgement as _, Exact};
-    use k256::ecdsa::SigningKey;
-    use kora_domain::{StateRoot, evm::Evm};
+    use kora_domain::StateRoot;
     use kora_executor::ExecutionError;
     use kora_ledger::LedgerView;
 
@@ -619,8 +660,8 @@ mod finalize_error_tests {
 
     /// A block executor that always returns an error.
     ///
-    /// Used to force `finalize_block` into an error path so the caller can
-    /// verify that pruning and acknowledgement still happen unconditionally.
+    /// Used to force `finalize_with_retry` into an error path so the caller
+    /// can verify that permanent failures are surfaced correctly.
     #[derive(Clone)]
     struct FailingExecutor;
 
@@ -651,18 +692,19 @@ mod finalize_error_tests {
         }
     }
 
-    /// Regression test: when finalization fails (e.g. executor failure),
-    /// `handle_finalized_update` must still prune the mempool and acknowledge
-    /// the update so the node does not stall.
+    /// Verify that `finalize_with_retry` returns an error when the executor
+    /// permanently fails, which causes `handle_finalized_update` to abort the
+    /// process (preventing silent state divergence).
     ///
-    /// This covers the bug where early-returns on error paths skipped pruning
-    /// and acknowledgement, leading to stale tx re-proposals and marshal
-    /// delivery stalls.
+    /// We cannot test `handle_finalized_update` end-to-end with a failing
+    /// executor because it calls `std::process::abort()` on permanent
+    /// finalization failure (see #269). Instead, we test the inner retry
+    /// logic directly and verify it surfaces the expected error.
     ///
     /// Note: with retry logic, execution failures are retried up to 3 times
     /// before the error is considered permanent.
     #[test]
-    fn prune_and_ack_still_run_when_finalization_fails() {
+    fn finalize_with_retry_returns_error_on_permanent_failure() {
         let runner = tokio::Runner::default();
         runner.start(|context| async move {
             // -- set up ledger with an empty genesis --
@@ -676,45 +718,31 @@ mod finalize_error_tests {
             let service = LedgerService::new(ledger);
             let genesis = service.genesis_block();
 
-            // -- insert a transaction into the mempool --
-            let sender_key = SigningKey::from_bytes(&[1u8; 32].into()).expect("valid key");
-            let to = Address::repeat_byte(0xab);
-            let tx = Evm::sign_eip1559_transfer(&sender_key, 1, to, U256::ZERO, 0, 21_000, 0, 0);
-            assert!(service.submit_tx(tx.clone()).await, "tx should be accepted into mempool");
-            let pool = service.txpool().await;
-            assert_eq!(pool.len(), 1, "mempool should contain the submitted tx");
-
             // -- build a block that references genesis as parent --
             // The block's own snapshot does NOT exist in the store, so
             // `finalize_block` will attempt execution (and our FailingExecutor
             // will cause it to return Err(FinalizationError::ExecutionFailed)).
-            let block = Block::new(genesis.id(), 1, 1, B256::ZERO, StateRoot(B256::ZERO), vec![tx]);
+            let block = Block::new(genesis.id(), 1, 1, B256::ZERO, StateRoot(B256::ZERO), vec![]);
 
-            // -- create an acknowledgement we can observe --
-            let (ack, waiter) = Exact::handle();
-
-            // -- invoke the handler --
-            handle_finalized_update(
-                service.clone(),
-                context,
-                FailingExecutor,
-                StubProvider,
+            // -- invoke finalize_with_retry directly --
+            let result = finalize_with_retry(
+                &service,
+                &context,
+                &FailingExecutor,
+                &StubProvider,
                 None,
-                None,
-                None,
-                None,
-                1,
-                Arc::new(Mutex::new(Vec::new())),
-                None,
-                Update::Block(block, ack),
+                &block,
+                true,
             )
             .await;
 
-            // -- assert: mempool was pruned --
-            assert_eq!(pool.len(), 0, "mempool must be pruned even when finalization fails");
-
-            // -- assert: acknowledgement was delivered --
-            waiter.await.expect("ack must be called even when finalization fails");
+            // -- assert: finalization failed with execution error --
+            assert!(result.is_err(), "finalize_with_retry must return Err on permanent failure");
+            let err = result.unwrap_err();
+            assert!(
+                matches!(err, FinalizationError::ExecutionFailed(_)),
+                "expected ExecutionFailed, got: {err:?}"
+            );
         });
     }
 }
@@ -1007,6 +1035,35 @@ fn index_finalized_block(
     let transaction_hashes = block.txs.iter().map(|tx| keccak256(&tx.bytes)).collect::<Vec<_>>();
     let tx_metadata = block.txs.iter().map(|tx| decode_tx_metadata(&tx.bytes)).collect::<Vec<_>>();
 
+    // Compute the transactions trie root from the raw EIP-2718 encoded transactions.
+    let tx_envelopes: Vec<TxEnvelope> = block
+        .txs
+        .iter()
+        .filter_map(|tx| TxEnvelope::decode_2718(&mut tx.bytes.as_ref()).ok())
+        .collect();
+    let transactions_root = calculate_transaction_root(&tx_envelopes);
+
+    // Compute the receipts trie root from the execution receipts.
+    let receipt_envelopes: Vec<ReceiptEnvelope> = outcome
+        .receipts
+        .iter()
+        .zip(tx_metadata.iter())
+        .filter_map(|(receipt, metadata)| {
+            let metadata = metadata.as_ref()?;
+            let bloom = logs_bloom(receipt.logs());
+            let rwb = ReceiptWithBloom::new(receipt.receipt.clone(), bloom);
+            Some(match metadata.tx_type {
+                0 => ReceiptEnvelope::Legacy(rwb),
+                1 => ReceiptEnvelope::Eip2930(rwb),
+                2 => ReceiptEnvelope::Eip1559(rwb),
+                3 => ReceiptEnvelope::Eip4844(rwb),
+                4 => ReceiptEnvelope::Eip7702(rwb),
+                _ => ReceiptEnvelope::Legacy(rwb),
+            })
+        })
+        .collect();
+    let receipts_root = calculate_receipt_root(&receipt_envelopes);
+
     let indexed_txs = tx_metadata
         .iter()
         .enumerate()
@@ -1099,6 +1156,8 @@ fn index_finalized_block(
         number: block.height,
         parent_hash: block.parent.0,
         state_root: block.state_root.0,
+        transactions_root,
+        receipts_root,
         timestamp: block.timestamp,
         gas_limit: block_context.header.gas_limit,
         gas_used: outcome.gas_used,
@@ -1457,10 +1516,13 @@ mod tests {
 /// - Current view number (from notarizations)
 /// - Finalized block count
 /// - Nullified round count
+/// - Equivocation events (Byzantine behavior)
 #[derive(Clone)]
 pub struct NodeStateReporter<S> {
     /// RPC node state to update.
     state: NodeState,
+    /// Optional application-level metrics for Prometheus counters.
+    metrics: Option<AppMetrics>,
     /// Marker for the signing scheme.
     _scheme: PhantomData<S>,
 }
@@ -1474,7 +1536,14 @@ impl<S> fmt::Debug for NodeStateReporter<S> {
 impl<S> NodeStateReporter<S> {
     /// Create a new node state reporter.
     pub const fn new(state: NodeState) -> Self {
-        Self { state, _scheme: PhantomData }
+        Self { state, metrics: None, _scheme: PhantomData }
+    }
+
+    /// Attach application-level metrics for tracking equivocation events.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: AppMetrics) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 }
 
@@ -1496,7 +1565,54 @@ where
             Activity::Nullification(_) => {
                 self.state.inc_nullified();
             }
-            _ => {}
+            Activity::ConflictingNotarize(proof) => {
+                warn!(
+                    signer = ?proof.signer(),
+                    view = ?proof.view(),
+                    "EQUIVOCATION: conflicting notarize detected"
+                );
+                self.state.inc_equivocations();
+                if let Some(ref m) = self.metrics {
+                    m.equivocations
+                        .get_or_create(&EquivocationTypeLabel {
+                            r#type: "conflicting_notarize".into(),
+                        })
+                        .inc();
+                }
+            }
+            Activity::ConflictingFinalize(proof) => {
+                warn!(
+                    signer = ?proof.signer(),
+                    view = ?proof.view(),
+                    "EQUIVOCATION: conflicting finalize detected"
+                );
+                self.state.inc_equivocations();
+                if let Some(ref m) = self.metrics {
+                    m.equivocations
+                        .get_or_create(&EquivocationTypeLabel {
+                            r#type: "conflicting_finalize".into(),
+                        })
+                        .inc();
+                }
+            }
+            Activity::NullifyFinalize(proof) => {
+                warn!(
+                    signer = ?proof.signer(),
+                    view = ?proof.view(),
+                    "EQUIVOCATION: nullify-finalize conflict detected"
+                );
+                self.state.inc_equivocations();
+                if let Some(ref m) = self.metrics {
+                    m.equivocations
+                        .get_or_create(&EquivocationTypeLabel { r#type: "nullify_finalize".into() })
+                        .inc();
+                }
+            }
+            // Normal per-vote and aggregate events that don't affect node state.
+            Activity::Notarize(_)
+            | Activity::Certification(_)
+            | Activity::Nullify(_)
+            | Activity::Finalize(_) => {}
         }
         async {}
     }
