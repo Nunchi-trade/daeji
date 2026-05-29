@@ -294,7 +294,7 @@ impl<S> IndexedStateProvider<S> {
             mix_hash: block.mix_hash,
             nonce: Default::default(),
             base_fee_per_gas: block.base_fee_per_gas.map(U256::from),
-            miner: Address::ZERO,
+            miner: block.beneficiary,
             difficulty: U256::ZERO,
             total_difficulty: U256::ZERO,
             uncles: vec![],
@@ -516,6 +516,7 @@ mod tests {
             gas_limit: 30_000_000,
             gas_used: 21_000,
             base_fee_per_gas: Some(1_000_000_000),
+            beneficiary: Address::ZERO,
             mix_hash: B256::ZERO,
             transaction_hashes: vec![],
         }

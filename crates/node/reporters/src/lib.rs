@@ -572,26 +572,18 @@ mod mempool_tests {
     fn publish_mempool_inclusions_broadcasts_tx_included() {
         let (sender, mut receiver) = kora_rpc::mempool_event_channel();
         let tx = Tx::new(Bytes::from_static(&[0x01, 0x02, 0x03]));
-        let block = Block::new(
-            BlockId(B256::ZERO),
-            7,
-            0,
-            B256::ZERO,
-            StateRoot(B256::ZERO),
-            vec![tx.clone()],
-        );
+        let block = Block::new(BlockId(B256::ZERO), 7, 0, B256::ZERO, StateRoot(B256::ZERO), vec![
+            tx.clone(),
+        ]);
         let block_hash = block.id().0;
 
         publish_mempool_inclusions(Some(&sender), &block);
 
-        assert_eq!(
-            receiver.try_recv().unwrap(),
-            MempoolEvent::TxIncluded {
-                hash: keccak256(&tx.bytes),
-                block_number: block.height,
-                block_hash,
-            }
-        );
+        assert_eq!(receiver.try_recv().unwrap(), MempoolEvent::TxIncluded {
+            hash: keccak256(&tx.bytes),
+            block_number: block.height,
+            block_hash,
+        });
     }
 }
 
@@ -1016,6 +1008,7 @@ fn index_finalized_block(
         gas_limit: block_context.header.gas_limit,
         gas_used: outcome.gas_used,
         base_fee_per_gas: block_context.header.base_fee_per_gas,
+        beneficiary: block_context.header.beneficiary,
         mix_hash: block.prevrandao,
         transaction_hashes,
     };

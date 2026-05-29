@@ -86,6 +86,7 @@ pub struct RevmApplication<S, E> {
     executor: E,
     max_txs: usize,
     gas_limit: u64,
+    fee_recipient: Address,
     node_state: Option<NodeState>,
     metrics: Option<AppMetrics>,
     /// Height of the HEAD block that was restored from the archive during
@@ -124,12 +125,19 @@ where
     E: BlockExecutor<OverlayState<QmdbState>, Tx = Bytes> + Clone,
 {
     /// Create a new REVM application.
-    pub fn new(ledger: LedgerService, executor: E, max_txs: usize, gas_limit: u64) -> Self {
+    pub fn new(
+        ledger: LedgerService,
+        executor: E,
+        max_txs: usize,
+        gas_limit: u64,
+        fee_recipient: Address,
+    ) -> Self {
         Self {
             ledger,
             executor,
             max_txs,
             gas_limit,
+            fee_recipient,
             node_state: None,
             metrics: None,
             recovered_height: Arc::new(AtomicU64::new(0)),
@@ -173,7 +181,7 @@ where
             number: height,
             timestamp,
             gas_limit: self.gas_limit,
-            beneficiary: Address::ZERO,
+            beneficiary: self.fee_recipient,
             base_fee_per_gas: Some(kora_config::INITIAL_BASE_FEE),
             ..Default::default()
         };

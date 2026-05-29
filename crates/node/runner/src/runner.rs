@@ -156,7 +156,12 @@ const fn block_codec_cfg(config: &kora_config::ConsensusBlockCodecConfig) -> Blo
     }
 }
 
-fn seed_genesis_block_index(index: &BlockIndex, genesis: &Block, gas_limit: u64) {
+fn seed_genesis_block_index(
+    index: &BlockIndex,
+    genesis: &Block,
+    gas_limit: u64,
+    fee_recipient: Address,
+) {
     index.insert_block(
         IndexedBlock {
             hash: genesis.id().0,
@@ -167,6 +172,7 @@ fn seed_genesis_block_index(index: &BlockIndex, genesis: &Block, gas_limit: u64)
             gas_limit,
             gas_used: 0,
             base_fee_per_gas: Some(kora_config::INITIAL_BASE_FEE),
+            beneficiary: fee_recipient,
             mix_hash: genesis.prevrandao,
             transaction_hashes: Vec::new(),
         },
@@ -195,6 +201,7 @@ fn index_recovered_block(
         gas_limit: block_context.header.gas_limit,
         gas_used: 0,
         base_fee_per_gas: block_context.header.base_fee_per_gas,
+        beneficiary: block_context.header.beneficiary,
         mix_hash: block.prevrandao,
         transaction_hashes,
     };
@@ -518,6 +525,7 @@ impl From<ThresholdScheme> for ConstantSchemeProvider {
 #[derive(Clone, Debug)]
 struct RevmContextProvider {
     gas_limit: u64,
+    fee_recipient: Address,
     block_index: Arc<BlockIndex>,
 }
 
@@ -534,7 +542,7 @@ impl BlockContextProvider for RevmContextProvider {
             number: block.height,
             timestamp: block.timestamp,
             gas_limit: self.gas_limit,
-            beneficiary: Address::ZERO,
+            beneficiary: self.fee_recipient,
             base_fee_per_gas: Some(kora_config::INITIAL_BASE_FEE),
             ..Default::default()
         };
@@ -807,6 +815,7 @@ impl NodeRunner for ProductionRunner {
     async fn run(&self, ctx: NodeRunContext<Self::Transport>) -> Result<Self::Handle, Self::Error> {
         let (context, config, mut transport) = ctx.into_parts();
         let gas_limit = config.execution.gas_limit;
+        let fee_recipient = config.execution.fee_recipient;
         let simplex_config = config.consensus.simplex;
 
         info!(chain_id = self.chain_id, "Starting production validator");
@@ -884,7 +893,7 @@ impl NodeRunner for ProductionRunner {
             self.rpc_config.as_ref().map(|_| kora_rpc::mempool_event_channel().0);
         let ledger = LedgerService::new(state.clone());
         let block_index = Arc::new(BlockIndex::new());
-        seed_genesis_block_index(&block_index, &ledger.genesis_block(), gas_limit);
+        seed_genesis_block_index(&block_index, &ledger.genesis_block(), gas_limit, fee_recipient);
         spawn_ledger_observers(ledger.clone(), context.clone(), config.data_dir.clone());
         let txpool = ledger.txpool().await;
         spawn_txpool_cleanup(txpool.clone(), context.clone());
@@ -995,7 +1004,8 @@ impl NodeRunner for ProductionRunner {
             (None, None)
         };
 
-        let context_provider = RevmContextProvider { gas_limit, block_index: block_index.clone() };
+        let context_provider =
+            RevmContextProvider { gas_limit, fee_recipient, block_index: block_index.clone() };
         let recovered_head_height = recover_finalized_state(
             &ledger,
             &block_index,
@@ -1219,6 +1229,7 @@ impl NodeRunner for ProductionRunner {
             executor,
             block_cfg.max_txs,
             gas_limit,
+            fee_recipient,
         );
         app = app.with_metrics(app_metrics);
         if let Some((height, _)) = recovered_head_height {
@@ -1249,34 +1260,31 @@ impl NodeRunner for ProductionRunner {
             }
         }
 
-        let engine = simplex::Engine::new(
-            scratch_context.with_label("engine"),
-            simplex::Config {
-                scheme: self.scheme.clone(),
-                elector: Random,
-                blocker: NoOpBlocker::<Peer>::new(),
-                automaton: marshaled.clone(),
-                relay: marshaled,
-                reporter,
-                strategy,
-                partition: self.partition_prefix.clone(),
-                mailbox_size: MAILBOX_SIZE,
-                epoch: Epoch::zero(),
-                replay_buffer: simplex_config.replay_buffer_bytes,
-                write_buffer: simplex_config.write_buffer_bytes,
-                leader_timeout: Duration::from_secs(simplex_config.leader_timeout_secs.get()),
-                certification_timeout: Duration::from_secs(
-                    simplex_config.certification_timeout_secs.get(),
-                ),
-                timeout_retry: Duration::from_secs(simplex_config.timeout_retry_secs.get()),
-                fetch_timeout: Duration::from_secs(simplex_config.fetch_timeout_secs.get()),
-                activity_timeout: ViewDelta::new(simplex_config.activity_timeout_views.get()),
-                skip_timeout: ViewDelta::new(simplex_config.skip_timeout_views.get()),
-                fetch_concurrent: simplex_config.fetch_concurrent.get(),
-                page_cache,
-                forwarding: simplex::ForwardingPolicy::SilentLeader,
-            },
-        );
+        let engine = simplex::Engine::new(scratch_context.with_label("engine"), simplex::Config {
+            scheme: self.scheme.clone(),
+            elector: Random,
+            blocker: NoOpBlocker::<Peer>::new(),
+            automaton: marshaled.clone(),
+            relay: marshaled,
+            reporter,
+            strategy,
+            partition: self.partition_prefix.clone(),
+            mailbox_size: MAILBOX_SIZE,
+            epoch: Epoch::zero(),
+            replay_buffer: simplex_config.replay_buffer_bytes,
+            write_buffer: simplex_config.write_buffer_bytes,
+            leader_timeout: Duration::from_secs(simplex_config.leader_timeout_secs.get()),
+            certification_timeout: Duration::from_secs(
+                simplex_config.certification_timeout_secs.get(),
+            ),
+            timeout_retry: Duration::from_secs(simplex_config.timeout_retry_secs.get()),
+            fetch_timeout: Duration::from_secs(simplex_config.fetch_timeout_secs.get()),
+            activity_timeout: ViewDelta::new(simplex_config.activity_timeout_views.get()),
+            skip_timeout: ViewDelta::new(simplex_config.skip_timeout_views.get()),
+            fetch_concurrent: simplex_config.fetch_concurrent.get(),
+            page_cache,
+            forwarding: simplex::ForwardingPolicy::SilentLeader,
+        });
         let engine_handle = engine.start(
             transport.simplex.votes,
             transport.simplex.certs,
@@ -1312,7 +1320,7 @@ mod tests {
         );
         let gas_limit = 45_000_000;
 
-        seed_genesis_block_index(&index, &genesis, gas_limit);
+        seed_genesis_block_index(&index, &genesis, gas_limit, Address::ZERO);
 
         let indexed = index.get_block_by_number(0).expect("genesis indexed");
         assert_eq!(indexed.hash, genesis.id().0);
@@ -1323,6 +1331,7 @@ mod tests {
         assert_eq!(indexed.gas_limit, gas_limit);
         assert_eq!(indexed.gas_used, 0);
         assert_eq!(indexed.base_fee_per_gas, Some(kora_config::INITIAL_BASE_FEE));
+        assert_eq!(indexed.beneficiary, Address::ZERO);
         assert_eq!(indexed.transaction_hashes, Vec::<B256>::new());
         assert_eq!(index.get_block_by_hash(&genesis.id().0).expect("genesis by hash").number, 0);
     }
@@ -1339,7 +1348,7 @@ mod tests {
             Vec::new(),
         );
 
-        seed_genesis_block_index(&index, &genesis, 30_000_000);
+        seed_genesis_block_index(&index, &genesis, 30_000_000, Address::ZERO);
 
         let indexed = index.get_block_by_number(0).expect("genesis indexed");
         assert_eq!(indexed.timestamp, 1_700_000_000);
