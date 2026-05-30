@@ -58,8 +58,14 @@ devnet:
     cd docker && just devnet
 
 # Start the devnet with trusted dealer DKG (fast, insecure, for local dev)
+# Add COMPOSE_PROFILES=observability to also start Prometheus + Grafana + Loki
 trusted-devnet:
     cd docker && just trusted-devnet
+
+# Start the devnet with trusted dealer DKG and the full observability stack
+# (Prometheus on :9090, Grafana on :3000, Loki, Promtail)
+trusted-devnet-observe:
+    cd docker && COMPOSE_PROFILES=observability just trusted-devnet
 
 # Stop the devnet
 devnet-down:

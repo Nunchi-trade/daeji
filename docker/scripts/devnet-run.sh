@@ -110,10 +110,15 @@ print_endpoints() {
     echo -e "${BOLD}Endpoints${NC}"
     echo -e "  ${DIM}P2P:${NC}        localhost:30400-30403"
     echo -e "  ${DIM}Secondary:${NC}  localhost:30500"
-    echo -e "  ${DIM}Prometheus:${NC} http://localhost:9090"
-    echo -e "  ${DIM}Grafana:${NC}    http://localhost:3000"
+    if [[ "${COMPOSE_PROFILES:-}" == *observability* ]]; then
+        echo -e "  ${DIM}Prometheus:${NC} http://localhost:9090"
+        echo -e "  ${DIM}Grafana:${NC}    http://localhost:3000  (admin password from GF_SECURITY_ADMIN_PASSWORD)"
+    fi
     echo ""
     echo -e "${DIM}Run 'just devnet-stats' for live monitoring${NC}"
+    if [[ "${COMPOSE_PROFILES:-}" != *observability* ]]; then
+        echo -e "  ${DIM}Tip: run with COMPOSE_PROFILES=observability (or 'just trusted-devnet-observe') for Prometheus + Grafana${NC}"
+    fi
     echo ""
 }
 
