@@ -40,7 +40,7 @@
         url: "{{ prom }}/api/v1/query"
         method: POST
         body_format: form-urlencoded
-        body: "query=1 - avg(rate(finalized_height[1m])) / avg(rate(current_view[1m]))"
+        body: "query=1 - avg(rate(finalized_height[1m])) / clamp_min(avg(rate(engine_voter_state_current_view[1m])), 0.001)"
         return_content: true
       register: skip_rate
       ignore_errors: true
@@ -72,7 +72,7 @@
         url: "{{ prom }}/api/v1/query"
         method: POST
         body_format: form-urlencoded
-        body: "query=process_resident_memory_bytes"
+        body: "query=runtime_process_rss"
         return_content: true
       register: memory
       ignore_errors: true

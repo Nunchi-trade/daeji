@@ -1,4 +1,11 @@
 ---
+- name: Verify Docker image exists before stopping running validators
+  ansible.builtin.command:
+    cmd: docker image inspect {{ docker_image }}
+  register: image_check
+  failed_when: image_check.rc != 0
+  changed_when: false
+
 - name: Stop existing validators
   ansible.builtin.command:
     cmd: >
@@ -9,7 +16,7 @@
 
 - name: Check if DKG shares exist
   ansible.builtin.shell: |
-    for i in 0 1 2 3; do
+    for i in $(seq 0 $(({{ num_validators }} - 1))); do
       volume="{{ compose_project_name }}_data_node${i}"
       docker volume inspect "$volume" >/dev/null 2>&1 || exit 1
       docker run --rm -v "${volume}:/data" alpine \
@@ -73,15 +80,14 @@
 
 - name: Clear runtime state from data volumes
   ansible.builtin.shell: |
-    for volume in \
-      {{ compose_project_name }}_data_node0 \
-      {{ compose_project_name }}_data_node1 \
-      {{ compose_project_name }}_data_node2 \
-      {{ compose_project_name }}_data_node3 \
-      {{ compose_project_name }}_data_secondary0; do
+    for i in $(seq 0 $(({{ num_validators }} - 1))); do
+      volume="{{ compose_project_name }}_data_node${i}"
       docker volume inspect "$volume" >/dev/null 2>&1 || continue
       docker run --rm -v "${volume}:/data" alpine rm -rf /data/runtime 2>/dev/null || true
     done
+    volume="{{ compose_project_name }}_data_secondary0"
+    docker volume inspect "$volume" >/dev/null 2>&1 || true
+    docker run --rm -v "${volume}:/data" alpine rm -rf /data/runtime 2>/dev/null || true
   changed_when: true
 
 - name: Clear startup barrier
