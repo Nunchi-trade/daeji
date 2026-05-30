@@ -393,18 +393,48 @@ impl DkgCeremony {
         self.config.validator_index == 0
     }
 
-    /// Wait for peers to be reachable.
-    async fn wait_for_peers(&self, _network: &DkgNetwork) -> Result<(), DkgError> {
-        info!("Waiting for peers to be ready...");
-
+    /// Wait for all peers to be reachable via TCP probe before starting Phase 1.
+    ///
+    /// Replaces the previous static 10-second sleep with an active connectivity
+    /// loop that probes each peer's DKG TCP listener. The method returns as soon
+    /// as all peers accept a connection, or after a 60-second timeout (proceeding
+    /// anyway since phase-level timeouts provide a second line of defense).
+    /// See issue #171.
+    async fn wait_for_peers(&self, network: &DkgNetwork) -> Result<(), DkgError> {
+        let timeout = Duration::from_secs(60);
+        let probe_interval = Duration::from_secs(2);
         let start = Instant::now();
+        let my_pk = self.config.my_public_key();
+        let total = self.config.participants.len();
 
-        // Give all DKG containers time to join the p2p overlay before the phase-1
-        // broadcasts, which are not replayed if sent before peers are reachable.
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        info!(total, timeout_secs = 60, "Probing peer connectivity...");
 
-        info!(elapsed = ?start.elapsed(), "Peer initialization complete");
-        Ok(())
+        loop {
+            let mut reachable = 0usize;
+            for pk in &self.config.participants {
+                if *pk == my_pk {
+                    reachable += 1;
+                    continue;
+                }
+                if network.probe_peer(pk).is_ok() {
+                    reachable += 1;
+                }
+            }
+
+            info!(reachable, total, elapsed = ?start.elapsed(), "Peer connectivity check");
+
+            if reachable >= total {
+                info!(elapsed = ?start.elapsed(), "All peers reachable");
+                return Ok(());
+            }
+
+            if start.elapsed() >= timeout {
+                warn!(reachable, total, "Peer connectivity timeout after 60s -- proceeding anyway");
+                return Ok(());
+            }
+
+            tokio::time::sleep(probe_interval).await;
+        }
     }
 
     /// Send all outgoing messages.

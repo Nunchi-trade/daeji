@@ -138,12 +138,12 @@ pub enum ProtocolMessageKind {
 
 /// Message envelope that wraps protocol messages with session binding.
 ///
-/// All messages include a session_id for anti-replay protection, except for
-/// legacy messages which have `session_id` set to `None` for backward compatibility.
+/// All messages must include a `session_id` for anti-replay protection.
+/// Messages without a session ID (legacy format) are rejected on receipt.
 #[derive(Debug, Clone)]
 pub struct ProtocolMessage {
     /// Session ID binding this message to a specific ceremony.
-    /// `None` indicates a legacy message without session binding (logged as warning).
+    /// `None` in deserialized v1 messages triggers rejection at the handler.
     pub session_id: Option<[u8; 32]>,
     /// The actual protocol message content.
     pub kind: ProtocolMessageKind,
@@ -155,10 +155,9 @@ impl ProtocolMessage {
         Self { session_id: Some(session_id), kind }
     }
 
-    /// Create a legacy message without session binding (for backward compatibility).
-    pub const fn legacy(kind: ProtocolMessageKind) -> Self {
-        Self { session_id: None, kind }
-    }
+    // NOTE: The `legacy()` constructor was removed to prevent creating messages
+    // without session binding. All messages must include a session_id for
+    // anti-replay protection. See issue #021.
 
     /// Serialize the message to bytes.
     ///
@@ -216,6 +215,8 @@ impl ProtocolMessage {
     /// Deserialize from bytes.
     ///
     /// Supports both v2 (session-bound) and v1 (legacy) message formats.
+    /// Note: v1 messages will deserialize successfully but will be rejected
+    /// by `handle_message_bytes` due to missing session ID.
     pub fn from_bytes(bytes: &[u8], max_degree: u32) -> Result<Self, commonware_codec::Error> {
         let mut reader = bytes;
 
@@ -290,6 +291,13 @@ impl ProtocolMessage {
     }
 }
 
+/// Maximum number of entries in the `seen_messages` dedup set.
+///
+/// A legitimate 10-node ceremony produces ~250 messages. This cap provides
+/// ample headroom while preventing unbounded memory growth under adversarial
+/// message flooding. See issue #172.
+const MAX_SEEN_MESSAGES: usize = 10_000;
+
 /// State of a participant in the DKG protocol.
 pub struct DkgParticipant {
     // Note: Manual Debug impl below due to complex inner types.
@@ -301,6 +309,7 @@ pub struct DkgParticipant {
     /// Session metadata for this ceremony (anti-replay protection).
     session: CeremonySession,
     /// Set of message hashes we've already processed (for deduplication).
+    /// Bounded by [`MAX_SEEN_MESSAGES`] to prevent memory exhaustion.
     seen_messages: HashSet<[u8; 32]>,
 
     /// Messages to send (accumulated during protocol execution).
@@ -485,8 +494,9 @@ impl DkgParticipant {
 
     /// Process an incoming message from raw bytes.
     ///
-    /// This method handles session verification and message deduplication before
-    /// processing the actual message content.
+    /// This method handles session verification, participant validation, dedup-set
+    /// bounds checking, and message deduplication before processing the actual
+    /// message content.
     pub fn handle_message_bytes(
         &mut self,
         from: &ed25519::PublicKey,
@@ -517,11 +527,33 @@ impl DkgParticipant {
                 }
             }
             None => {
-                warn!(
-                    ?from,
-                    "Received legacy message without session ID - accepting for backward compatibility"
-                );
+                // Reject messages without session binding to prevent replay attacks.
+                // Legacy messages are not supported -- this is a new system with no
+                // prior deployments that would require backward compatibility.
+                // See issue #021.
+                warn!(?from, "Rejecting message without session ID");
+                return Err(DkgError::SessionMismatch {
+                    expected: hex::encode(self.session.ceremony_id),
+                    received: String::from("<none>"),
+                });
             }
+        }
+
+        // Validate sender is a known participant BEFORE inserting into seen_messages.
+        // This prevents non-participants from polluting the dedup set (issue #172).
+        if !self.is_participant(from) {
+            warn!(?from, "Rejecting message from non-participant before dedup insertion");
+            return Err(DkgError::UnknownSender { sender: format!("{:?}", from) });
+        }
+
+        // Enforce the dedup set size cap to prevent unbounded memory growth under
+        // adversarial flooding. See issue #172.
+        if self.seen_messages.len() >= MAX_SEEN_MESSAGES {
+            warn!(
+                count = self.seen_messages.len(),
+                "seen_messages capacity reached, rejecting message"
+            );
+            return Err(DkgError::InvalidMessage("seen_messages capacity exceeded".into()));
         }
 
         self.seen_messages.insert(message_hash);

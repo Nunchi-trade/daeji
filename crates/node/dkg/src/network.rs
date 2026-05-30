@@ -175,6 +175,31 @@ impl DkgNetwork {
         result
     }
 
+    /// Attempt a lightweight TCP connection to a peer to check reachability.
+    ///
+    /// Returns `Ok(())` if the peer's TCP listener accepts a connection within
+    /// a short timeout. The connection is immediately dropped after establishment
+    /// -- no data is sent. This is used by `wait_for_peers` to probe connectivity
+    /// before broadcasting Phase 1 messages. See issue #171.
+    pub fn probe_peer(&self, pk: &ed25519::PublicKey) -> Result<(), DkgError> {
+        let addr = self
+            .peer_addrs
+            .get(pk)
+            .ok_or_else(|| DkgError::Network(format!("Unknown peer: {:?}", pk)))?;
+
+        let socket_addr = addr
+            .to_socket_addrs()
+            .map_err(|e| DkgError::Network(format!("Failed to resolve {}: {}", addr, e)))?
+            .next()
+            .ok_or_else(|| DkgError::Network(format!("No addresses found for {}", addr)))?;
+
+        // Short timeout -- we just want to know if the listener is up.
+        TcpStream::connect_timeout(&socket_addr, Duration::from_secs(2))
+            .map_err(|e| DkgError::Network(format!("Probe failed for {}: {}", addr, e)))?;
+
+        Ok(())
+    }
+
     /// Get the maximum polynomial degree for message parsing.
     pub const fn max_degree(&self) -> u32 {
         // degree = quorum - 1, quorum = n - f, f = (n-1)/3
