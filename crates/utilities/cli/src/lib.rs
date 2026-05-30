@@ -9,6 +9,11 @@ mod backtrace;
 pub use backtrace::Backtracing;
 
 #[cfg(unix)]
+mod shutdown;
+#[cfg(unix)]
+pub use shutdown::wait_for_shutdown_signal;
+
+#[cfg(unix)]
 mod sigsegv;
 #[cfg(unix)]
 pub use sigsegv::SigsegvHandler;

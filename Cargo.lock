@@ -3267,6 +3267,8 @@ name = "kora-cli"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3649,6 +3651,7 @@ dependencies = [
  "kora-config",
  "kora-transport",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
 ]
 

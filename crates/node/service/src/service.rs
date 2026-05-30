@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use ::tokio::signal::unix::{SignalKind, signal as unix_signal};
 use commonware_cryptography::Signer;
 use commonware_p2p::Manager;
 use commonware_runtime::{
@@ -126,9 +127,25 @@ impl LegacyNodeService {
 
         tracing::info!(chain_id = self.config.chain_id, "kora node initialized");
 
-        if let Err(e) = try_join_all(vec![transport.handle]).await {
-            tracing::error!(?e, "service task failed");
-            return Err(eyre::eyre!("service task failed: {:?}", e));
+        // Race the transport join against a shutdown signal so that
+        // `docker stop` / `systemctl stop` / `kill` (SIGTERM) causes a clean
+        // exit instead of being silently ignored until the 30-second
+        // SIGKILL timeout fires.
+        let mut sigterm =
+            unix_signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+        ::tokio::select! {
+            result = try_join_all(vec![transport.handle]) => {
+                if let Err(e) = result {
+                    tracing::error!(?e, "service task failed");
+                    return Err(eyre::eyre!("service task failed: {:?}", e));
+                }
+            }
+            _ = ::tokio::signal::ctrl_c() => {
+                tracing::info!("Received SIGINT, initiating graceful shutdown...");
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("Received SIGTERM, initiating graceful shutdown...");
+            }
         }
 
         tracing::info!("kora node shutdown");
