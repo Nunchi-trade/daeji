@@ -562,6 +562,18 @@ impl LedgerView {
         inner.snapshots.is_persisted(digest)
     }
 
+    /// Pin a snapshot to prevent eviction during finalization.
+    pub async fn pin_snapshot(&self, digest: ConsensusDigest) {
+        let inner = self.inner.lock().await;
+        inner.snapshots.pin(digest);
+    }
+
+    /// Unpin a snapshot, allowing it to be evicted again.
+    pub async fn unpin_snapshot(&self, digest: &ConsensusDigest) {
+        let inner = self.inner.lock().await;
+        inner.snapshots.unpin(digest);
+    }
+
     /// Return snapshot store statistics: `(total, unpersisted)`.
     ///
     /// - `total`: number of snapshots currently held in memory.
@@ -744,6 +756,16 @@ impl LedgerService {
     /// (even if the in-memory snapshot data has since been evicted).
     pub async fn is_snapshot_persisted(&self, digest: &ConsensusDigest) -> bool {
         self.view.is_snapshot_persisted(digest).await
+    }
+
+    /// Pin a snapshot to prevent eviction during finalization.
+    pub async fn pin_snapshot(&self, digest: ConsensusDigest) {
+        self.view.pin_snapshot(digest).await;
+    }
+
+    /// Unpin a snapshot, allowing it to be evicted again.
+    pub async fn unpin_snapshot(&self, digest: &ConsensusDigest) {
+        self.view.unpin_snapshot(digest).await;
     }
 
     /// Return snapshot store statistics: `(total, unpersisted)`.
