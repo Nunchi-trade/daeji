@@ -117,6 +117,7 @@ pub struct RevmApplication<S, E> {
     /// gas usage.  Entries are small (32 + 16 bytes) and the map is bounded
     /// by the number of unfinalized blocks.
     block_fees: Arc<RwLock<HashMap<ConsensusDigest, (u64, u64)>>>,
+    min_block_interval: Duration,
     _scheme: std::marker::PhantomData<S>,
 }
 
@@ -130,6 +131,7 @@ impl<S, E> std::fmt::Debug for RevmApplication<S, E> {
             .field("recovered_height", &self.recovered_height.load(Ordering::Relaxed))
             .field("last_verified_height", &self.last_verified_height.load(Ordering::Relaxed))
             .field("block_fees_cached", &self.block_fees.read().len())
+            .field("min_block_interval_ms", &self.min_block_interval.as_millis())
             .finish_non_exhaustive()
     }
 }
@@ -160,6 +162,7 @@ where
             recovered_height: Arc::new(AtomicU64::new(0)),
             last_verified_height: Arc::new(AtomicU64::new(0)),
             block_fees: Arc::new(RwLock::new(block_fees)),
+            min_block_interval: Duration::ZERO,
             _scheme: std::marker::PhantomData,
         }
     }
@@ -175,6 +178,12 @@ where
     #[must_use]
     pub fn with_metrics(mut self, metrics: AppMetrics) -> Self {
         self.metrics = Some(metrics);
+        self
+    }
+
+    #[must_use]
+    pub fn with_min_block_interval(mut self, interval: Duration) -> Self {
+        self.min_block_interval = interval;
         self
     }
 
@@ -776,6 +785,7 @@ where
     ) -> impl std::future::Future<Output = Option<Self::Block>> + Send {
         let node_state = self.node_state.clone();
         let metrics = self.metrics.clone();
+        let min_block_interval = self.min_block_interval;
         let env = context.0;
         async move {
             let start = Instant::now();
@@ -800,6 +810,15 @@ where
                         "skipping proposal: parent too far ahead of finalized height"
                     );
                     return None;
+                }
+            }
+
+            if !min_block_interval.is_zero() {
+                let earliest =
+                    UNIX_EPOCH + Duration::from_secs(parent.timestamp) + min_block_interval;
+                if env.current() < earliest {
+                    trace!(parent_timestamp = parent.timestamp, interval_ms = min_block_interval.as_millis(), "throttling proposal");
+                    env.sleep_until(earliest).await;
                 }
             }
 
