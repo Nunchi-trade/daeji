@@ -53,7 +53,7 @@ pub(crate) struct ValidatorArgs {
     pub peers: Option<PathBuf>,
 
     /// Prometheus metrics server bind address.
-    #[arg(long, default_value = "0.0.0.0:9002")]
+    #[arg(long, default_value = "127.0.0.1:9002")]
     pub metrics_addr: String,
 
     /// Enable P2P transaction gossip between validators.
@@ -68,11 +68,11 @@ pub(crate) struct SecondaryArgs {
     pub peers: PathBuf,
 
     /// JSON-RPC server bind address (reserved for future read-only RPC).
-    #[arg(long, default_value = "0.0.0.0:8545")]
+    #[arg(long, default_value = "127.0.0.1:8545")]
     pub rpc_addr: String,
 
     /// Prometheus metrics server bind address.
-    #[arg(long, default_value = "0.0.0.0:9002")]
+    #[arg(long, default_value = "127.0.0.1:9002")]
     pub metrics_addr: String,
 }
 
