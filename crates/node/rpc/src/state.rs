@@ -134,6 +134,19 @@ impl NodeState {
         *self.inner.is_leader.write() = is_leader;
     }
 
+    /// Return the current consensus view number.
+    ///
+    /// In Simplex BFT the view number corresponds to the block height,
+    /// making it a suitable proxy for the network-reported highest block.
+    pub fn current_view(&self) -> u64 {
+        self.inner.current_view.load(Ordering::Relaxed)
+    }
+
+    /// Return the current peer count.
+    pub fn peer_count(&self) -> u64 {
+        self.inner.peer_count.load(Ordering::Relaxed)
+    }
+
     /// Increment finalized block count.
     pub fn inc_finalized(&self) {
         self.inner.finalized_count.fetch_add(1, Ordering::Relaxed);
