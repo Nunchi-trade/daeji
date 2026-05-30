@@ -1,8 +1,8 @@
 //! Transaction pool implementation.
 
 use std::{
-    collections::{BTreeSet, HashMap},
-    sync::Arc,
+    collections::{BTreeMap, BTreeSet, HashMap},
+    sync::{Arc, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -67,6 +67,12 @@ struct PoolInner {
     by_sender: HashMap<Address, SenderQueue>,
     pending_count: usize,
     queued_count: usize,
+    /// Incrementally maintained index: effective_gas_price -> count of pending
+    /// transactions with that price.  Allows O(1) minimum-price lookup.
+    pending_prices: BTreeMap<u128, usize>,
+    /// Incrementally maintained index: effective_gas_price -> count of queued
+    /// transactions with that price.  Allows O(1) minimum-price lookup.
+    queued_prices: BTreeMap<u128, usize>,
 }
 
 impl PoolInner {
@@ -77,6 +83,8 @@ impl PoolInner {
             by_sender: HashMap::new(),
             pending_count: 0,
             queued_count: 0,
+            pending_prices: BTreeMap::new(),
+            queued_prices: BTreeMap::new(),
         }
     }
 
@@ -90,13 +98,53 @@ impl PoolInner {
         self.by_id.remove(&ordered_tx_id(&tx));
 
         if let Some(queue) = self.by_sender.get_mut(&tx.sender) {
+            // Determine whether this tx was pending or queued so we can update
+            // the correct price index.
+            let was_pending = queue.pending.iter().any(|t| t.hash == *hash);
             queue.remove_by_hash(hash);
+            if was_pending {
+                Self::price_dec(&mut self.pending_prices, tx.effective_gas_price);
+            } else {
+                Self::price_dec(&mut self.queued_prices, tx.effective_gas_price);
+            }
             if queue.is_empty() {
                 self.by_sender.remove(&tx.sender);
             }
         }
 
         Some(tx)
+    }
+
+    // -- price-index helpers --------------------------------------------------
+
+    fn price_inc(map: &mut BTreeMap<u128, usize>, price: u128) {
+        *map.entry(price).or_insert(0) += 1;
+    }
+
+    fn price_dec(map: &mut BTreeMap<u128, usize>, price: u128) {
+        if let Some(count) = map.get_mut(&price) {
+            *count -= 1;
+            if *count == 0 {
+                map.remove(&price);
+            }
+        }
+    }
+
+    /// Rebuild both price indexes from scratch.
+    ///
+    /// Used after bulk operations (prune, clear) where incremental tracking
+    /// would be cumbersome and error-prone.
+    fn rebuild_price_indexes(&mut self) {
+        self.pending_prices.clear();
+        self.queued_prices.clear();
+        for queue in self.by_sender.values() {
+            for tx in &queue.pending {
+                *self.pending_prices.entry(tx.effective_gas_price).or_insert(0) += 1;
+            }
+            for tx in &queue.queued {
+                *self.queued_prices.entry(tx.effective_gas_price).or_insert(0) += 1;
+            }
+        }
     }
 }
 
@@ -133,7 +181,7 @@ pub struct TransactionPool {
     inner: Arc<RwLock<PoolInner>>,
     config: PoolConfig,
     events: Option<broadcast::Sender<MempoolEvent>>,
-    metrics: Arc<RwLock<Option<AppMetrics>>>,
+    metrics: Arc<OnceLock<AppMetrics>>,
 }
 
 impl TransactionPool {
@@ -144,7 +192,7 @@ impl TransactionPool {
             inner: Arc::new(RwLock::new(PoolInner::new())),
             config,
             events: None,
-            metrics: Arc::new(RwLock::new(None)),
+            metrics: Arc::new(OnceLock::new()),
         }
     }
 
@@ -155,7 +203,7 @@ impl TransactionPool {
             inner: Arc::new(RwLock::new(PoolInner::new())),
             config,
             events: Some(events),
-            metrics: Arc::new(RwLock::new(None)),
+            metrics: Arc::new(OnceLock::new()),
         }
     }
 
@@ -164,7 +212,7 @@ impl TransactionPool {
     /// Because the metrics handle is shared across all clones of this pool,
     /// this method affects every clone that shares the same backing store.
     pub fn set_metrics(&self, metrics: AppMetrics) {
-        *self.metrics.write() = Some(metrics);
+        let _ = self.metrics.set(metrics);
     }
 
     /// Update gauge metrics to reflect current pool state.
@@ -172,8 +220,7 @@ impl TransactionPool {
     /// Must be called while the caller does NOT hold the inner lock (it takes
     /// a read lock internally).
     fn sync_metrics(&self) {
-        let metrics_guard = self.metrics.read();
-        if let Some(ref m) = *metrics_guard {
+        if let Some(m) = self.metrics.get() {
             let inner = self.inner.read();
             m.txpool_size.set(inner.by_hash.len() as i64);
             m.txpool_pending.set(inner.pending_count as i64);
@@ -183,8 +230,7 @@ impl TransactionPool {
 
     /// Record a rejected transaction metric.
     fn record_rejection(&self, reason: &str) {
-        let metrics_guard = self.metrics.read();
-        if let Some(ref m) = *metrics_guard {
+        if let Some(m) = self.metrics.get() {
             m.txpool_rejected.get_or_create(&ReasonLabel { reason: reason.to_string() }).inc();
         }
     }
@@ -232,8 +278,31 @@ impl TransactionPool {
         }
 
         let inserted_hash = tx.hash;
-        inner.by_hash.insert(tx.hash, tx);
+        inner.by_hash.insert(tx.hash, tx.clone());
         inner.by_id.insert(tx_id, inserted_hash);
+
+        // Update the price index for the newly inserted transaction.
+        match target {
+            InsertionTarget::Pending => {
+                PoolInner::price_inc(&mut inner.pending_prices, tx.effective_gas_price);
+            }
+            InsertionTarget::Queued => {
+                PoolInner::price_inc(&mut inner.queued_prices, tx.effective_gas_price);
+            }
+            InsertionTarget::Replacement => {
+                // The replaced tx was already decremented via `remove_by_hash`.
+                // Determine which sub-pool the replacement landed in by
+                // checking the queue state after insertion.
+                if let Some(q) = inner.by_sender.get(&sender) {
+                    if q.pending.iter().any(|t| t.hash == tx.hash) {
+                        PoolInner::price_inc(&mut inner.pending_prices, tx.effective_gas_price);
+                    } else {
+                        PoolInner::price_inc(&mut inner.queued_prices, tx.effective_gas_price);
+                    }
+                }
+            }
+        }
+
         inner.update_counts();
 
         let mut inserted_evicted = false;
@@ -344,20 +413,14 @@ impl TransactionPool {
         Ok(())
     }
 
+    /// O(1) minimum pending price via incrementally maintained `BTreeMap`.
     fn min_pending_price(inner: &PoolInner) -> Option<u128> {
-        inner
-            .by_sender
-            .values()
-            .flat_map(|queue| queue.pending.iter().map(|tx| tx.effective_gas_price))
-            .min()
+        inner.pending_prices.keys().next().copied()
     }
 
+    /// O(1) minimum queued price via incrementally maintained `BTreeMap`.
     fn min_queued_price(inner: &PoolInner) -> Option<u128> {
-        inner
-            .by_sender
-            .values()
-            .flat_map(|queue| queue.queued.iter().map(|tx| tx.effective_gas_price))
-            .min()
+        inner.queued_prices.keys().next().copied()
     }
 
     fn evict_lowest_pending(inner: &mut PoolInner) -> Option<OrderedTransaction> {
@@ -543,18 +606,29 @@ impl TransactionPool {
             })
             .collect();
 
-        let mut removed = 0;
+        let mut removed_hashes = Vec::new();
         for hash in expired {
             if inner.remove_by_hash(&hash).is_some() {
-                removed += 1;
+                removed_hashes.push(hash);
             }
         }
         inner.update_counts();
         drop(inner);
-        if removed > 0 {
+
+        // Emit eviction events outside the lock (#201)
+        if let Some(events) = &self.events {
+            for hash in &removed_hashes {
+                let _ = events.send(MempoolEvent::TxEvicted {
+                    hash: *hash,
+                    reason: "expired".to_string(),
+                });
+            }
+        }
+
+        if !removed_hashes.is_empty() {
             self.sync_metrics();
         }
-        removed
+        removed_hashes.len()
     }
 
     /// Returns the pool configuration.
@@ -570,6 +644,8 @@ impl TransactionPool {
         inner.by_sender.clear();
         inner.pending_count = 0;
         inner.queued_count = 0;
+        inner.pending_prices.clear();
+        inner.queued_prices.clear();
         drop(inner);
         self.sync_metrics();
     }
@@ -760,6 +836,10 @@ impl Mempool for TransactionPool {
         }
 
         inner.update_counts();
+        // Rebuild price indexes after bulk prune rather than tracking
+        // incrementally through the complex remove_confirmed + remove_by_hash
+        // interaction above.
+        inner.rebuild_price_indexes();
         drop(inner);
         self.sync_metrics();
     }
@@ -1325,4 +1405,84 @@ mod tests {
 
         assert!(!pool.has_nonce(&sender, 0));
     }
+
+    #[test]
+    fn pool_cleanup_emits_eviction_events() {
+        let (events, mut receiver) = broadcast::channel(16);
+        let config = PoolConfig::default().with_pending_ttl_secs(60);
+        let pool = TransactionPool::new_with_events(config, events);
+
+        let sender = random_address();
+        let mut expired = make_ordered_tx(sender, 0, 100);
+        expired.timestamp = current_timestamp().saturating_sub(120);
+        let expired_hash = expired.hash;
+        pool.add(expired).unwrap();
+
+        // drain TxAdded event
+        let _ = receiver.try_recv().unwrap();
+
+        let removed = pool.cleanup();
+        assert_eq!(removed, 1);
+
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            MempoolEvent::TxEvicted { hash: expired_hash, reason: "expired".to_string() }
+        );
+    }
+
+    #[test]
+    fn min_price_index_tracks_insertions_and_removals() {
+        let pool = TransactionPool::new(PoolConfig::default());
+        let sender = random_address();
+        let tx0 = make_ordered_tx(sender, 0, 100);
+        let tx1 = make_ordered_tx(sender, 1, 50);
+
+        pool.add(tx0.clone()).unwrap();
+        pool.add(tx1.clone()).unwrap();
+
+        {
+            let inner = pool.inner.read();
+            assert_eq!(inner.pending_prices.keys().next().copied(), Some(50));
+        }
+
+        pool.remove(&tx1.hash);
+
+        {
+            let inner = pool.inner.read();
+            assert_eq!(inner.pending_prices.keys().next().copied(), Some(100));
+        }
+
+        pool.remove(&tx0.hash);
+
+        {
+            let inner = pool.inner.read();
+            assert!(inner.pending_prices.is_empty());
+        }
+    }
+
+    #[test]
+    fn min_price_index_tracks_queued_transactions() {
+        let pool = TransactionPool::new(PoolConfig::default());
+        let sender = random_address();
+        let tx0 = make_ordered_tx(sender, 0, 200);
+        // nonce gap -> queued
+        let tx2 = make_ordered_tx(sender, 2, 50);
+
+        pool.add(tx0).unwrap();
+        pool.add(tx2.clone()).unwrap();
+
+        {
+            let inner = pool.inner.read();
+            assert_eq!(inner.pending_prices.keys().next().copied(), Some(200));
+            assert_eq!(inner.queued_prices.keys().next().copied(), Some(50));
+        }
+
+        pool.remove(&tx2.hash);
+
+        {
+            let inner = pool.inner.read();
+            assert!(inner.queued_prices.is_empty());
+        }
+    }
+
 }
