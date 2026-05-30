@@ -262,12 +262,16 @@ impl RevmExecutor {
     ///
     /// Confirms the call succeeds at the upper bound (request gas or block
     /// gas limit), then binary-searches for the minimum gas at which the
-    /// call still succeeds. Bounded to 25 iterations (≈log2(30M)).
+    /// call still succeeds. Bounded to 25 iterations (approx log2(30M)).
+    ///
+    /// The lower bound is type-aware: 21,000 for regular calls, 53,000+
+    /// for contract creation (CREATE) transactions per EIP-3860.
     ///
     /// # Errors
     ///
-    /// Same as [`Self::simulate_call`] — propagates a revert/halt at the
-    /// upper bound; otherwise returns the converged minimum.
+    /// Propagates reverts, state errors, and non-OOG halts immediately
+    /// instead of treating them as "needs more gas". Only genuine
+    /// out-of-gas halts adjust the binary search bounds.
     pub fn estimate_gas<S: kora_traits::StateDbRead>(
         &self,
         state: &S,
@@ -281,7 +285,17 @@ impl RevmExecutor {
         params.gas_limit = Some(upper);
         self.simulate_call(state, params.clone(), context)?;
 
-        let mut lo = 21_000u64;
+        // Set the lower bound based on transaction type. Contract creation
+        // (CREATE) has a higher intrinsic gas cost than simple transfers:
+        // 53_000 = 21_000 (base) + 32_000 (CREATE cost per EIP-3860).
+        // For CREATE txs, also add the EIP-3860 initcode cost: 2 gas per
+        // word (rounded up to 32-byte words) of initcode.
+        let mut lo = if params.to.is_none() {
+            let initcode_word_cost = (params.data.len() as u64).div_ceil(32) * 2;
+            53_000u64.saturating_add(initcode_word_cost)
+        } else {
+            21_000u64
+        };
         let mut hi = upper;
         let mut best = upper;
         let mut iters = 0u32;
@@ -294,8 +308,19 @@ impl RevmExecutor {
                     best = mid;
                     hi = mid;
                 }
-                Err(_) => {
+                // Gas-related failure: genuinely needs more gas -- raise the
+                // lower bound. This covers both EVM-level out-of-gas halts
+                // ("OutOfGas") and transaction validation failures where the
+                // gas limit is below intrinsic cost ("GasCostMoreThanGasLimit").
+                Err(ExecutionError::TxExecution(ref msg))
+                    if msg.contains("OutOfGas") || msg.contains("GasCostMoreThanGasLimit") =>
+                {
                     lo = mid;
+                }
+                // Contract revert or any other non-gas error -- propagate
+                // immediately. Retrying with a different gas limit won't help.
+                Err(e) => {
+                    return Err(e);
                 }
             }
         }
@@ -1192,5 +1217,121 @@ mod tests {
         let outcome = executor.execute(&state, &context, &[]).expect("empty block should succeed");
         assert!(outcome.receipts.is_empty());
         assert_eq!(outcome.gas_used, 0);
+    }
+
+    // --- Tests for estimate_gas fixes (#116 and #123) ---
+
+    #[test]
+    fn estimate_gas_simple_transfer() {
+        // A simple ETH transfer converges to ~21,000 gas. The binary search
+        // may overshoot by 1 due to the `lo + 1 < hi` termination condition.
+        let executor = RevmExecutor::new(1);
+        let state = MockStateDb;
+        let context = test_block_context();
+
+        let params = CallParams {
+            from: Address::repeat_byte(0x01),
+            to: Some(Address::repeat_byte(0x02)),
+            value: U256::ZERO,
+            data: Bytes::new(),
+            gas_limit: None,
+            gas_price: 0,
+            nonce: 0,
+        };
+
+        let estimate = executor.estimate_gas(&state, params, &context).expect("should succeed");
+        // Binary search converges within +1 of the true minimum.
+        assert!(
+            (21_000..=21_001).contains(&estimate),
+            "simple transfer estimate ({estimate}) should be 21,000 or 21,001"
+        );
+    }
+
+    #[test]
+    fn estimate_gas_create_lower_bound_above_21k() {
+        // Contract creation should use a lower bound of at least 53,000,
+        // not the 21,000 used for regular calls.
+        let executor = RevmExecutor::new(1);
+        let state = MockStateDb;
+        let context = test_block_context();
+
+        // Minimal CREATE: empty initcode. The EVM will succeed (deploying
+        // empty bytecode) but the intrinsic cost is 53,000.
+        let params = CallParams {
+            from: Address::repeat_byte(0x01),
+            to: None, // CREATE
+            value: U256::ZERO,
+            data: Bytes::new(),
+            gas_limit: None,
+            gas_price: 0,
+            nonce: 0,
+        };
+
+        let estimate = executor.estimate_gas(&state, params, &context).expect("should succeed");
+        // The estimate must be >= 53,000 (CREATE intrinsic).
+        assert!(
+            estimate >= 53_000,
+            "CREATE estimate ({estimate}) must be >= 53,000 (CREATE intrinsic)"
+        );
+    }
+
+    #[test]
+    fn estimate_gas_create_with_initcode_accounts_for_word_cost() {
+        // CREATE with 64 bytes of initcode should cost more than an empty CREATE.
+        // Intrinsic gas breakdown for 64 zero-byte initcode:
+        //   53,000 (base CREATE = 21k + 32k)
+        //   + 256  (64 zero-bytes * 4 gas per zero-byte calldata)
+        //   + 4    (EIP-3860: ceil(64/32) * 2 = 2 words * 2 gas)
+        //   = 53,260
+        let executor = RevmExecutor::new(1);
+        let state = MockStateDb;
+        let context = test_block_context();
+
+        let params = CallParams {
+            from: Address::repeat_byte(0x01),
+            to: None,
+            value: U256::ZERO,
+            data: Bytes::from(vec![0u8; 64]),
+            gas_limit: None,
+            gas_price: 0,
+            nonce: 0,
+        };
+
+        let estimate = executor.estimate_gas(&state, params, &context).expect("should succeed");
+        // Must be >= 53,260 (the intrinsic gas for CREATE + 64 zero-bytes).
+        assert!(
+            estimate >= 53_260,
+            "CREATE with 64-byte initcode estimate ({estimate}) must be >= 53,260"
+        );
+    }
+
+    #[test]
+    fn estimate_gas_propagates_revert_from_upper_bound() {
+        // When simulate_call returns a Revert at the upper bound, estimate_gas
+        // should propagate the error, not mask it.
+        let executor = RevmExecutor::new(1);
+        let state = MockStateDb;
+        let context = test_block_context();
+
+        // CREATE whose initcode always reverts: PUSH1 0 PUSH1 0 REVERT
+        let revert_params = CallParams {
+            from: Address::repeat_byte(0x01),
+            to: None, // CREATE
+            value: U256::ZERO,
+            data: Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xFD]),
+            gas_limit: None,
+            gas_price: 0,
+            nonce: 0,
+        };
+
+        let result = executor.estimate_gas(&state, revert_params, &context);
+        assert!(
+            result.is_err(),
+            "estimate_gas should propagate the revert error from the upper-bound check"
+        );
+        assert!(
+            matches!(result, Err(ExecutionError::Revert(_))),
+            "error should be ExecutionError::Revert, got: {result:?}",
+        );
     }
 }
