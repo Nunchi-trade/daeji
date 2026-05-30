@@ -104,6 +104,12 @@ pub struct AppMetrics {
     pub gossip_tx_broadcast_failed: Counter,
     /// Total gossip transactions that failed validation.
     pub gossip_tx_invalid: Counter,
+    /// Total gossip transactions dropped because the validation queue was full
+    /// (backpressure from slow validation).
+    pub gossip_tx_backpressure_dropped: Counter,
+    /// Total gossip transactions dropped because the sending peer exceeded
+    /// the per-peer rate limit.
+    pub gossip_tx_rate_limited: Counter,
 
     // -- Equivocation --
     /// Total equivocation events detected, labelled by type
@@ -150,6 +156,8 @@ impl AppMetrics {
             gossip_tx_received: Counter::default(),
             gossip_tx_broadcast_failed: Counter::default(),
             gossip_tx_invalid: Counter::default(),
+            gossip_tx_backpressure_dropped: Counter::default(),
+            gossip_tx_rate_limited: Counter::default(),
             equivocations: Family::default(),
         }
     }
@@ -256,6 +264,16 @@ impl AppMetrics {
             "kora_gossip_tx_invalid",
             "Total gossip transactions that failed validation",
             self.gossip_tx_invalid.clone(),
+        );
+        registry.register(
+            "kora_gossip_tx_backpressure_dropped",
+            "Total gossip transactions dropped due to validation queue backpressure",
+            self.gossip_tx_backpressure_dropped.clone(),
+        );
+        registry.register(
+            "kora_gossip_tx_rate_limited",
+            "Total gossip transactions dropped due to per-peer rate limiting",
+            self.gossip_tx_rate_limited.clone(),
         );
         registry.register(
             "kora_equivocations",
