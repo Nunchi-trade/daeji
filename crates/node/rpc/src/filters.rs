@@ -1,7 +1,7 @@
 //! In-memory Ethereum filter state.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -53,12 +53,16 @@ pub(crate) enum Filter {
         last_poll_block: u64,
     },
     /// Pending transaction filter cursor.
+    ///
+    /// Uses only a monotonic cursor into the insertion-order deque.
+    /// Previous versions also stored a `known_hashes: HashSet<B256>`
+    /// that was cloned from the full pending-tx key set on every poll,
+    /// creating an unbounded memory growth vector (see issue #130).
+    /// The deque cursor is sufficient for deduplication.
     PendingTransaction {
-        /// Pending transaction hashes already reported to this filter.
-        known_hashes: HashSet<B256>,
         /// Snapshot index into the shared insertion-order vec at the time
         /// of last poll (or filter creation). New hashes are those at
-        /// indices >= this value that are not in `known_hashes`.
+        /// indices >= this value.
         last_seen_index: usize,
     },
 }

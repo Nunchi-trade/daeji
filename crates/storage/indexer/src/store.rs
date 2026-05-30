@@ -39,6 +39,15 @@ impl BlockIndex {
     /// [`Self::recent_block_hashes`]) always has a full window available.
     pub const MAX_RETAINED_BLOCKS: u64 = 10_000;
 
+    /// Maximum number of log entries returned by a single [`Self::get_logs`]
+    /// call.
+    ///
+    /// Queries matching more logs than this limit are truncated. This
+    /// prevents memory exhaustion when a broad filter matches millions of
+    /// events within the allowed block range (e.g. ERC-20 `Transfer`
+    /// across 10,000 blocks). The value matches Geth's default cap.
+    pub const MAX_LOG_RESULTS: usize = 10_000;
+
     /// Creates a new empty block index.
     #[must_use]
     pub fn new() -> Self {
@@ -215,6 +224,9 @@ impl BlockIndex {
     }
 
     /// Gets logs matching the given filter.
+    ///
+    /// Results are capped at [`Self::MAX_LOG_RESULTS`] entries. Queries that
+    /// match more logs are silently truncated to prevent memory exhaustion.
     pub fn get_logs(&self, filter: &LogFilter) -> Vec<IndexedLog> {
         let head = self.head_block_number();
         let from_block = filter.from_block.unwrap_or(0);
@@ -239,6 +251,9 @@ impl BlockIndex {
                     continue;
                 }
                 result.push(log.clone());
+                if result.len() >= Self::MAX_LOG_RESULTS {
+                    return result;
+                }
             }
         }
 
@@ -664,5 +679,50 @@ mod tests {
         // Only blocks 270..300 remain, so we should get exactly 30 entries.
         let hashes = index.recent_block_hashes(300);
         assert_eq!(hashes.len(), 30);
+    }
+
+    #[test]
+    fn test_get_logs_truncates_at_max_results() {
+        let index = BlockIndex::new();
+        let block_hash = B256::repeat_byte(1);
+        let contract_addr = Address::repeat_byte(0xAB);
+        let topic = B256::repeat_byte(0xCD);
+
+        // Create a receipt with more logs than MAX_LOG_RESULTS.
+        let logs: Vec<IndexedLog> = (0..BlockIndex::MAX_LOG_RESULTS + 500)
+            .map(|i| IndexedLog {
+                address: contract_addr,
+                topics: vec![topic],
+                data: Bytes::new(),
+                log_index: i as u64,
+                block_number: 1,
+                block_hash,
+                transaction_hash: B256::repeat_byte(2),
+                transaction_index: 0,
+            })
+            .collect();
+
+        let receipt = IndexedReceipt {
+            transaction_hash: B256::repeat_byte(2),
+            block_hash,
+            block_number: 1,
+            transaction_index: 0,
+            from: Address::ZERO,
+            to: None,
+            cumulative_gas_used: 21_000,
+            gas_used: 21_000,
+            contract_address: None,
+            logs,
+            logs_bloom: Bloom::ZERO,
+            tx_type: 0,
+            effective_gas_price: 1_000_000_000,
+            status: true,
+        };
+
+        index.insert_block(create_test_block(1, block_hash), vec![], vec![receipt]);
+
+        let filter = LogFilter::new().address(vec![contract_addr]);
+        let result = index.get_logs(&filter);
+        assert_eq!(result.len(), BlockIndex::MAX_LOG_RESULTS);
     }
 }
