@@ -677,16 +677,19 @@ fn test_execute_enforces_block_gas_limit() {
     let outcome =
         executor.execute(&state, &context, &[tx1, tx2, tx3]).expect("execution should succeed");
 
-    // Only 2 transactions should have been executed, and both should succeed.
+    // All 3 transactions produce receipts (placeholder for the gas-limited one)
+    // to preserve 1:1 receipt-to-transaction alignment.
     assert_eq!(
         outcome.receipts.len(),
-        2,
-        "only 2 of 3 transactions should execute within gas limit"
+        3,
+        "receipt count must match tx count even when gas limit stops inclusion"
     );
-    assert!(
-        outcome.receipts.iter().all(|r| r.success()),
-        "all executed transactions should succeed"
-    );
+    // First 2 executed successfully
+    assert!(outcome.receipts[0].success(), "first tx should succeed");
+    assert!(outcome.receipts[1].success(), "second tx should succeed");
+    // Third tx got a placeholder receipt (gas limit exceeded)
+    assert!(!outcome.receipts[2].success(), "third tx should be a failed placeholder");
+    assert_eq!(outcome.receipts[2].gas_used, 0, "gas-limited tx should use no gas");
     assert_eq!(outcome.gas_used, 42_000, "cumulative gas should equal 2 * 21_000");
 }
 
@@ -757,11 +760,15 @@ fn test_execute_single_tx_exceeding_block_gas_limit_produces_empty_outcome() {
 
     let outcome = executor.execute(&state, &context, &[tx]).expect("execution should succeed");
 
-    // The transaction should not have been executed.
-    assert!(
-        outcome.receipts.is_empty(),
-        "no transactions should execute when gas limit is too low"
+    // The transaction was not executed but gets a placeholder receipt to
+    // preserve 1:1 receipt-to-transaction alignment.
+    assert_eq!(
+        outcome.receipts.len(),
+        1,
+        "receipt count must match tx count even when gas limit prevents execution"
     );
+    assert!(!outcome.receipts[0].success(), "gas-limited tx receipt must be a failed placeholder");
+    assert_eq!(outcome.receipts[0].gas_used, 0, "gas-limited tx should use no gas");
     assert_eq!(outcome.gas_used, 0);
 }
 
