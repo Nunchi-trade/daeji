@@ -739,10 +739,14 @@ where
         let mut current = Some(from);
 
         while let Some(digest) = current {
-            if snapshots.is_persisted(&digest) {
-                break;
-            }
+            let is_persisted = snapshots.is_persisted(&digest);
             let Some(snapshot) = snapshots.get(&digest) else {
+                if is_persisted {
+                    // Persisted snapshots may be evicted from the in-memory
+                    // store; this is not a gap in the unpersisted chain, so
+                    // it is safe to stop here.
+                    break;
+                }
                 warn!(
                     ?digest,
                     collected_so_far = excluded.len(),
@@ -753,6 +757,13 @@ where
             };
             excluded.extend(snapshot.tx_ids.iter().copied());
             current = snapshot.parent;
+            if is_persisted {
+                // Include the most-recently-persisted snapshot's transactions
+                // before stopping.  This closes the race window where a
+                // finalized transaction is marked persisted but not yet pruned
+                // from the mempool by the FinalizedReporter.
+                break;
+            }
         }
 
         Some(excluded)

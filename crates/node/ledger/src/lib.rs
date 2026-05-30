@@ -59,8 +59,8 @@ impl kora_consensus::Mempool for LedgerMempool {
         kora_txpool::Mempool::build(&self.pool, max_txs, excluded)
     }
 
-    fn prune(&self, tx_ids: &[TxId]) {
-        kora_txpool::Mempool::prune(&self.pool, tx_ids);
+    fn prune(&self, txs: &[Tx]) {
+        kora_txpool::Mempool::prune(&self.pool, txs);
     }
 
     fn len(&self) -> usize {
@@ -514,10 +514,13 @@ impl LedgerView {
     }
 
     /// Remove transactions that are included in a block from the mempool.
+    ///
+    /// Passes the full raw transactions to `Mempool::prune` so that
+    /// implementations can advance sender nonces even for transactions that
+    /// were not previously in the local pool.
     pub async fn prune_mempool(&self, txs: &[Tx]) {
         let inner = self.inner.lock().await;
-        let tx_ids: Vec<TxId> = txs.iter().map(Tx::id).collect();
-        inner.mempool.prune(&tx_ids);
+        inner.mempool.prune(txs);
     }
 
     /// Remove transactions with stale nonces from the mempool.

@@ -58,10 +58,10 @@ impl Mempool for InMemoryMempool {
         candidates.into_iter().take(max_txs).map(|(_, _, tx)| tx).collect()
     }
 
-    fn prune(&self, tx_ids: &[TxId]) {
+    fn prune(&self, txs: &[Tx]) {
         let mut inner = self.inner.write();
-        for id in tx_ids {
-            inner.remove(id);
+        for tx in txs {
+            inner.remove(&tx.id());
         }
     }
 
@@ -131,12 +131,11 @@ mod tests {
         let mempool = InMemoryMempool::new();
 
         let tx = Tx::new(vec![1, 2, 3].into());
-        let id = tx.id();
 
-        mempool.insert(tx);
+        mempool.insert(tx.clone());
         assert_eq!(mempool.len(), 1);
 
-        mempool.prune(&[id]);
+        mempool.prune(&[tx]);
         assert_eq!(mempool.len(), 0);
     }
 

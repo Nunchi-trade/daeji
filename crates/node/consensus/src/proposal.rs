@@ -213,11 +213,15 @@ where
         let mut current = Some(from);
 
         while let Some(digest) = current {
-            if self.snapshots.is_persisted(&digest) {
-                break;
-            }
+            let is_persisted = self.snapshots.is_persisted(&digest);
 
             let Some(snapshot) = self.snapshots.get(&digest) else {
+                if is_persisted {
+                    // Persisted snapshots may be evicted from the in-memory
+                    // store; this is not a gap in the unpersisted chain, so
+                    // it is safe to stop here.
+                    break;
+                }
                 warn!(
                     ?digest,
                     collected_so_far = excluded.len(),
@@ -228,6 +232,13 @@ where
             };
             excluded.extend(snapshot.tx_ids.iter().copied());
             current = snapshot.parent;
+            if is_persisted {
+                // Include the most-recently-persisted snapshot's transactions
+                // before stopping.  This closes the race window where a
+                // finalized transaction is marked persisted but not yet pruned
+                // from the mempool by the FinalizedReporter.
+                break;
+            }
         }
 
         Ok(excluded)
@@ -340,10 +351,10 @@ mod tests {
                 .collect()
         }
 
-        fn prune(&self, tx_ids: &[TxId]) {
-            let mut txs = self.txs.write();
-            for id in tx_ids {
-                txs.remove(id);
+        fn prune(&self, txs: &[Tx]) {
+            let mut map = self.txs.write();
+            for tx in txs {
+                map.remove(&tx.id());
             }
         }
 
@@ -682,6 +693,91 @@ mod tests {
         let result = builder.build_proposal(&parent, B256::ZERO, 0).unwrap();
 
         assert!(result.0.txs.is_empty());
+    }
+
+    /// Regression test for Issue 24: when walking the snapshot chain, the
+    /// most-recently-persisted ancestor's transactions must be included in the
+    /// excluded set, not silently dropped.
+    ///
+    /// Chain: grandparent (persisted) ← parent (unpersisted) ← [new proposal]
+    ///
+    /// Before the fix, `collect_pending_tx_ids` would break out of the loop as
+    /// soon as it saw that the parent's parent (grandparent) was marked
+    /// persisted — without first collecting grandparent's tx_ids.  A finalized
+    /// transaction that was still present in the mempool could therefore be
+    /// re-proposed in the same slot.
+    #[test]
+    fn persisted_ancestor_tx_ids_are_included_in_excluded_set() {
+        let state = MockStateDb::new();
+        let mempool = MockMempool::new();
+        let snapshots = MockSnapshotStore::new();
+        let executor = MockExecutor;
+
+        // tx_grandparent: included in the persisted grandparent snapshot.
+        // This is the transaction that was previously dropped from the excluded
+        // set by the bug — it was finalized but not yet pruned from the mempool.
+        let tx_grandparent = Tx::new(vec![0xAA].into());
+
+        // tx_parent: included in the unpersisted parent snapshot.
+        let tx_parent = Tx::new(vec![0xBB].into());
+
+        // Build a minimal grandparent block/snapshot.
+        let grandparent_block = Block::new(
+            kora_domain::BlockId(B256::ZERO),
+            0,
+            0,
+            B256::ZERO,
+            StateRoot(B256::ZERO),
+            vec![tx_grandparent.clone()],
+        );
+        let grandparent_digest = grandparent_block.commitment();
+        let grandparent_snapshot = Snapshot::new(
+            None, // no further ancestor
+            MockStateDb::new(),
+            StateRoot(B256::ZERO),
+            ChangeSet::new(),
+            BTreeSet::from([tx_grandparent.id()]),
+        );
+        snapshots.insert(grandparent_digest, grandparent_snapshot);
+        // Mark the grandparent as persisted (simulates a finalized block whose
+        // FinalizedReporter has not yet pruned the mempool).
+        snapshots.mark_persisted(&[grandparent_digest]);
+
+        // Build the parent block/snapshot, pointing at the grandparent.
+        let parent_block = Block::new(
+            kora_domain::BlockId(B256::ZERO),
+            1,
+            0,
+            B256::ZERO,
+            StateRoot(B256::ZERO),
+            vec![tx_parent.clone()],
+        );
+        let parent_digest = parent_block.commitment();
+        let parent_snapshot = Snapshot::new(
+            Some(grandparent_digest), // points at grandparent
+            MockStateDb::new(),
+            StateRoot(B256::ZERO),
+            ChangeSet::new(),
+            BTreeSet::from([tx_parent.id()]),
+        );
+        snapshots.insert(parent_digest, parent_snapshot);
+
+        // Both transactions are still in the mempool (the pruner hasn't run yet).
+        mempool.add(tx_grandparent.clone());
+        mempool.add(tx_parent.clone());
+
+        let builder = ProposalBuilder::new(state, mempool, snapshots, executor);
+        let (block, _) = builder.build_proposal(&parent_block, B256::ZERO, 0).unwrap();
+
+        // Neither finalized nor pending-ancestor transaction should appear in
+        // the new proposal.
+        let proposed_ids: BTreeSet<TxId> = block.txs.iter().map(Tx::id).collect();
+        assert!(
+            !proposed_ids.contains(&tx_grandparent.id()),
+            "finalized tx must not be re-proposed (Issue 24 regression)"
+        );
+        assert!(!proposed_ids.contains(&tx_parent.id()), "parent tx must not be re-proposed");
+        assert!(block.txs.is_empty(), "proposal should be empty when all mempool txs are excluded");
     }
 
     #[test]

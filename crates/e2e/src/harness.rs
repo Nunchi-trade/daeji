@@ -831,14 +831,19 @@ impl<S> TestApplication<S> {
         let mut current = Some(from);
 
         while let Some(digest) = current {
-            if snapshots.is_persisted(&digest) {
-                break;
-            }
+            let is_persisted = snapshots.is_persisted(&digest);
             let Some(snapshot) = snapshots.get(&digest) else {
                 break;
             };
             excluded.extend(snapshot.tx_ids.iter().copied());
             current = snapshot.parent;
+            if is_persisted {
+                // Include the most-recently-persisted snapshot's transactions
+                // before stopping.  This closes the race window where a
+                // finalized transaction is marked persisted but not yet pruned
+                // from the mempool by the FinalizedReporter.
+                break;
+            }
         }
 
         excluded

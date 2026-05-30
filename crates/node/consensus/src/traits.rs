@@ -59,7 +59,13 @@ pub trait Mempool: Clone + Send + Sync + 'static {
     fn build(&self, max_txs: usize, excluded: &BTreeSet<TxId>) -> Vec<Tx>;
 
     /// Remove finalized transactions from the mempool.
-    fn prune(&self, tx_ids: &[TxId]);
+    ///
+    /// Accepts the full raw transactions from the finalized block so that
+    /// implementations can advance sender nonces even for transactions that
+    /// were not in the local pool (e.g., submitted to a different validator).
+    /// This prevents stale nonce entries that could otherwise allow a
+    /// same-nonce transaction to be accepted and re-proposed.
+    fn prune(&self, txs: &[Tx]);
 
     /// Get the current number of pending transactions.
     fn len(&self) -> usize;
