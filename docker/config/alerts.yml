@@ -38,13 +38,13 @@ groups:
     rules:
       # Nodes diverging in height
       - alert: HeightDrift
-        expr: max(finalized_height{job="kora-validators"}) - min(finalized_height{job="kora-validators"}) > 10
-        for: 1m
+        expr: max(finalized_height{job="kora-validators"}) - min(finalized_height{job="kora-validators"}) > 100
+        for: 2m
         labels:
           severity: warning
         annotations:
-          summary: "Validator height drift exceeds 10 blocks"
-          description: "Max height={{ $value }}. A node may be struggling to keep up or is stuck in catch-up."
+          summary: "Validator height drift exceeds 100 blocks"
+          description: "Max-min drift={{ $value }} blocks. At ~105 blocks/sec 10 blocks is <100ms; raised to 100 blocks (~1s lag) to avoid false alarms."
 
       # High nullification rate — wasted consensus rounds.
       # Healthy baseline is ~27% nullification rate (~44 nullifications/s at
@@ -86,8 +86,8 @@ groups:
       # Node catching up poorly — finalization rate much lower than peers
       - alert: NodeLagging
         expr: |
-          rate(finalized_height[5m]) < 0.1 * avg(rate(finalized_height[5m]))
-          and rate(finalized_height[5m]) > 0
+          rate(finalized_height{job="kora-validators"}[5m]) < 0.1 * avg(rate(finalized_height{job="kora-validators"}[5m]))
+          and rate(finalized_height{job="kora-validators"}[5m]) > 0
         for: 3m
         labels:
           severity: warning
@@ -99,7 +99,7 @@ groups:
     rules:
       # Memory growing rapidly
       - alert: HighMemoryUsage
-        expr: runtime_process_rss > 2e9
+        expr: runtime_process_rss{job="kora-validators"} > 2e9
         for: 5m
         labels:
           severity: warning
@@ -109,13 +109,17 @@ groups:
 
       # Broadcast failures spiking
       - alert: BroadcastFailures
-        expr: rate(broadcast_get_total{status="Failure"}[5m]) > 1
+        expr: rate(broadcast_get_total{status="Failure",job="kora-validators"}[5m])
+          / clamp_min(
+              rate(broadcast_get_total{status="Success",job="kora-validators"}[5m])
+              + rate(broadcast_get_total{status="Failure",job="kora-validators"}[5m]),
+            0.001) > 0.3
         for: 2m
         labels:
           severity: warning
         annotations:
-          summary: "Broadcast failures on {{ $labels.instance }}"
-          description: "Block broadcast is failing. P2P connectivity may be degraded."
+          summary: "Broadcast failure ratio is {{ $value | humanizePercentage }} on {{ $labels.instance }}"
+          description: "Over 30% of block broadcast attempts are failing. P2P connectivity may be degraded."
 
       # View advancing but no finalization — quorum issue
       - alert: ViewWithoutFinalization
@@ -185,7 +189,7 @@ groups:
 
       # Resolver peers blocked — catch-up impaired
       - alert: ResolverPeersBlocked
-        expr: engine_resolver_resolver_peers_blocked > 0
+        expr: engine_resolver_resolver_peers_blocked{job="kora-validators"} > 0
         for: 1m
         labels:
           severity: warning
@@ -198,19 +202,19 @@ groups:
       # accumulation and mempool churn can easily produce transient spikes.
       # Raised to 50MB/s to catch genuine leaks without false positives.
       - alert: MemoryLeakSuspected
-        expr: deriv(runtime_process_rss[15m]) > 50e6
-        for: 10m
+        expr: deriv(runtime_process_rss{job="kora-validators"}[15m]) > 1e6
+        for: 5m
         labels:
           severity: warning
         annotations:
           summary: "Memory growing at {{ $value | humanize }}B/s on {{ $labels.instance }}"
-          description: "Sustained memory growth >50MB/s for 10min. Possible unbounded mempool or state accumulation."
+          description: "Sustained memory growth >1MB/s for 5min. At 4GB container limit OOM fires before alert; investigate early."
 
       # Storage write stall (persistence blocked)
       - alert: StorageWriteStall
         expr: |
-          rate(finalized_height[5m]) > 0
-          and rate(runtime_storage_writes_total[5m]) < 0.001
+          rate(finalized_height{job="kora-validators"}[5m]) > 0
+          and rate(runtime_storage_writes_total{job="kora-validators"}[5m]) < 0.001
         for: 2m
         labels:
           severity: critical
@@ -223,9 +227,9 @@ groups:
       # Chain stall: views advancing but no blocks finalized
       - alert: MempoolPoisoning
         expr: |
-          sum(rate(engine_voter_state_current_view[2m])) > 0
-          and sum(rate(finalized_height[2m])) < 0.001
-          and sum(rate(engine_voter_state_nullifications_total[2m])) > 5
+          sum(rate(engine_voter_state_current_view{job="kora-validators"}[2m])) > 0
+          and sum(rate(finalized_height{job="kora-validators"}[2m])) < 0.001
+          and sum(rate(engine_voter_state_nullifications_total{job="kora-validators"}[2m])) > 5
         for: 1m
         labels:
           severity: critical
@@ -236,8 +240,8 @@ groups:
       # Every leader failing to propose
       - alert: AllLeadersFailing
         expr: |
-          sum(rate(engine_voter_state_nullifications_total[2m])) > 20
-          and sum(rate(finalized_height[2m])) < 0.001
+          sum(rate(engine_voter_state_nullifications_total{job="kora-validators"}[2m])) > 20
+          and sum(rate(finalized_height{job="kora-validators"}[2m])) < 0.001
         for: 30s
         labels:
           severity: critical

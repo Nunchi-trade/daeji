@@ -81,6 +81,7 @@
       "gridPos": {"h": 3, "w": 4, "x": 12, "y": 1},
       "id": 4,
       "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "description": "metric not yet instrumented in current Commonware build; shows no data until P2P rate limiting is added upstream",
       "targets": [{"expr": "sum(rate(network_spawner_messages_rate_limited_total[1m]))", "legendFormat": "", "refId": "A"}],
       "title": "Msgs Rate Limited/s",
       "type": "stat"
@@ -283,7 +284,7 @@
       "id": 23,
       "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["mean", "lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "targets": [
-        {"expr": "engine_resolver_resolver_fetcher_peer_performance", "legendFormat": "{{peer}}", "refId": "A"}
+        {"expr": "resolver_resolver_fetcher_peer_performance", "legendFormat": "{{peer}}", "refId": "A"}
       ],
       "title": "Resolver Peer Performance (response EMA)",
       "type": "timeseries"
