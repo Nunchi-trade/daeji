@@ -1,12 +1,12 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     ffi::OsString,
     path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use alloy_consensus::Header;
@@ -86,6 +86,20 @@ const TX_GOSSIP_SEEN_SET_CAPACITY: usize = 65_536;
 /// Buffer size for the internal channel that forwards locally accepted
 /// transactions to the P2P gossip broadcast task.
 const TX_GOSSIP_OUTBOUND_BUFFER: usize = 4096;
+
+/// Buffer size for the internal channel between the gossip receive loop and
+/// the validation task.  When this buffer is full, incoming transactions are
+/// dropped (backpressure) rather than blocking the P2P receive loop.
+const TX_GOSSIP_VALIDATION_BUFFER: usize = 1024;
+
+/// Maximum number of gossip transactions accepted from a single peer per
+/// second.  Transactions beyond this rate are silently dropped and counted
+/// via the `gossip_tx_rate_limited` metric.
+const TX_GOSSIP_MAX_PER_PEER_PER_SEC: u64 = 128;
+
+/// Maximum number of concurrent validation tasks spawned from the gossip
+/// validation consumer.  Limits CPU pressure from parallel ECDSA recoveries.
+const TX_GOSSIP_VALIDATION_CONCURRENCY: usize = 8;
 
 type Peer = ed25519::PublicKey;
 type CertArchive = Finalization<ThresholdScheme, ConsensusDigest>;
@@ -726,6 +740,60 @@ fn mark_seen(seen: &SeenSet, hash: B256) -> bool {
     set.insert(hash)
 }
 
+/// Simple per-peer rate limiter for gossip transactions.
+///
+/// Tracks the number of messages received from each peer in the current
+/// one-second window.  When a peer exceeds [`TX_GOSSIP_MAX_PER_PEER_PER_SEC`]
+/// the limiter returns `false` and the caller should drop the message.
+///
+/// Stale entries are lazily cleaned up: each `check` call that starts a new
+/// window for a peer effectively resets that peer's counter.  A periodic
+/// sweep (every 256 checks) removes entries for peers that have been idle
+/// for more than 10 seconds.
+struct PeerRateLimiter {
+    /// Per-peer state: (message count in current window, window start).
+    peers: HashMap<Peer, (u64, Instant)>,
+    /// Maximum messages allowed per peer per second.
+    max_per_second: u64,
+    /// Monotonic check counter for periodic cleanup scheduling.
+    check_count: u64,
+}
+
+impl PeerRateLimiter {
+    fn new(max_per_second: u64) -> Self {
+        Self { peers: HashMap::new(), max_per_second, check_count: 0 }
+    }
+
+    /// Returns `true` if the peer is within its rate limit, `false` if the
+    /// message should be dropped.
+    fn check(&mut self, peer: &Peer) -> bool {
+        self.check_count += 1;
+
+        // Periodic sweep: remove peers idle > 10 s every 256 calls.
+        if self.check_count.is_multiple_of(256) {
+            let now = Instant::now();
+            self.peers
+                .retain(|_, (_, window_start)| now.duration_since(*window_start).as_secs() < 10);
+        }
+
+        let now = Instant::now();
+        let entry = self.peers.entry(peer.clone()).or_insert((0, now));
+
+        // If the current window has expired, start a new one.
+        if now.duration_since(entry.1).as_secs() >= 1 {
+            *entry = (1, now);
+            return true;
+        }
+
+        if entry.0 >= self.max_per_second {
+            return false;
+        }
+
+        entry.0 += 1;
+        true
+    }
+}
+
 /// Periodically check peer connectivity and log warnings when the network
 /// appears degraded or partitioned.
 ///
@@ -1047,6 +1115,11 @@ impl NodeRunner for ProductionRunner {
                 tokio::sync::mpsc::channel::<alloy_primitives::Bytes>(TX_GOSSIP_OUTBOUND_BUFFER);
 
             // Outbound: read from internal channel, broadcast via P2P.
+            //
+            // Issue #156: use zero-copy `Into` conversion instead of
+            // `copy_from_slice` when converting `alloy_primitives::Bytes`
+            // to `bytes::Bytes` (both are backed by the same `bytes`
+            // crate, so `Into` is ref-counted, not a memcpy).
             {
                 let seen = seen.clone();
                 let mut sender = tx_gossip_sender;
@@ -1058,7 +1131,9 @@ impl NodeRunner for ProductionRunner {
                         if !mark_seen(&seen, hash) {
                             continue;
                         }
-                        let msg = bytes::Bytes::copy_from_slice(&raw);
+                        // Zero-copy: alloy_primitives::Bytes -> bytes::Bytes
+                        // via the From impl (ref-counted clone, no memcpy).
+                        let msg: bytes::Bytes = raw.0.clone();
                         let recipients = sender.send(Recipients::All, msg, false);
                         if recipients.is_empty() {
                             warn!("tx gossip: failed to broadcast transaction");
@@ -1077,14 +1152,38 @@ impl NodeRunner for ProductionRunner {
             }
 
             // Inbound: read from P2P, validate, insert into local pool.
+            //
+            // Architecture (issues #025, #156, #161):
+            //
+            //  1. **Receive task** (`tx_gossip_recv`): reads from the P2P
+            //     channel, applies per-peer rate limiting (#025) and the
+            //     dedup seen-set, then forwards to a bounded validation
+            //     channel.  If the channel is full the transaction is
+            //     dropped (backpressure / load-shedding, #161).  This task
+            //     is always fast and never blocks on validation.
+            //
+            //  2. **Validation task** (`tx_gossip_validate`): reads from
+            //     the validation channel and spawns concurrent validation
+            //     tasks (bounded by a semaphore to cap CPU usage).  Each
+            //     task performs ECDSA recovery, state checks, and pool
+            //     insertion.  Uses zero-copy `From` conversion (#156).
             {
                 let seen = seen.clone();
                 let gossip_ledger = ledger.clone();
                 let gossip_chain_id = self.chain_id;
                 let gossip_pool = txpool.clone();
                 let mut receiver = tx_gossip_receiver;
-                let in_metrics = app_metrics.clone();
-                context.child("tx_gossip_in").shared(true).spawn(move |_| async move {
+                let recv_metrics = app_metrics.clone();
+                let validate_metrics = app_metrics.clone();
+
+                // Bounded channel between receive and validation tasks.
+                let (validation_tx, mut validation_rx) =
+                    tokio::sync::mpsc::channel::<(Peer, bytes::Bytes)>(TX_GOSSIP_VALIDATION_BUFFER);
+
+                // --- Receive task: fast path (dedup + rate limit only) ---
+                context.child("tx_gossip_recv").shared(true).spawn(move |_| async move {
+                    let mut rate_limiter = PeerRateLimiter::new(TX_GOSSIP_MAX_PER_PEER_PER_SEC);
+
                     loop {
                         let (peer, raw) = match receiver.recv().await {
                             Ok(msg) => msg,
@@ -1094,40 +1193,87 @@ impl NodeRunner for ProductionRunner {
                             }
                         };
 
-                        in_metrics.gossip_tx_received.inc();
+                        recv_metrics.gossip_tx_received.inc();
+
+                        // Per-peer rate limiting (#025).
+                        if !rate_limiter.check(&peer) {
+                            trace!(?peer, "tx gossip: dropping transaction, peer rate-limited");
+                            recv_metrics.gossip_tx_rate_limited.inc();
+                            continue;
+                        }
+
                         let hash = keccak256(&raw);
                         if !mark_seen(&seen, hash) {
                             trace!(?hash, ?peer, "tx gossip: skipping already-seen transaction");
                             continue;
                         }
 
-                        let data = alloy_primitives::Bytes::copy_from_slice(raw.as_ref());
-                        let tx = Tx::new(data);
-                        let tx_id = tx.id();
-
-                        // Fetch the latest state on each validation so nonce
-                        // and balance checks reflect finalized blocks.  The
-                        // previous code captured state once at startup, making
-                        // gossip validation increasingly stale.
-                        let current_state = gossip_ledger.latest_state().await;
-                        let validator = TransactionValidator::new(
-                            gossip_chain_id,
-                            current_state,
-                            PoolConfig::default(),
-                        )
-                        .with_pool(gossip_pool.clone());
-                        if let Err(e) = validator.validate(tx.clone()).await {
-                            trace!(?tx_id, ?peer, error = %e, "tx gossip: peer tx failed validation");
-                            in_metrics.gossip_tx_invalid.inc();
-                            continue;
-                        }
-
-                        if gossip_ledger.submit_tx(tx).await {
-                            debug!(?tx_id, ?peer, "tx gossip: accepted transaction from peer");
-                        } else {
-                            trace!(?tx_id, ?peer, "tx gossip: ledger rejected transaction (duplicate)");
+                        // Backpressure: if validation pipeline is saturated,
+                        // drop the transaction rather than blocking the P2P
+                        // receive loop (#161).
+                        // Convert IoBuf -> bytes::Bytes once here; the
+                        // validation task will do a zero-copy conversion to
+                        // alloy_primitives::Bytes (#156).
+                        let raw: bytes::Bytes = raw.into();
+                        if validation_tx.try_send((peer, raw)).is_err() {
+                            trace!("tx gossip: validation queue full, dropping transaction");
+                            recv_metrics.gossip_tx_backpressure_dropped.inc();
                         }
                     }
+                });
+
+                // --- Validation task: concurrent validation with semaphore ---
+                let semaphore =
+                    Arc::new(tokio::sync::Semaphore::new(TX_GOSSIP_VALIDATION_CONCURRENCY));
+                context.child("tx_gossip_validate").shared(true).spawn(move |_| async move {
+                    while let Some((peer, raw)) = validation_rx.recv().await {
+                        let permit = match semaphore.clone().acquire_owned().await {
+                            Ok(p) => p,
+                            Err(_) => break, // semaphore closed
+                        };
+                        let ledger = gossip_ledger.clone();
+                        let pool = gossip_pool.clone();
+                        let metrics = validate_metrics.clone();
+
+                        tokio::spawn(async move {
+                            // Zero-copy: bytes::Bytes -> alloy_primitives::Bytes
+                            // via the From impl (#156).
+                            let data = alloy_primitives::Bytes::from(raw);
+                            let tx = Tx::new(data);
+                            let tx_id = tx.id();
+
+                            // Fetch the latest state on each validation so
+                            // nonce and balance checks reflect finalized
+                            // blocks.
+                            let current_state = ledger.latest_state().await;
+                            let validator = TransactionValidator::new(
+                                gossip_chain_id,
+                                current_state,
+                                PoolConfig::default(),
+                            )
+                            .with_pool(pool);
+                            if let Err(e) = validator.validate(tx.clone()).await {
+                                trace!(
+                                    ?tx_id,
+                                    ?peer,
+                                    error = %e,
+                                    "tx gossip: peer tx failed validation"
+                                );
+                                metrics.gossip_tx_invalid.inc();
+                            } else if ledger.submit_tx(tx).await {
+                                debug!(?tx_id, ?peer, "tx gossip: accepted transaction from peer");
+                            } else {
+                                trace!(
+                                    ?tx_id,
+                                    ?peer,
+                                    "tx gossip: ledger rejected transaction (duplicate)"
+                                );
+                            }
+
+                            drop(permit);
+                        });
+                    }
+                    debug!("tx gossip validation channel closed");
                 });
             }
 
