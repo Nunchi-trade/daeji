@@ -50,13 +50,26 @@ pub const DEFAULT_SIMPLEX_CERTIFICATION_TIMEOUT_SECS: u64 = 2;
 pub const DEFAULT_SIMPLEX_TIMEOUT_RETRY_SECS: u64 = 1;
 
 /// Default Simplex fetch timeout in seconds.
-pub const DEFAULT_SIMPLEX_FETCH_TIMEOUT_SECS: u64 = 5;
+///
+/// Block fetching is bounded by network RTT; 2 seconds is generous for
+/// both single-datacenter (sub-ms) and geo-distributed (50-200 ms RTT)
+/// deployments.  Reduced from 5 s to limit stall duration when a peer
+/// is slow to respond.
+pub const DEFAULT_SIMPLEX_FETCH_TIMEOUT_SECS: u64 = 2;
 
 /// Default Simplex activity timeout in views.
-pub const DEFAULT_SIMPLEX_ACTIVITY_TIMEOUT_VIEWS: u64 = 20;
+///
+/// At ~135 views/sec, 20 views equals ~148 ms -- too aggressive for
+/// detecting genuinely inactive peers.  256 views (~1.9 s) gives a
+/// realistic window before flagging a peer as inactive.
+pub const DEFAULT_SIMPLEX_ACTIVITY_TIMEOUT_VIEWS: u64 = 256;
 
 /// Default Simplex skip timeout in views.
-pub const DEFAULT_SIMPLEX_SKIP_TIMEOUT_VIEWS: u64 = 10;
+///
+/// At ~135 views/sec, 10 views equals ~74 ms -- too fast.  32 views
+/// (~237 ms) provides adequate time for a healthy peer to respond before
+/// a skip is attempted.
+pub const DEFAULT_SIMPLEX_SKIP_TIMEOUT_VIEWS: u64 = 32;
 
 /// Default number of concurrent Simplex fetch requests.
 pub const DEFAULT_SIMPLEX_FETCH_CONCURRENT: usize = 8;

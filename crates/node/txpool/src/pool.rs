@@ -714,37 +714,62 @@ impl Mempool for TransactionPool {
         result
     }
 
-    fn prune(&self, tx_ids: &[TxId]) {
+    fn prune(&self, txs: &[Tx]) {
         let mut inner = self.inner.write();
 
         let mut confirmed_by_sender: HashMap<Address, u64> = HashMap::new();
-        for id in tx_ids {
-            let Some(hash) = inner.by_id.get(id) else {
+
+        // First pass: match transactions already in the local pool using TxId.
+        // Transactions found here provide an authoritative sender+nonce pair
+        // without requiring signature recovery.
+        for tx in txs {
+            let id = tx.id();
+            let Some(hash) = inner.by_id.get(&id) else {
                 continue;
             };
-            if let Some(tx) = inner.by_hash.get(hash) {
+            if let Some(ordered) = inner.by_hash.get(hash) {
                 confirmed_by_sender
-                    .entry(tx.sender)
-                    .and_modify(|nonce| *nonce = (*nonce).max(tx.nonce))
-                    .or_insert(tx.nonce);
+                    .entry(ordered.sender)
+                    .and_modify(|nonce| *nonce = (*nonce).max(ordered.nonce))
+                    .or_insert(ordered.nonce);
+            }
+        }
+
+        // Second pass: for any transaction not found in the local pool (e.g.
+        // submitted to a different validator), decode the raw bytes to extract
+        // the sender address and nonce so we can advance the sender's
+        // `next_nonce`.  This prevents stale nonce entries that would allow a
+        // same-nonce transaction to be accepted into the pool after pruning.
+        for tx in txs {
+            let id = tx.id();
+            if inner.by_id.contains_key(&id) {
+                continue; // Already handled in the first pass.
+            }
+            if let Some(ordered) = tx_to_ordered(tx) {
+                confirmed_by_sender
+                    .entry(ordered.sender)
+                    .and_modify(|nonce| *nonce = (*nonce).max(ordered.nonce))
+                    .or_insert(ordered.nonce);
             }
         }
 
         let mut senders_to_check: Vec<Address> = Vec::with_capacity(confirmed_by_sender.len());
         let mut hashes_to_remove = Vec::new();
         for (sender, confirmed_nonce) in confirmed_by_sender {
-            if let Some(queue) = inner.by_sender.get_mut(&sender) {
-                hashes_to_remove.extend(
-                    queue
-                        .pending
-                        .iter()
-                        .chain(queue.queued.iter())
-                        .filter(|tx| tx.nonce <= confirmed_nonce)
-                        .map(|tx| tx.hash),
-                );
-                queue.remove_confirmed(confirmed_nonce);
-                senders_to_check.push(sender);
-            }
+            let queue = inner
+                .by_sender
+                .entry(sender)
+                .or_insert_with(|| SenderQueue::new(sender, confirmed_nonce.saturating_add(1)));
+            hashes_to_remove.extend(
+                queue
+                    .pending
+                    .iter()
+                    .chain(queue.queued.iter())
+                    .filter(|tx| tx.nonce <= confirmed_nonce)
+                    .map(|tx| tx.hash),
+            );
+            queue.remove_confirmed(confirmed_nonce);
+            senders_to_check.push(sender);
         }
 
         for hash in hashes_to_remove {
@@ -754,7 +779,13 @@ impl Mempool for TransactionPool {
         for sender in senders_to_check {
             if let Some(queue) = inner.by_sender.get(&sender)
                 && queue.is_empty()
+                && queue.next_nonce == 0
             {
+                // Only remove a sender queue that is truly empty — i.e. one
+                // with `next_nonce == 0` meaning no transaction from this
+                // sender has ever been confirmed through this pool.  Queues
+                // with `next_nonce > 0` act as sentinels that prevent
+                // previously-finalized nonces from being re-accepted.
                 inner.by_sender.remove(&sender);
             }
         }
@@ -1127,7 +1158,7 @@ mod tests {
         pool.add(tx2.clone()).unwrap();
         pool.add(tx3.clone()).unwrap();
 
-        pool.prune(&[ordered_tx_id(&tx0), ordered_tx_id(&tx1)]);
+        pool.prune(&[ordered_to_tx(&tx0), ordered_to_tx(&tx1)]);
 
         let txs = pool.build(10, &BTreeSet::new());
         assert_eq!(txs.len(), 2);
@@ -1148,8 +1179,7 @@ mod tests {
         let built = pool.build(10, &BTreeSet::new());
         assert_eq!(built.len(), 2);
 
-        let ids: Vec<TxId> = built.iter().map(Tx::id).collect();
-        pool.prune(&ids[..1]);
+        pool.prune(&built[..1]);
 
         assert!(!pool.contains(&tx0.hash));
         assert!(pool.contains(&tx1.hash));
@@ -1234,7 +1264,7 @@ mod tests {
             pool.add(tx.clone()).unwrap();
         }
 
-        pool.prune(&[ordered_tx_id(&a1), ordered_tx_id(&b0)]);
+        pool.prune(&[ordered_to_tx(&a1), ordered_to_tx(&b0)]);
 
         assert_eq!(pool.len(), 3);
         assert!(!pool.contains(&a0.hash));
@@ -1261,7 +1291,7 @@ mod tests {
 
         pool.add(tx0.clone()).unwrap();
         pool.add(tx2.clone()).unwrap();
-        pool.prune(&[ordered_tx_id(&tx0)]);
+        pool.prune(&[ordered_to_tx(&tx0)]);
 
         assert!(pool.build(10, &BTreeSet::new()).is_empty());
 
@@ -1324,5 +1354,68 @@ mod tests {
         let sender = random_address();
 
         assert!(!pool.has_nonce(&sender, 0));
+    }
+
+    /// Regression test for Issue 26: pruning a transaction that was never added
+    /// to the local pool (e.g. it was submitted to a different validator) must
+    /// still advance the sender's `next_nonce`.  Without the second-pass decode,
+    /// a same-nonce replacement could be accepted into the pool after pruning,
+    /// leading to duplicate transaction execution.
+    #[test]
+    fn pool_prune_advances_nonce_for_tx_not_in_pool() {
+        use alloy_consensus::{SignableTransaction as _, TxEip1559};
+        use alloy_primitives::{TxKind, U256};
+        use k256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
+        use sha3::{Digest as _, Keccak256};
+
+        // Build a real signed EIP-1559 transaction so the second-pass decode
+        // can recover the sender address and nonce.
+        let signing_key = SigningKey::random(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+        let pubkey = verifying_key.to_encoded_point(false);
+        let pubkey_hash = Keccak256::digest(&pubkey.as_bytes()[1..]);
+        let sender = Address::from_slice(&pubkey_hash[12..]);
+
+        let nonce: u64 = 0;
+        let tx_inner = TxEip1559 {
+            chain_id: 1,
+            nonce,
+            gas_limit: 21_000,
+            max_fee_per_gas: 1_000_000_000,
+            max_priority_fee_per_gas: 1_000_000_000,
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            access_list: Default::default(),
+            input: alloy_primitives::Bytes::new(),
+        };
+        let sig_hash = tx_inner.signature_hash();
+        let (sig_bytes, recovery_id) =
+            signing_key.sign_prehash_recoverable(sig_hash.as_slice()).unwrap();
+        let r = alloy_primitives::U256::from_be_slice(&sig_bytes.r().to_bytes());
+        let s = alloy_primitives::U256::from_be_slice(&sig_bytes.s().to_bytes());
+        let signature = alloy_primitives::Signature::new(r, s, recovery_id.is_y_odd());
+        let signed = tx_inner.into_signed(signature);
+        let envelope = TxEnvelope::from(signed);
+        let mut raw = Vec::new();
+        use alloy_eips::eip2718::Encodable2718 as _;
+        envelope.encode_2718(&mut raw);
+        let unknown_tx = Tx::new(alloy_primitives::Bytes::from(raw));
+
+        let pool = TransactionPool::new(PoolConfig::default());
+
+        // The transaction is NOT in the pool — it was finalised externally.
+        assert!(!pool.has_nonce(&sender, nonce));
+
+        // Prune with the raw Tx.  The second-pass decode should advance the
+        // sender's `next_nonce` even though `by_id` has no entry for it.
+        pool.prune(std::slice::from_ref(&unknown_tx));
+
+        // Now re-submitting the same-nonce transaction must be rejected.
+        let same_nonce_tx = make_ordered_tx(sender, nonce, 100);
+        let err = pool.add(same_nonce_tx).unwrap_err();
+        assert!(
+            matches!(err, TxPoolError::NonceTooLow { .. } | TxPoolError::NonceAlreadyInPool { .. }),
+            "expected NonceTooLow or NonceAlreadyInPool, got {err:?}"
+        );
     }
 }

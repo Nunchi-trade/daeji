@@ -23,22 +23,42 @@ pub const DEFAULT_REPLAY_BUFFER: usize = 1024 * 1024;
 pub const DEFAULT_WRITE_BUFFER: usize = 1024 * 1024;
 
 /// Default leader timeout (1 second).
+///
+/// Synchronized with [`kora_config::DEFAULT_SIMPLEX_LEADER_TIMEOUT_SECS`].
+/// Healthy views complete in ~7 ms; 1 s provides a 143x safety margin.
 pub const DEFAULT_LEADER_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Default notarization timeout (2 seconds).
+///
+/// Synchronized with [`kora_config::DEFAULT_SIMPLEX_CERTIFICATION_TIMEOUT_SECS`].
 pub const DEFAULT_NOTARIZATION_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Default nullify retry interval (5 seconds).
-pub const DEFAULT_NULLIFY_RETRY: Duration = Duration::from_secs(5);
+/// Default nullify retry interval (1 second).
+///
+/// Synchronized with [`kora_config::DEFAULT_SIMPLEX_TIMEOUT_RETRY_SECS`].
+/// Reduced from 5 s to match the production runner default, limiting the
+/// compounding penalty (`leader_timeout + N * timeout_retry`) when a
+/// nullification quorum requires multiple retry rounds.
+pub const DEFAULT_NULLIFY_RETRY: Duration = Duration::from_secs(1);
 
-/// Default fetch timeout (1 second).
-pub const DEFAULT_FETCH_TIMEOUT: Duration = Duration::from_secs(1);
+/// Default fetch timeout (2 seconds).
+///
+/// Synchronized with [`kora_config::DEFAULT_SIMPLEX_FETCH_TIMEOUT_SECS`].
+pub const DEFAULT_FETCH_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Default activity timeout (20 views).
-pub const DEFAULT_ACTIVITY_TIMEOUT: ViewDelta = ViewDelta::new(20);
+/// Default activity timeout (256 views).
+///
+/// Synchronized with [`kora_config::DEFAULT_SIMPLEX_ACTIVITY_TIMEOUT_VIEWS`].
+/// At ~135 views/sec, 20 views (~148 ms) was too aggressive; 256 views
+/// (~1.9 s) is realistic for detecting genuinely inactive peers.
+pub const DEFAULT_ACTIVITY_TIMEOUT: ViewDelta = ViewDelta::new(256);
 
-/// Default skip timeout (10 views).
-pub const DEFAULT_SKIP_TIMEOUT: ViewDelta = ViewDelta::new(10);
+/// Default skip timeout (32 views).
+///
+/// Synchronized with [`kora_config::DEFAULT_SIMPLEX_SKIP_TIMEOUT_VIEWS`].
+/// At ~135 views/sec, 10 views (~74 ms) was too fast; 32 views (~237 ms)
+/// provides adequate time for a healthy peer to respond.
+pub const DEFAULT_SKIP_TIMEOUT: ViewDelta = ViewDelta::new(32);
 
 /// Default number of concurrent fetch requests.
 pub const DEFAULT_FETCH_CONCURRENT: usize = 8;
@@ -140,23 +160,23 @@ mod tests {
     }
 
     #[test]
-    fn default_nullify_retry_is_5_seconds() {
-        assert_eq!(DEFAULT_NULLIFY_RETRY, Duration::from_secs(5));
+    fn default_nullify_retry_is_1_second() {
+        assert_eq!(DEFAULT_NULLIFY_RETRY, Duration::from_secs(1));
     }
 
     #[test]
-    fn default_fetch_timeout_is_1_second() {
-        assert_eq!(DEFAULT_FETCH_TIMEOUT, Duration::from_secs(1));
+    fn default_fetch_timeout_is_2_seconds() {
+        assert_eq!(DEFAULT_FETCH_TIMEOUT, Duration::from_secs(2));
     }
 
     #[test]
-    fn default_activity_timeout_is_20_views() {
-        assert_eq!(DEFAULT_ACTIVITY_TIMEOUT, ViewDelta::new(20));
+    fn default_activity_timeout_is_256_views() {
+        assert_eq!(DEFAULT_ACTIVITY_TIMEOUT, ViewDelta::new(256));
     }
 
     #[test]
-    fn default_skip_timeout_is_10_views() {
-        assert_eq!(DEFAULT_SKIP_TIMEOUT, ViewDelta::new(10));
+    fn default_skip_timeout_is_32_views() {
+        assert_eq!(DEFAULT_SKIP_TIMEOUT, ViewDelta::new(32));
     }
 
     #[test]

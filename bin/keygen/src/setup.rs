@@ -257,4 +257,59 @@ mod tests {
             assert_eq!(allocation.balance, GENESIS_BALANCE);
         }
     }
+
+    /// Regression test for issue #21: genesis block hash changes on every fresh deployment.
+    ///
+    /// Before the fix, `keygen setup` stamped `SystemTime::now()` into genesis.json as the
+    /// timestamp, causing every deployment to produce a different genesis block hash even
+    /// though the allocations were identical. After the fix the timestamp is always 0.
+    #[test]
+    fn genesis_timestamp_is_zero_for_deterministic_hash() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let args = SetupArgs {
+            validators: 4,
+            secondary_peers: 0,
+            chain_id: 1337,
+            output_dir: dir.path().to_path_buf(),
+            base_port: 30303,
+        };
+
+        run(args).expect("keygen setup should succeed");
+
+        let genesis_json =
+            fs::read_to_string(dir.path().join("genesis.json")).expect("genesis.json missing");
+        let genesis: GenesisConfig =
+            serde_json::from_str(&genesis_json).expect("genesis.json invalid JSON");
+
+        assert_eq!(genesis.timestamp, 0, "genesis timestamp must be 0 for a deterministic hash");
+    }
+
+    /// End-to-end regression test for issue #21: two independent `keygen setup` runs with the
+    /// same parameters must produce byte-identical genesis.json files.
+    ///
+    /// If wall-clock time were still stamped into the genesis this test would be flaky (failing
+    /// whenever the two runs happen to cross a second boundary) rather than reliably passing.
+    #[test]
+    fn setup_produces_identical_genesis_on_repeated_runs() {
+        let dir1 = tempfile::tempdir().expect("tempdir 1");
+        let dir2 = tempfile::tempdir().expect("tempdir 2");
+
+        let make_args = |output_dir: std::path::PathBuf| SetupArgs {
+            validators: 4,
+            secondary_peers: 0,
+            chain_id: 1337,
+            output_dir,
+            base_port: 30303,
+        };
+
+        run(make_args(dir1.path().to_path_buf())).expect("first setup run failed");
+        run(make_args(dir2.path().to_path_buf())).expect("second setup run failed");
+
+        let genesis1 =
+            fs::read_to_string(dir1.path().join("genesis.json")).expect("genesis1.json missing");
+        let genesis2 =
+            fs::read_to_string(dir2.path().join("genesis.json")).expect("genesis2.json missing");
+
+        assert_eq!(genesis1, genesis2, "genesis.json must be identical across repeated runs");
+    }
 }
