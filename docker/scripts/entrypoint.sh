@@ -165,13 +165,18 @@ case "$MODE" in
         cp "${SHARED_DIR}/genesis.json" "${DATA_DIR}/" 2>/dev/null || true
 
         # Detect whether this is a first startup or a restart by checking
-        # for the commit marker on the persistent /data volume. If it exists,
-        # the node has finalized at least one block previously and does not
-        # need the bootstrap peer or the startup barrier to proceed.
-        # DO NOT use archive or QMDB paths -- those live on tmpfs (/runtime)
-        # and are wiped on every container restart.
-        if [[ -f "${DATA_DIR}/last_committed_digest" ]]; then
-            log "Restart detected (last_committed_digest exists), skipping barrier and bootstrap wait"
+        # for the DKG share key on the persistent /data volume. The share key
+        # is written during the DKG ceremony and persists across container
+        # restarts. If it exists, the node has completed initial setup and does
+        # not need the bootstrap peer or the startup barrier to proceed --
+        # the Commonware P2P layer handles peer reconnection internally.
+        #
+        # We use share.key rather than last_committed_digest because a node
+        # that crashes before finalizing its first block will have share.key
+        # but no last_committed_digest, and should still skip the barrier and
+        # bootstrap wait on restart.
+        if [[ -f "${DATA_DIR}/share.key" && -f "${DATA_DIR}/output.json" ]]; then
+            log "Restart detected (share.key exists), skipping barrier and bootstrap wait"
         else
             # First startup -- wait for all validators to be ready before
             # starting consensus. This prevents height drift caused by
@@ -214,11 +219,14 @@ case "$MODE" in
         if [[ "$IS_BOOTSTRAP" != "true" && -n "$BOOTSTRAP_PEERS" ]]; then
             # Only wait for bootstrap on first startup. On restarts, the
             # P2P layer handles reconnection internally.
-            if [[ ! -f "${DATA_DIR}/.bootstrap_done" ]]; then
+            # Use validator.key as the restart signal -- it is written during
+            # keygen setup and persists across container restarts. Secondary
+            # nodes do not have a share.key (no BLS participation), so
+            # validator.key is the earliest reliable persistent marker.
+            if [[ ! -f "${DATA_DIR}/validator.key" ]]; then
                 wait_for_any_bootstrap "$BOOTSTRAP_PEERS"
-                touch "${DATA_DIR}/.bootstrap_done"
             else
-                log "Restart detected (.bootstrap_done exists), skipping bootstrap peer wait"
+                log "Restart detected (validator.key exists), skipping bootstrap peer wait"
             fi
         fi
 
