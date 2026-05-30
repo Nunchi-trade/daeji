@@ -1,6 +1,6 @@
 //! State change tracking with merge capability.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use alloy_primitives::{Address, B256, U256};
 
@@ -9,6 +9,12 @@ use alloy_primitives::{Address, B256, U256};
 pub struct ChangeSet {
     /// Account changes keyed by address.
     pub accounts: BTreeMap<Address, AccountUpdate>,
+    /// Secondary index: code hash -> code bytes for O(1) code lookups.
+    ///
+    /// Populated automatically by [`insert`](Self::insert) and
+    /// [`merge`](Self::merge) when an [`AccountUpdate`] carries deployed
+    /// bytecode (`code: Some(...)`).
+    pub code_by_hash: HashMap<B256, Vec<u8>>,
 }
 
 impl ChangeSet {
@@ -30,6 +36,9 @@ impl ChangeSet {
 
     /// Merge another change set into this one.
     pub fn merge(&mut self, other: Self) {
+        // Absorb the other set's code index entries.
+        self.code_by_hash.extend(other.code_by_hash);
+
         for (address, update) in other.accounts {
             if let Some(existing) = self.accounts.get_mut(&address) {
                 existing.merge(update);
@@ -41,6 +50,11 @@ impl ChangeSet {
 
     /// Insert or update an account.
     pub fn insert(&mut self, address: Address, update: AccountUpdate) {
+        // Populate the code index when new bytecode is present.
+        if let Some(code) = &update.code {
+            self.code_by_hash.insert(update.code_hash, code.clone());
+        }
+
         if let Some(existing) = self.accounts.get_mut(&address) {
             existing.merge(update);
         } else {
@@ -163,5 +177,65 @@ mod tests {
 
         assert!(update.selfdestructed);
         assert!(update.storage.is_empty());
+    }
+
+    #[test]
+    fn insert_populates_code_by_hash() {
+        let mut cs = ChangeSet::new();
+        let code_hash = B256::repeat_byte(0xAA);
+        let code_bytes = vec![0x60, 0x00];
+        cs.insert(
+            Address::repeat_byte(0x01),
+            AccountUpdate {
+                created: true,
+                selfdestructed: false,
+                nonce: 0,
+                balance: U256::ZERO,
+                code_hash,
+                code: Some(code_bytes.clone()),
+                storage: BTreeMap::new(),
+            },
+        );
+        assert_eq!(cs.code_by_hash.get(&code_hash).unwrap(), &code_bytes);
+    }
+
+    #[test]
+    fn merge_propagates_code_by_hash() {
+        let mut cs1 = ChangeSet::new();
+        let mut cs2 = ChangeSet::new();
+
+        let hash1 = B256::repeat_byte(0x11);
+        let hash2 = B256::repeat_byte(0x22);
+        let code1 = vec![0x01];
+        let code2 = vec![0x02];
+
+        cs1.insert(
+            Address::repeat_byte(0x01),
+            AccountUpdate {
+                created: true,
+                selfdestructed: false,
+                nonce: 0,
+                balance: U256::ZERO,
+                code_hash: hash1,
+                code: Some(code1.clone()),
+                storage: BTreeMap::new(),
+            },
+        );
+        cs2.insert(
+            Address::repeat_byte(0x02),
+            AccountUpdate {
+                created: true,
+                selfdestructed: false,
+                nonce: 0,
+                balance: U256::ZERO,
+                code_hash: hash2,
+                code: Some(code2.clone()),
+                storage: BTreeMap::new(),
+            },
+        );
+
+        cs1.merge(cs2);
+        assert_eq!(cs1.code_by_hash.get(&hash1).unwrap(), &code1);
+        assert_eq!(cs1.code_by_hash.get(&hash2).unwrap(), &code2);
     }
 }

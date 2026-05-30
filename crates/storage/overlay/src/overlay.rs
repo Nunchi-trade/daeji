@@ -99,12 +99,10 @@ impl<S: StateDbRead> StateDbRead for OverlayState<S> {
         let base = self.base.clone();
         let changes = Arc::clone(&self.changes);
         async move {
-            for update in changes.accounts.values() {
-                if update.code_hash == code_hash
-                    && let Some(code) = &update.code
-                {
-                    return Ok(Bytes::from(code.clone()));
-                }
+            // O(1) lookup via the secondary code-hash index instead of
+            // scanning all accounts (previous O(N) linear scan).
+            if let Some(code) = changes.code_by_hash.get(&code_hash) {
+                return Ok(Bytes::from(code.clone()));
             }
             base.code(&code_hash).await
         }
@@ -144,7 +142,8 @@ impl<S: StateDbWrite> StateDbWrite for OverlayState<S> {
         let base = self.base.clone();
         let overlay = Arc::clone(&self.changes);
         async move {
-            let mut merged = (*overlay).clone();
+            // Avoid a full deep-clone when we hold the only Arc reference.
+            let mut merged = Arc::try_unwrap(overlay).unwrap_or_else(|arc| (*arc).clone());
             merged.merge(changes);
             base.commit(merged).await
         }
@@ -158,7 +157,8 @@ impl<S: StateDbWrite> StateDbWrite for OverlayState<S> {
         let overlay = Arc::clone(&self.changes);
         let changes = changes.clone();
         async move {
-            let mut merged = (*overlay).clone();
+            // Avoid a full deep-clone when we hold the only Arc reference.
+            let mut merged = Arc::try_unwrap(overlay).unwrap_or_else(|arc| (*arc).clone());
             merged.merge(changes);
             base.compute_root(&merged).await
         }
@@ -440,7 +440,7 @@ mod tests {
 
         let base = MockStateDb::new();
         let mut changes = ChangeSet::new();
-        changes.accounts.insert(
+        changes.insert(
             addr,
             AccountUpdate {
                 created: true,
@@ -488,7 +488,7 @@ mod tests {
 
         let base = MockStateDb::new();
         let mut changes = ChangeSet::new();
-        changes.accounts.insert(
+        changes.insert(
             addr,
             AccountUpdate {
                 created: true,
