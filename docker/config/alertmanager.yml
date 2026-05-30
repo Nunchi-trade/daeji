@@ -1,0 +1,19 @@
+# Alertmanager configuration for Kora devnet.
+# Override receiver URLs via environment or by replacing this file in production.
+route:
+  receiver: 'default'
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: 'default'
+    # Configure at least one receiver before deploying to production.
+    # Examples:
+    #   webhook_configs:
+    #     - url: 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK'
+    #   email_configs:
+    #     - to: 'ops@example.com'
+    #       from: 'alertmanager@example.com'
+    #       smarthost: 'smtp.example.com:587'
