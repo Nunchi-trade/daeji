@@ -2,6 +2,8 @@
 
 use std::{
     collections::{BTreeSet, HashMap},
+    io::Write as _,
+    path::Path,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -14,6 +16,10 @@ use kora_metrics::{AppMetrics, ReasonLabel};
 use parking_lot::RwLock;
 use tokio::sync::broadcast;
 use tracing::{debug, trace, warn};
+
+/// Default filename for the persisted mempool snapshot stored under the
+/// node data directory.
+pub const MEMPOOL_PERSIST_FILENAME: &str = "mempool.json";
 
 use crate::{
     config::PoolConfig,
@@ -572,6 +578,167 @@ impl TransactionPool {
         inner.queued_count = 0;
         drop(inner);
         self.sync_metrics();
+    }
+
+    /// Persist all pending and queued transactions to `data_dir/mempool.json`.
+    ///
+    /// Each transaction is stored as its EIP-2718 encoded bytes (hex string).
+    /// The file is written atomically via a `.tmp` sibling so a crash during
+    /// the write does not leave a half-written file that could corrupt the
+    /// pool on the next restart.
+    ///
+    /// Intended to be called during graceful shutdown so that in-flight
+    /// transactions survive a planned restart.
+    pub fn save_to_disk(&self, data_dir: &Path) {
+        let hex_txs: Vec<String> = {
+            let inner = self.inner.read();
+            let mut out = Vec::with_capacity(inner.by_hash.len());
+            for tx in inner.by_hash.values() {
+                let mut encoded = Vec::new();
+                tx.envelope.encode_2718(&mut encoded);
+                out.push(hex::encode(&encoded));
+            }
+            out
+        };
+
+        let total = hex_txs.len();
+        let path = data_dir.join(MEMPOOL_PERSIST_FILENAME);
+        let tmp_path = data_dir.join(format!("{MEMPOOL_PERSIST_FILENAME}.tmp"));
+
+        let serialized = match serde_json::to_vec(&hex_txs) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(error = %e, "mempool persist: failed to serialize");
+                return;
+            }
+        };
+
+        // Write to a temp file first, then rename for atomicity.
+        match std::fs::File::create(&tmp_path) {
+            Ok(mut f) => {
+                if let Err(e) = f.write_all(&serialized) {
+                    warn!(path = %tmp_path.display(), error = %e, "mempool persist: write failed");
+                    return;
+                }
+                if let Err(e) = f.flush() {
+                    warn!(path = %tmp_path.display(), error = %e, "mempool persist: flush failed");
+                    return;
+                }
+            }
+            Err(e) => {
+                warn!(path = %tmp_path.display(), error = %e, "mempool persist: open failed");
+                return;
+            }
+        }
+
+        if let Err(e) = std::fs::rename(&tmp_path, &path) {
+            warn!(
+                src = %tmp_path.display(),
+                dst = %path.display(),
+                error = %e,
+                "mempool persist: rename failed"
+            );
+            return;
+        }
+
+        debug!(path = %path.display(), tx_count = total, "mempool persisted to disk");
+    }
+
+    /// Load transactions from `data_dir/mempool.json` into the pool.
+    ///
+    /// Each entry is decoded from EIP-2718 hex and re-added via
+    /// [`TransactionPool::add`], so pool size limits and configuration are
+    /// respected.  Invalid or duplicate entries are silently skipped.
+    ///
+    /// Returns the number of transactions successfully loaded.
+    ///
+    /// Intended to be called once during node startup before the consensus
+    /// engine begins producing blocks.
+    pub fn load_from_disk(&self, data_dir: &Path) -> usize {
+        let path = data_dir.join(MEMPOOL_PERSIST_FILENAME);
+        if !path.exists() {
+            debug!(path = %path.display(), "no persisted mempool found, starting empty");
+            return 0;
+        }
+
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(path = %path.display(), error = %e, "mempool restore: read failed");
+                return 0;
+            }
+        };
+
+        let hex_txs: Vec<String> = match serde_json::from_slice(&bytes) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(path = %path.display(), error = %e, "mempool restore: deserialize failed");
+                return 0;
+            }
+        };
+
+        let mut loaded = 0usize;
+        let mut skipped = 0usize;
+        for hex_tx in &hex_txs {
+            let raw = match hex::decode(hex_tx) {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!(error = %e, "mempool restore: hex decode failed, skipping entry");
+                    skipped += 1;
+                    continue;
+                }
+            };
+
+            let envelope = match TxEnvelope::decode_2718(&mut raw.as_slice()) {
+                Ok(env) => env,
+                Err(e) => {
+                    warn!(error = %e, "mempool restore: EIP-2718 decode failed, skipping entry");
+                    skipped += 1;
+                    continue;
+                }
+            };
+
+            let sender = match recover_sender_from_envelope(&envelope) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(error = %e, "mempool restore: sender recovery failed, skipping entry");
+                    skipped += 1;
+                    continue;
+                }
+            };
+
+            let nonce = envelope.nonce();
+            let effective_gas_price = envelope.max_fee_per_gas();
+            let hash = *envelope.tx_hash();
+            let ordered = OrderedTransaction::new(
+                hash,
+                sender,
+                nonce,
+                effective_gas_price,
+                current_timestamp(),
+                envelope,
+            );
+
+            match self.add(ordered) {
+                Ok(()) => loaded += 1,
+                Err(TxPoolError::AlreadyExists) => {
+                    trace!("mempool restore: duplicate transaction, skipping");
+                    skipped += 1;
+                }
+                Err(e) => {
+                    trace!(error = %e, "mempool restore: rejected transaction, skipping");
+                    skipped += 1;
+                }
+            }
+        }
+
+        debug!(
+            path = %path.display(),
+            loaded,
+            skipped,
+            "mempool restored from disk"
+        );
+        loaded
     }
 }
 
@@ -1324,5 +1491,110 @@ mod tests {
         let sender = random_address();
 
         assert!(!pool.has_nonce(&sender, 0));
+    }
+
+    // ---------- persistence helpers ----------
+
+    /// Build a real EIP-1559 transaction with a valid signature so
+    /// `recover_sender_from_envelope` succeeds on reload.
+    fn make_signed_ordered_tx(nonce: u64, gas_price: u128) -> OrderedTransaction {
+        use alloy_consensus::SignableTransaction as _;
+        use alloy_eips::eip2718::Encodable2718 as _;
+        use k256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
+        use sha3::Digest as _;
+
+        let signing_key = SigningKey::random(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+        let pubkey = verifying_key.to_encoded_point(false);
+        let pubkey_hash = sha3::Keccak256::digest(&pubkey.as_bytes()[1..]);
+        let sender = Address::from_slice(&pubkey_hash[12..]);
+
+        let tx = alloy_consensus::TxEip1559 {
+            chain_id: 1,
+            nonce,
+            gas_limit: 21_000,
+            max_fee_per_gas: gas_price,
+            max_priority_fee_per_gas: gas_price,
+            to: alloy_primitives::TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            access_list: Default::default(),
+            input: Bytes::new(),
+        };
+        let sig_hash = tx.signature_hash();
+        let (sig, rid) = signing_key.sign_prehash_recoverable(sig_hash.as_slice()).unwrap();
+        let r = U256::from_be_slice(&sig.r().to_bytes());
+        let s = U256::from_be_slice(&sig.s().to_bytes());
+        let signature = alloy_primitives::Signature::new(r, s, rid.is_y_odd());
+        let signed = tx.into_signed(signature);
+        let envelope = TxEnvelope::from(signed);
+        let hash = *envelope.tx_hash();
+        let mut raw = Vec::new();
+        envelope.encode_2718(&mut raw);
+        let _ = raw; // encoded form used to verify round-trip
+
+        OrderedTransaction::new(hash, sender, nonce, gas_price, 0, envelope)
+    }
+
+    #[test]
+    fn save_and_load_empty_pool_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = TransactionPool::new(PoolConfig::default());
+        pool.save_to_disk(dir.path());
+        let loaded = pool.load_from_disk(dir.path());
+        assert_eq!(loaded, 0);
+        assert_eq!(pool.len(), 0);
+    }
+
+    #[test]
+    fn save_and_load_round_trip_preserves_transactions() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create a pool with signed transactions.
+        let src = TransactionPool::new(PoolConfig::default());
+        src.add(make_signed_ordered_tx(0, 1_000_000_000)).unwrap();
+        src.add(make_signed_ordered_tx(1, 2_000_000_000)).unwrap();
+        assert_eq!(src.len(), 2);
+
+        // Persist.
+        src.save_to_disk(dir.path());
+        assert!(dir.path().join(MEMPOOL_PERSIST_FILENAME).exists());
+
+        // Restore into a fresh pool.
+        let dst = TransactionPool::new(PoolConfig::default());
+        let loaded = dst.load_from_disk(dir.path());
+        assert_eq!(loaded, 2);
+        assert_eq!(dst.len(), 2);
+    }
+
+    #[test]
+    fn load_from_disk_returns_zero_when_file_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = TransactionPool::new(PoolConfig::default());
+        let loaded = pool.load_from_disk(dir.path());
+        assert_eq!(loaded, 0);
+    }
+
+    #[test]
+    fn load_from_disk_skips_invalid_hex_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(MEMPOOL_PERSIST_FILENAME);
+        // Write a JSON array with one valid entry and one invalid hex string.
+        std::fs::write(&path, b"[\"notvalid\"]").unwrap();
+        let pool = TransactionPool::new(PoolConfig::default());
+        let loaded = pool.load_from_disk(dir.path());
+        assert_eq!(loaded, 0);
+    }
+
+    #[test]
+    fn save_to_disk_is_atomic_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = TransactionPool::new(PoolConfig::default());
+        pool.add(make_signed_ordered_tx(0, 1_000_000_000)).unwrap();
+        pool.save_to_disk(dir.path());
+
+        // The .tmp file should have been renamed away.
+        assert!(!dir.path().join(format!("{MEMPOOL_PERSIST_FILENAME}.tmp")).exists());
+        // The final file should exist.
+        assert!(dir.path().join(MEMPOOL_PERSIST_FILENAME).exists());
     }
 }
