@@ -43,7 +43,7 @@ use kora_overlay::OverlayState;
 use kora_qmdb_ledger::QmdbState;
 use kora_rpc::{MempoolEventSender, NodeState};
 use thiserror::Error;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 #[cfg(test)]
 fn run_reporter_test<F, Fut>(f: F)
@@ -621,11 +621,16 @@ fn publish_mempool_inclusions(mempool_broadcast: Option<&MempoolEventSender>, bl
 
     let block_hash = block.id().0;
     for tx in &block.txs {
-        let _ = sender.send(MempoolEvent::TxIncluded {
-            hash: keccak256(&tx.bytes),
-            block_number: block.height,
-            block_hash,
-        });
+        if sender
+            .send(MempoolEvent::TxIncluded {
+                hash: keccak256(&tx.bytes),
+                block_number: block.height,
+                block_hash,
+            })
+            .is_err()
+        {
+            debug!("no active subscribers for mempool TxIncluded event");
+        }
     }
 }
 
@@ -1052,7 +1057,12 @@ fn index_finalized_block(
 ) {
     let block_hash = block.id().0;
     let transaction_hashes = block.txs.iter().map(|tx| keccak256(&tx.bytes)).collect::<Vec<_>>();
-    let tx_metadata = block.txs.iter().map(|tx| decode_tx_metadata(&tx.bytes)).collect::<Vec<_>>();
+    let tx_metadata = block
+        .txs
+        .iter()
+        .enumerate()
+        .map(|(tx_index, tx)| decode_tx_metadata(&tx.bytes, block.height, tx_index))
+        .collect::<Vec<_>>();
 
     // Approximate block size: fixed header overhead + sum of raw transaction sizes.
     // An Ethereum block header is ~508 bytes RLP-encoded; we use 508 as the
@@ -1196,18 +1206,19 @@ fn index_finalized_block(
     index.insert_block(indexed_block, indexed_txs, indexed_receipts);
 }
 
-fn decode_tx_metadata(tx_bytes: &Bytes) -> Option<TxMetadata> {
+fn decode_tx_metadata(tx_bytes: &Bytes, block_height: u64, tx_index: usize) -> Option<TxMetadata> {
     let envelope = match TxEnvelope::decode_2718(&mut tx_bytes.as_ref()) {
         Ok(envelope) => envelope,
         Err(err) => {
-            warn!(error = %err, "failed to decode finalized transaction for indexing");
+            warn!(block_height, tx_index, error = %err, "failed to decode finalized transaction for indexing");
             return None;
         }
     };
+    let tx_hash = alloy_primitives::keccak256(tx_bytes);
     let from = match envelope.recover_signer() {
         Ok(from) => from,
         Err(err) => {
-            warn!(error = %err, "failed to recover finalized transaction sender for indexing");
+            warn!(block_height, tx_index, ?tx_hash, error = %err, "failed to recover finalized transaction sender for indexing");
             return None;
         }
     };

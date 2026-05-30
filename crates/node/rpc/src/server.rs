@@ -71,24 +71,51 @@ fn build_cors_layer(config: &CorsConfig) -> CorsLayer {
     if config.allowed_origins.len() == 1 && config.allowed_origins[0] == "*" {
         layer = layer.allow_origin(Any);
     } else {
-        let origins: Vec<_> =
-            config.allowed_origins.iter().filter_map(|o| o.parse().ok()).collect();
+        let origins: Vec<_> = config
+            .allowed_origins
+            .iter()
+            .filter_map(|o| match o.parse() {
+                Ok(origin) => Some(origin),
+                Err(err) => {
+                    warn!(origin = %o, error = %err, "invalid CORS origin in config, skipping");
+                    None
+                }
+            })
+            .collect();
         layer = layer.allow_origin(AllowOrigin::list(origins));
     }
 
     if config.allowed_methods.iter().any(|m| m == "*") {
         layer = layer.allow_methods(Any);
     } else {
-        let methods: Vec<_> =
-            config.allowed_methods.iter().filter_map(|m| m.parse().ok()).collect();
+        let methods: Vec<_> = config
+            .allowed_methods
+            .iter()
+            .filter_map(|m| match m.parse() {
+                Ok(method) => Some(method),
+                Err(err) => {
+                    warn!(method = %m, error = %err, "invalid CORS method in config, skipping");
+                    None
+                }
+            })
+            .collect();
         layer = layer.allow_methods(methods);
     }
 
     if config.allowed_headers.iter().any(|h| h == "*") {
         layer = layer.allow_headers(Any);
     } else {
-        let headers: Vec<_> =
-            config.allowed_headers.iter().filter_map(|h| h.parse().ok()).collect();
+        let headers: Vec<_> = config
+            .allowed_headers
+            .iter()
+            .filter_map(|h| match h.parse() {
+                Ok(header) => Some(header),
+                Err(err) => {
+                    warn!(header = %h, error = %err, "invalid CORS header in config, skipping");
+                    None
+                }
+            })
+            .collect();
         layer = layer.allow_headers(headers);
     }
 
@@ -748,7 +775,13 @@ impl std::fmt::Debug for RpcServerHandle {
 impl RpcServerHandle {
     /// Wait for both servers to complete.
     pub async fn stopped(self) {
-        let _ = tokio::join!(self.http_handle, self.jsonrpc_handle);
+        let (http_result, jsonrpc_result) = tokio::join!(self.http_handle, self.jsonrpc_handle);
+        if let Err(err) = http_result {
+            error!(error = %err, "HTTP server task failed");
+        }
+        if let Err(err) = jsonrpc_result {
+            error!(error = %err, "JSON-RPC server task failed");
+        }
     }
 
     /// Abort both servers.

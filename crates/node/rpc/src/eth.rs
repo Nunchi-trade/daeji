@@ -17,7 +17,7 @@ use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use kora_domain::MempoolEvent;
 use kora_txpool::TransactionPool;
 use tokio::sync::RwLock;
-use tracing::warn;
+use tracing::{trace, warn};
 
 use crate::{
     error::RpcError,
@@ -949,22 +949,30 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
 
 impl<S: StateProvider> EthApiImpl<S> {
     fn broadcast_pending_tx(&self, tx_hash: B256, pending_tx: RpcTransaction) {
-        if let Some(sender) = &self.pending_tx_broadcast {
-            let _ = sender.send(PendingTxEvent::Added(PendingTxInfo {
-                hash: tx_hash,
-                full_tx: Some(pending_tx.clone()),
-            }));
+        if let Some(sender) = &self.pending_tx_broadcast
+            && sender
+                .send(PendingTxEvent::Added(PendingTxInfo {
+                    hash: tx_hash,
+                    full_tx: Some(pending_tx.clone()),
+                }))
+                .is_err()
+        {
+            trace!("no active subscribers for pending transaction event");
         }
 
-        if let Some(sender) = &self.mempool_broadcast {
-            let _ = sender.send(MempoolEvent::TxAdded {
-                hash: tx_hash,
-                from: pending_tx.from,
-                to: pending_tx.to,
-                value: pending_tx.value,
-                gas_price: pending_tx.gas_price,
-                nonce: pending_tx.nonce.to::<u64>(),
-            });
+        if let Some(sender) = &self.mempool_broadcast
+            && sender
+                .send(MempoolEvent::TxAdded {
+                    hash: tx_hash,
+                    from: pending_tx.from,
+                    to: pending_tx.to,
+                    value: pending_tx.value,
+                    gas_price: pending_tx.gas_price,
+                    nonce: pending_tx.nonce.to::<u64>(),
+                })
+                .is_err()
+        {
+            trace!("no active subscribers for mempool TxAdded event");
         }
     }
 }

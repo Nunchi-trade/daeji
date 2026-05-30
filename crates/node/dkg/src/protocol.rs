@@ -593,8 +593,8 @@ impl DkgParticipant {
                     && dealer == self.config.my_public_key()
                 {
                     debug!(?player, "Received player ack");
-                    if let Err(e) = our_dealer.receive_player_ack(player, ack) {
-                        warn!(?e, "Failed to process player ack");
+                    if let Err(e) = our_dealer.receive_player_ack(player.clone(), ack) {
+                        warn!(?player, error = ?e, "failed to process player ack for our dealer");
                     }
                 }
             }

@@ -309,7 +309,15 @@ impl LedgerView {
             let inner = self.inner.lock().await;
             inner.snapshots.get(&digest)
         }?;
-        snapshot.state.balance(&address).await.ok()
+        snapshot
+            .state
+            .balance(&address)
+            .await
+            .map_err(|err| {
+                tracing::warn!(?digest, ?address, error = ?err, "balance query failed against snapshot state");
+                err
+            })
+            .ok()
     }
 
     /// Query a state root at the given digest.
