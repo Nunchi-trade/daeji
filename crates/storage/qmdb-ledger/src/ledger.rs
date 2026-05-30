@@ -63,6 +63,9 @@ impl QmdbLedger {
     /// Runs a cross-partition consistency check before proceeding. If the
     /// partitions have mismatched commit sequences (indicating a partial commit
     /// from a previous crash), initialization will fail with an error.
+    ///
+    /// Genesis is only applied on a fresh database (commit sequence == 0).
+    /// On restart the existing state is preserved.
     pub async fn init_with_genesis(
         context: Context,
         config: QmdbConfig,
@@ -86,8 +89,13 @@ impl QmdbLedger {
         let handle =
             Handle::from_store(store).with_root_provider(Arc::new(RwLock::new(root_provider)));
 
-        if apply_genesis {
+        // Guard: only apply genesis on a fresh database (no prior commits).
+        // Re-applying genesis on restart would overwrite balances / nonces
+        // that have been modified since the initial boot.
+        if apply_genesis && starting_seq == 0 {
             handle.init_genesis(genesis_alloc).await?;
+        } else if apply_genesis {
+            info!(commit_seq = starting_seq, "skipping genesis application on existing database");
         }
         Ok(Self { handle })
     }
@@ -109,8 +117,13 @@ impl QmdbLedger {
     }
 
     /// Commits the provided changes to QMDB and returns the resulting root.
+    ///
+    /// Only acquires the `write()` RwLock (not `storage_access()`) because
+    /// this method operates directly on the store and does not go through
+    /// the root provider.  Acquiring both would risk lock-ordering deadlocks
+    /// with [`StateDbWrite::commit`] which also acquires both in the same
+    /// order.
     pub async fn commit_changes(&self, changes: QmdbChangeSet) -> Result<StateRoot, Error> {
-        let _storage_access = self.handle.storage_access().await;
         let mut store = self.handle.write().await;
         store
             .commit_changes(changes)
