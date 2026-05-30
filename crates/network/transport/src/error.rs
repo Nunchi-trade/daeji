@@ -34,6 +34,36 @@ pub enum TransportError {
     /// Failed to parse port.
     #[error("invalid port: {0}")]
     InvalidPort(String),
+
+    /// Duplicate validator binding in the Iroh validator adapter config.
+    #[cfg(feature = "transport-iroh")]
+    #[error("duplicate Iroh validator binding for validator public key: {0}")]
+    DuplicateIrohValidatorBinding(String),
+
+    /// Duplicate Iroh node id in the validator adapter config.
+    #[cfg(feature = "transport-iroh")]
+    #[error("duplicate Iroh node binding: {0}")]
+    DuplicateIrohNodeBinding(String),
+
+    /// Missing Iroh node binding for a validator public key.
+    #[cfg(feature = "transport-iroh")]
+    #[error("missing Iroh validator binding for validator public key: {0}")]
+    MissingIrohValidatorBinding(String),
+
+    /// Iroh channel frame is too short to contain its header.
+    #[cfg(feature = "transport-iroh")]
+    #[error("invalid Iroh channel frame: header is incomplete")]
+    InvalidIrohFrameHeader,
+
+    /// Iroh channel frame payload length does not match its header.
+    #[cfg(feature = "transport-iroh")]
+    #[error("invalid Iroh channel frame: declared payload length {declared}, actual {actual}")]
+    InvalidIrohFrameLength {
+        /// Declared payload length.
+        declared: usize,
+        /// Actual payload length.
+        actual: usize,
+    },
 }
 
 #[cfg(test)]

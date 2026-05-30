@@ -16,9 +16,17 @@ From the repository root:
 # Production-like devnet with interactive DKG ceremony
 just devnet
 
+# Iroh-only validator devnet target
+just devnet-iroh
+
 # Fast devnet with trusted dealer (for quick iteration)
 just trusted-devnet
 ```
+
+`just devnet-iroh` is intentionally fail-closed until the Iroh-backed validator
+transport is wired through the runtime. PR #47 only adds the adapter planning
+primitives; launching the existing Commonware devnet under an Iroh name would be
+misleading.
 
 ### Interactive DKG (default)
 1. Build the Docker image
@@ -44,6 +52,7 @@ Run from repository root (`just <cmd>`) or from `docker/` directory (`just <cmd>
 | Command | Description |
 |---------|-------------|
 | `just devnet` | Start devnet with interactive DKG (production-like) |
+| `just devnet-iroh` | Fail-closed placeholder for the future Iroh-only validator devnet |
 | `just trusted-devnet` | Start devnet with trusted dealer DKG (fast, insecure) |
 | `just devnet-down` | Stop all containers (preserves keys/config volumes; runtime state is ephemeral) |
 | `just devnet-reset` | Stop and delete all state (fresh DKG on next start) |
@@ -59,6 +68,7 @@ Run from repository root (`just <cmd>`) or from `docker/` directory (`just <cmd>
 | `just build` | Build the Docker image |
 | `just build-fresh` | Build the Docker image without cache |
 | `just devnet` | Start devnet with interactive DKG (production-like) |
+| `just devnet-iroh` | Fail-closed placeholder for the future Iroh-only validator devnet |
 | `just trusted-devnet` | Start devnet with trusted dealer DKG (fast, insecure) |
 | `just devnet-minimal` | Start devnet without observability stack |
 | `just down` | Stop all containers (preserves keys/config volumes; runtime state is ephemeral) |

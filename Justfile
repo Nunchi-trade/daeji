@@ -57,6 +57,10 @@ clean:
 devnet:
     cd docker && just devnet
 
+# Start an Iroh-only validator devnet with interactive DKG
+devnet-iroh:
+    cd docker && just devnet-iroh
+
 # Start the devnet with trusted dealer DKG (fast, insecure, for local dev)
 trusted-devnet:
     cd docker && just trusted-devnet

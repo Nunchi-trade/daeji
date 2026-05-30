@@ -13,6 +13,23 @@ build-fresh:
 devnet:
     ./scripts/devnet-run.sh --interactive-dkg
 
+# Start devnet with Iroh-only validator networking and interactive DKG
+devnet-iroh:
+    @echo "Iroh-only validator devnet is not wired yet."
+    @echo ""
+    @echo "PR #47 currently contains the compile-safe adapter scaffold:"
+    @echo "  - validator identity -> Iroh node binding"
+    @echo "  - explicit all-to-all fanout planning"
+    @echo "  - channel frame encode/decode for future QUIC streams"
+    @echo ""
+    @echo "Missing before this command can start a real network:"
+    @echo "  - an Iroh-backed NetworkTransportProvider"
+    @echo "  - DKG transport wiring over that provider"
+    @echo "  - docker config for Iroh validator node IDs and relays"
+    @echo ""
+    @echo "Refusing to launch the Commonware devnet under an Iroh name."
+    @exit 1
+
 # Start devnet with trusted dealer DKG (fast, insecure, for local dev)
 trusted-devnet:
     ./scripts/devnet-run.sh
