@@ -1,7 +1,7 @@
 //! Ethereum JSON-RPC API implementation.
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     future::Future,
     pin::Pin,
     sync::Arc,
@@ -43,6 +43,15 @@ const DEFAULT_MAX_GAS_PRICE: u64 = 500 * GWEI;
 /// under sustained load when transactions are submitted faster than they
 /// are finalized and queried.
 const MAX_PENDING_TXS: usize = 10_000;
+
+/// Maximum block range for a single log filter poll.
+///
+/// Mirrors `MAX_LOG_BLOCK_RANGE` in `indexed_provider.rs`. When
+/// `eth_getFilterChanges` encounters a range larger than this, it caps
+/// the scan and advances the cursor only to the capped boundary so the
+/// client catches up over successive polls instead of hitting a
+/// downstream error or triggering an unbounded scan.
+const MAX_FILTER_LOG_BLOCK_RANGE: u64 = 10_000;
 
 /// Ethereum JSON-RPC API trait.
 ///
@@ -753,7 +762,6 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
     }
 
     async fn new_pending_transaction_filter(&self) -> RpcResult<U256> {
-        let known_hashes = self.pending_txs.read().await.keys().copied().collect();
         // Read `evicted` and `order.len()` under the same lock to avoid a
         // race where an eviction between the two reads would shift the
         // cursor. This is consistent with `send_raw_transaction`'s lock
@@ -763,8 +771,7 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
             let evicted = self.pending_tx_evicted.load(std::sync::atomic::Ordering::Relaxed);
             evicted + order.len()
         };
-        let id =
-            self.filter_store.create(Filter::PendingTransaction { known_hashes, last_seen_index });
+        let id = self.filter_store.create(Filter::PendingTransaction { last_seen_index });
         Ok(U256::from(id))
     }
 
@@ -776,7 +783,7 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
         enum FilterSnapshot {
             Log { criteria: RpcLogFilter, last_poll_block: Option<u64> },
             Block { last_poll_block: u64 },
-            PendingTx { known_hashes: HashSet<B256>, last_seen_index: usize },
+            PendingTx { last_seen_index: usize },
         }
 
         let snapshot = {
@@ -789,11 +796,8 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
                 Filter::Block { last_poll_block } => {
                     FilterSnapshot::Block { last_poll_block: *last_poll_block }
                 }
-                Filter::PendingTransaction { known_hashes, last_seen_index } => {
-                    FilterSnapshot::PendingTx {
-                        known_hashes: known_hashes.clone(),
-                        last_seen_index: *last_seen_index,
-                    }
+                Filter::PendingTransaction { last_seen_index } => {
+                    FilterSnapshot::PendingTx { last_seen_index: *last_seen_index }
                 }
             }
         };
@@ -812,7 +816,7 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
                 // Preserve the original `to_block` / `block_hash`.
                 // Only override `from_block` to advance the cursor, and
                 // only cap `to_block` at head when no fixed bound was set.
-                let changes_filter = if criteria.block_hash.is_some() {
+                if criteria.block_hash.is_some() {
                     // block_hash filters are single-block and already returned
                     // their results on the first poll (when last_poll_block was
                     // None). Subsequent polls always return empty.
@@ -820,32 +824,47 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
                         entry.touch();
                         return Ok(FilterChanges::Logs(Vec::new()));
                     }
-                    criteria.clone()
-                } else {
-                    let from = last_poll_block.map(|lpb| lpb.saturating_add(1)).unwrap_or(0);
-                    let to = match &criteria.to_block {
-                        // Honour the original fixed upper bound.
-                        Some(BlockNumberOrTag::Number(n)) => n.to::<u64>().min(head),
-                        // Open-ended or "latest": cap at current head.
-                        _ => head,
-                    };
-                    RpcLogFilter {
-                        from_block: Some(BlockNumberOrTag::Number(U64::from(from))),
-                        to_block: Some(BlockNumberOrTag::Number(U64::from(to))),
-                        // Preserve everything else from the original criteria.
-                        address: criteria.address.clone(),
-                        topics: criteria.topics.clone(),
-                        block_hash: None,
+
+                    let provider = self.state_provider.read().await;
+                    let logs = provider.get_logs(criteria.clone()).await?;
+
+                    let mut filter = entry.lock().await;
+                    if let Filter::Log { last_poll_block: lpb, .. } = &mut *filter {
+                        *lpb = Some(head);
                     }
+                    entry.touch();
+                    return Ok(FilterChanges::Logs(logs));
+                }
+
+                let from = last_poll_block.map(|lpb| lpb.saturating_add(1)).unwrap_or(0);
+                let uncapped_to = match &criteria.to_block {
+                    // Honour the original fixed upper bound.
+                    Some(BlockNumberOrTag::Number(n)) => n.to::<u64>().min(head),
+                    // Open-ended or "latest": cap at current head.
+                    _ => head,
+                };
+                // Cap the scan range so we never exceed the downstream
+                // MAX_LOG_BLOCK_RANGE limit. If the client has fallen
+                // behind, it catches up over successive polls.
+                let to = uncapped_to.min(from.saturating_add(MAX_FILTER_LOG_BLOCK_RANGE));
+                let changes_filter = RpcLogFilter {
+                    from_block: Some(BlockNumberOrTag::Number(U64::from(from))),
+                    to_block: Some(BlockNumberOrTag::Number(U64::from(to))),
+                    // Preserve everything else from the original criteria.
+                    address: criteria.address.clone(),
+                    topics: criteria.topics.clone(),
+                    block_hash: None,
                 };
 
                 let provider = self.state_provider.read().await;
                 let logs = provider.get_logs(changes_filter).await?;
 
-                // Update the cursor under the lock.
+                // Advance the cursor only to the capped `to`, not to `head`.
+                // If the range was capped, the remaining blocks will be
+                // covered by the next poll.
                 let mut filter = entry.lock().await;
                 if let Filter::Log { last_poll_block: lpb, .. } = &mut *filter {
-                    *lpb = Some(head);
+                    *lpb = Some(to);
                 }
                 entry.touch();
                 Ok(FilterChanges::Logs(logs))
@@ -879,7 +898,7 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
                 entry.touch();
                 Ok(FilterChanges::Hashes(hashes))
             }
-            FilterSnapshot::PendingTx { known_hashes, last_seen_index } => {
+            FilterSnapshot::PendingTx { last_seen_index } => {
                 // Return new pending tx hashes in insertion order.
                 //
                 // IMPORTANT: We must drop the `pending_tx_order` lock before
@@ -894,24 +913,13 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
                     // If entries were evicted past the cursor, start from the
                     // front of the deque (relative offset 0).
                     let relative_skip = last_seen_index.saturating_sub(evicted);
-                    let hashes: Vec<B256> = tx_order
-                        .iter()
-                        .skip(relative_skip)
-                        .filter(|h| !known_hashes.contains(*h))
-                        .copied()
-                        .collect();
+                    let hashes: Vec<B256> = tx_order.iter().skip(relative_skip).copied().collect();
                     let idx = evicted + tx_order.len();
                     (hashes, idx)
                     // tx_order lock is dropped here
                 };
-                let current_hashes: HashSet<B256> =
-                    self.pending_txs.read().await.keys().copied().collect();
-
                 let mut filter = entry.lock().await;
-                if let Filter::PendingTransaction { known_hashes: kh, last_seen_index: idx } =
-                    &mut *filter
-                {
-                    *kh = current_hashes;
+                if let Filter::PendingTransaction { last_seen_index: idx } = &mut *filter {
                     *idx = new_index;
                 }
                 entry.touch();
