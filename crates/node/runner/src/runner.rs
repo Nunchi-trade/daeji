@@ -33,7 +33,7 @@ use commonware_runtime::{
     buffer::paged::CacheRef, tokio as cw_tokio,
 };
 use commonware_storage::archive::{Archive, Identifier as ArchiveId};
-use commonware_utils::{NZU64, NZUsize, acknowledgement::Exact, ordered::Set};
+use commonware_utils::{NZUsize, acknowledgement::Exact, ordered::Set};
 use futures::StreamExt;
 use kora_consensus::BlockExecution;
 use kora_domain::{Block, BlockCfg, BootstrapConfig, ConsensusDigest, LedgerEvent, Tx, TxCfg};
@@ -70,7 +70,6 @@ impl kora_metrics::MetricsRegister for RuntimeMetrics<'_> {
     }
 }
 
-const EPOCH_LENGTH: u64 = u64::MAX;
 const PARTITION_PREFIX: &str = "kora";
 const TXPOOL_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 const PARTITION_CHECK_INTERVAL: Duration = Duration::from_secs(30);
@@ -908,7 +907,7 @@ impl ProductionRunner {
 
             let transport = config
                 .network
-                .build_local_transport(validator_key, context.child("transport"))
+                .build_transport(validator_key, context.child("transport"))
                 .map_err(|e| anyhow::anyhow!("failed to build transport: {}", e))?;
 
             let ctx =
@@ -952,10 +951,17 @@ impl NodeRunner for ProductionRunner {
         let validators = self.scheme.participants().clone();
         let secondary = Set::from_iter_dedup(self.secondary_peers.iter().cloned());
         let secondary_count = secondary.len();
-        transport.oracle.track(0, TrackedPeers::new(validators, secondary));
+        // Pre-register the validator set for the initial epochs so that the
+        // oracle knows which peers to connect to after epoch transitions.
+        // With a static validator set we simply repeat the same set.
+        let initial_epochs_to_track: u64 = 2;
+        for epoch in 0..initial_epochs_to_track {
+            transport.oracle.track(epoch, TrackedPeers::new(validators.clone(), secondary.clone()));
+        }
         info!(
             validators = self.scheme.participants().len(),
             secondary_peers = secondary_count,
+            epochs_tracked = initial_epochs_to_track,
             "Registered primary and secondary peers with oracle"
         );
 
@@ -1380,7 +1386,8 @@ impl NodeRunner for ProductionRunner {
             .await;
         let marshal_handle = actor.start(finalized_reporter, buffer, resolver);
 
-        let epocher = FixedEpocher::new(NZU64!(EPOCH_LENGTH));
+        let epoch_length = config.consensus.epoch_length;
+        let epocher = FixedEpocher::new(epoch_length);
         let executor = RevmExecutor::new(self.chain_id);
         let mut app = RevmApplication::<ThresholdScheme, _>::new(
             ledger.clone(),
