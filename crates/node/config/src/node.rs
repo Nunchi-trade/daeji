@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use crate::{ConfigError, ConsensusConfig, ExecutionConfig, NetworkConfig, RpcConfig};
 
 /// Default chain ID for local development.
-pub const DEFAULT_CHAIN_ID: u64 = 1;
+///
+/// Uses 1337, the standard devnet chain ID, to avoid collision with
+/// Ethereum mainnet (chain ID 1) which would allow EIP-155 transaction replay.
+pub const DEFAULT_CHAIN_ID: u64 = 1337;
 
 /// Default data directory.
 pub const DEFAULT_DATA_DIR: &str = "/var/lib/kora";
@@ -68,11 +71,64 @@ impl Default for NodeConfig {
 impl NodeConfig {
     /// Validate configuration values.
     ///
-    /// Returns an error if any value is out of range.
+    /// Returns an error if any value is out of range or if consensus
+    /// parameters are inconsistent.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.worker_threads == 0 {
             return Err(ConfigError::InvalidValue("worker_threads must be >= 1".to_string()));
         }
+
+        // chain_id = 0 is invalid per EIP-155
+        if self.chain_id == 0 {
+            return Err(ConfigError::InvalidValue("chain_id must not be 0".to_string()));
+        }
+
+        // Cross-check consensus threshold vs participant count (#176)
+        if !self.consensus.participants.is_empty() {
+            let n = self.consensus.participants.len();
+
+            if self.consensus.threshold == 0 {
+                return Err(ConfigError::InvalidValue(
+                    "consensus.threshold must be >= 1 when participants are configured".to_string(),
+                ));
+            }
+
+            if (self.consensus.threshold as usize) > n {
+                return Err(ConfigError::InvalidValue(format!(
+                    "consensus.threshold ({}) exceeds participant count ({})",
+                    self.consensus.threshold, n
+                )));
+            }
+
+            // Validate participant key lengths early so invalid keys
+            // are caught at config load time instead of at consensus startup.
+            for (i, pk) in self.consensus.participants.iter().enumerate() {
+                if pk.len() != 32 {
+                    return Err(ConfigError::InvalidValue(format!(
+                        "consensus.participants[{}] has invalid key length {} (expected 32)",
+                        i,
+                        pk.len()
+                    )));
+                }
+            }
+
+            // Warn if configured threshold does not match the BFT-derived quorum.
+            // The runtime always uses N3f1::quorum() regardless of this config
+            // value, so a mismatch signals a likely misconfiguration.
+            let f = n.saturating_sub(1) / 3;
+            let expected_quorum = (n - f) as u32;
+            if self.consensus.threshold != expected_quorum {
+                tracing::warn!(
+                    configured_threshold = self.consensus.threshold,
+                    computed_quorum = expected_quorum,
+                    participant_count = n,
+                    "consensus.threshold does not match the BFT quorum (n - floor((n-1)/3)). \
+                     The runtime always computes the quorum from the participant count via N3f1; \
+                     the configured threshold value is ignored."
+                );
+            }
+        }
+
         Ok(())
     }
 
@@ -150,7 +206,13 @@ impl NodeConfig {
                 Ok(private_key_from_seed(seed))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Generate new key
+                // Generate new key -- warn loudly so operators notice in production
+                tracing::warn!(
+                    path = %key_path.display(),
+                    "Validator key file not found -- generating a new random key. \
+                     This is only appropriate for development. In production, provide \
+                     an existing key file via consensus.validator_key in your config."
+                );
                 let mut seed = [0u8; 32];
                 rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut seed);
 
@@ -224,9 +286,16 @@ mod tests {
     }
 
     #[test]
+    fn test_default_chain_id_is_not_mainnet() {
+        // DEFAULT_CHAIN_ID must not collide with Ethereum mainnet (#051)
+        assert_ne!(DEFAULT_CHAIN_ID, 1, "default chain ID must not be Ethereum mainnet");
+        assert_eq!(DEFAULT_CHAIN_ID, 1337);
+    }
+
+    #[test]
     fn test_worker_threads_default_from_toml() {
         // A TOML config without worker_threads should get the default.
-        let config = NodeConfig::from_toml("chain_id = 1\n").unwrap();
+        let config = NodeConfig::from_toml("chain_id = 1337\n").unwrap();
         assert!(config.worker_threads >= 1);
         assert!(config.worker_threads <= DEFAULT_WORKER_THREADS_CAP);
     }
@@ -243,6 +312,14 @@ mod tests {
         let err = config.validate();
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("worker_threads"));
+    }
+
+    #[test]
+    fn test_chain_id_zero_rejected() {
+        let config = NodeConfig::from_toml("chain_id = 0\n").unwrap();
+        let err = config.validate();
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("chain_id"));
     }
 
     #[test]
@@ -313,5 +390,60 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nonexistent.toml");
         assert!(NodeConfig::load(Some(&path)).is_err());
+    }
+
+    #[test]
+    fn test_validate_threshold_exceeds_participants() {
+        let config = NodeConfig {
+            consensus: ConsensusConfig {
+                threshold: 5,
+                participants: vec![vec![0u8; 32], vec![1u8; 32], vec![2u8; 32]],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let err = config.validate();
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("exceeds participant count"));
+    }
+
+    #[test]
+    fn test_validate_threshold_zero_with_participants() {
+        let config = NodeConfig {
+            consensus: ConsensusConfig {
+                threshold: 0,
+                participants: vec![vec![0u8; 32]],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let err = config.validate();
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("threshold must be >= 1"));
+    }
+
+    #[test]
+    fn test_validate_invalid_participant_key_length() {
+        let config = NodeConfig {
+            consensus: ConsensusConfig {
+                threshold: 1,
+                participants: vec![vec![0u8; 16]], // wrong length
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let err = config.validate();
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("invalid key length"));
+    }
+
+    #[test]
+    fn test_validate_no_participants_skips_consensus_checks() {
+        // With no participants, threshold checks are skipped (development mode)
+        let config = NodeConfig::default();
+        assert!(config.validate().is_ok());
     }
 }
