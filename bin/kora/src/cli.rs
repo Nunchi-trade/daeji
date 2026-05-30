@@ -239,6 +239,7 @@ impl Cli {
     }
 
     fn run_secondary(&self, args: &SecondaryArgs) -> eyre::Result<()> {
+        use commonware_cryptography::Signer as _;
         use commonware_p2p::{Manager, TrackedPeers};
         use commonware_runtime::{Clock as _, Metrics as _, Runner, Spawner};
         use commonware_utils::ordered::Set;
@@ -249,10 +250,13 @@ impl Cli {
         config.network.bootstrap_peers = format_bootstrappers(&peers.bootstrappers);
 
         let identity_key = config.validator_key()?;
-        let my_pk = commonware_cryptography::Signer::public_key(&identity_key);
+        let my_pk = identity_key.public_key();
+        let my_pk_hex = hex::encode(my_pk.as_ref());
+
         if !peers.secondary_participants.contains(&my_pk) {
             return Err(eyre::eyre!(
-                "secondary identity is not listed in peers.json secondary_participants"
+                "secondary identity ({}) is not listed in peers.json secondary_participants",
+                my_pk_hex
             ));
         }
 
@@ -270,11 +274,20 @@ impl Cli {
 
         tracing::info!(
             chain_id = config.chain_id,
+            identity = my_pk_hex,
+            listen_addr = config.network.listen_addr,
             bootstrap_peers = config.network.bootstrap_peers.len(),
+            validators = validator_count,
             secondary_peers = secondary_count,
+            metrics_addr = %metrics_addr,
             "Starting secondary peer"
         );
-        tracing::warn!("Secondary node is in follower mode - read-only RPC not yet implemented");
+        // Phase 1: P2P connectivity + metrics only.
+        // Block following and read-only RPC are not yet implemented (Phase 2).
+        tracing::warn!(
+            rpc_addr = args.rpc_addr,
+            "Secondary node is in stub mode: block-following and read-only RPC are not yet              implemented; the node joins the P2P network and exposes metrics only"
+        );
 
         let runtime_dir = runtime_storage_directory(&config.data_dir);
         tracing::info!(
@@ -293,17 +306,22 @@ impl Cli {
                 .build_local_transport(identity_key, context.child("transport"))
                 .map_err(|e| eyre::eyre!("failed to build transport: {}", e))?;
 
-            transport
-                .oracle
-                .track(
-                    0,
-                    TrackedPeers::new(
-                        Set::from_iter_dedup(peers.participants),
-                        Set::from_iter_dedup(peers.secondary_participants),
-                    ),
-                );
+            transport.oracle.track(
+                0,
+                TrackedPeers::new(
+                    Set::from_iter_dedup(peers.participants),
+                    Set::from_iter_dedup(peers.secondary_participants),
+                ),
+            );
 
-            tracing::info!("secondary peer joined network");
+            // The transport is now dialing bootstrap peers in the background.
+            // Actual peer connectivity is established asynchronously by the
+            // Commonware P2P layer once the bootstrapper addresses resolve.
+            tracing::info!(
+                validators = validator_count,
+                secondary_peers = secondary_count,
+                "Secondary peer joined P2P network; awaiting peer discovery"
+            );
 
             // Spawn a metrics server so Prometheus can scrape this node.
             let metrics_context = Arc::new(context.child("metrics_endpoint"));
@@ -334,13 +352,14 @@ impl Cli {
                     }
                 };
 
-                tracing::info!(addr = %metrics_addr, "Starting metrics server");
+                tracing::info!(addr = %metrics_addr, "Metrics server listening");
                 if let Err(e) = axum::serve(listener, app).await {
                     tracing::error!(error = %e, "Metrics server error");
                 }
             });
 
-            // Spawn periodic health logging.
+            // Spawn periodic health logging so operators can confirm the
+            // secondary is alive without querying any external API.
             context.child("health").shared(true).spawn(move |ctx| async move {
                 let interval = std::time::Duration::from_secs(30);
                 loop {
@@ -348,20 +367,31 @@ impl Cli {
                     tracing::info!(
                         validators = validator_count,
                         secondary_peers = secondary_count,
-                        "Secondary node health: connected to P2P network"
+                        "Secondary node alive; connected to P2P network"
                     );
                 }
             });
 
-            // Block until shutdown signal (SIGTERM / SIGINT / Ctrl-C).
+            // Block until a clean shutdown signal arrives:
+            //   SIGTERM -- Docker `docker stop` / Kubernetes pod termination
+            //   SIGINT  -- interactive Ctrl-C
             let mut sigterm =
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
                     .expect("failed to register SIGTERM handler");
             tokio::select! {
-                _ = tokio::signal::ctrl_c() => {},
-                _ = sigterm.recv() => {},
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::info!("Received SIGINT, shutting down secondary node...");
+                },
+                _ = sigterm.recv() => {
+                    tracing::info!("Received SIGTERM, shutting down secondary node...");
+                },
             }
-            tracing::info!("Received shutdown signal, stopping secondary node...");
+
+            // Brief drain window so in-flight metric scrapes and log buffers
+            // can flush before the runtime drops all task contexts.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+            tracing::info!("Secondary node shutdown complete");
             Ok::<(), eyre::Error>(())
         })
     }
