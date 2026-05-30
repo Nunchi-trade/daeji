@@ -228,7 +228,14 @@ where
                 .map(|(k, v)| (*k, v.present_value()))
                 .collect();
 
-            let code = account.info.code.as_ref().map(|c| c.bytes().to_vec());
+            // Only extract code for newly created accounts -- code is immutable
+            // once deployed, so copying it for non-created accounts is wasted
+            // allocation on the hot path. (#087)
+            let code = if account.is_created() {
+                account.info.code.as_ref().map(|c| c.bytes().to_vec())
+            } else {
+                None
+            };
 
             changeset.accounts.insert(
                 address,
