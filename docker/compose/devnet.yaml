@@ -105,12 +105,38 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
-        if [ -f /shared/node0/share.key ] && [ -f /shared/node0/output.json ]; then
-            echo "[init] DKG already completed, skipping"
-            exit 0
+        # Always clear stale barrier files first so validators synchronise
+        # cleanly on both first boot and restart.
+        rm -f /barrier/*.ready 2>/dev/null || true
+        echo "[init] Cleared startup barrier"
+
+        # Idempotency guard: verify ALL validators have consistent DKG output.
+        # Checking only node0 is insufficient -- a partial write (init-config
+        # killed mid-run) could leave some nodes complete while others are
+        # missing, producing mismatched BLS shares and a permanent consensus
+        # deadlock on the next restart.
+        DKG_EXISTS=true
+        CHECKSUM=""
+        for i in 0 1 2 3; do
+          if [ ! -f "/shared/node${i}/share.key" ] || [ ! -f "/shared/node${i}/output.json" ]; then
+            DKG_EXISTS=false
+            break
+          fi
+          THIS_SUM=$(sha256sum "/shared/node${i}/output.json" | cut -d' ' -f1)
+          if [ -z "$CHECKSUM" ]; then
+            CHECKSUM="$THIS_SUM"
+          elif [ "$THIS_SUM" != "$CHECKSUM" ]; then
+            echo "[init] WARNING: output.json mismatch between validators, regenerating"
+            DKG_EXISTS=false
+            break
+          fi
+        done
+
+        if [ "$DKG_EXISTS" = "true" ]; then
+          echo "[init] DKG keys present and consistent for all validators, skipping generation"
+          exit 0
         fi
-        echo "[init] Clearing startup barrier from previous runs..." && \
-        rm -f /barrier/*.ready && \
+
         echo "[init] Running keygen setup..." && \
         /usr/local/bin/keygen setup \
           --validators=4 \

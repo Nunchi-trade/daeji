@@ -185,21 +185,25 @@ pub(crate) fn run(args: SetupArgs) -> Result<()> {
     fs::write(&peers_path, serde_json::to_string_pretty(&peers)?)?;
     tracing::info!(path = ?peers_path, "Wrote peers configuration");
 
-    let mut allocations = vec![
-        funded_allocation("0x0000000000000000000000000000000000000001"),
-        funded_allocation("0xEb1Ba7Fc58b3416361a0EE07d140c91410c0AA8c"),
-        funded_allocation("0xa883208a74152107475a3Fa6b0c21121894B647F"),
-        funded_allocation("0x105be5081ceba05be11976150abc277ee365fc3f"),
-        funded_allocation("0x30b68d56AE9173566055a69ee7cCB0E755B6a201"),
-        funded_allocation("0xDdE169289B51C512268D0b11EE2b15160b1e1793"),
-        funded_allocation("0xde738C4084dDE5083A7959235Fd230e27eAFC63B"),
-    ];
-    allocations.extend(funded_loadgen_allocations());
-
-    let genesis = GenesisConfig { chain_id: args.chain_id, timestamp: 0, allocations };
     let genesis_path = args.output_dir.join("genesis.json");
-    fs::write(&genesis_path, serde_json::to_string_pretty(&genesis)?)?;
-    tracing::info!(path = ?genesis_path, "Wrote genesis configuration");
+    if genesis_path.exists() {
+        tracing::info!(path = ?genesis_path, "genesis.json already exists, preserving");
+    } else {
+        let mut allocations = vec![
+            funded_allocation("0x0000000000000000000000000000000000000001"),
+            funded_allocation("0xEb1Ba7Fc58b3416361a0EE07d140c91410c0AA8c"),
+            funded_allocation("0xa883208a74152107475a3Fa6b0c21121894B647F"),
+            funded_allocation("0x105be5081ceba05be11976150abc277ee365fc3f"),
+            funded_allocation("0x30b68d56AE9173566055a69ee7cCB0E755B6a201"),
+            funded_allocation("0xDdE169289B51C512268D0b11EE2b15160b1e1793"),
+            funded_allocation("0xde738C4084dDE5083A7959235Fd230e27eAFC63B"),
+        ];
+        allocations.extend(funded_loadgen_allocations());
+
+        let genesis = GenesisConfig { chain_id: args.chain_id, timestamp: 0, allocations };
+        fs::write(&genesis_path, serde_json::to_string_pretty(&genesis)?)?;
+        tracing::info!(path = ?genesis_path, "Wrote genesis configuration");
+    }
 
     tracing::info!("Setup complete");
     tracing::info!(
@@ -256,5 +260,63 @@ mod tests {
                 .expect("expected loadgen seed address to be funded");
             assert_eq!(allocation.balance, GENESIS_BALANCE);
         }
+    }
+
+    /// Regression test for issue #4 (DKG init-config race) and issue #21
+    /// (genesis block hash changes on every deployment).
+    ///
+    /// Verifies that the genesis timestamp is 0, not a live wall-clock value.
+    /// Any regression to `SystemTime::now()` would produce a different genesis
+    /// block hash on every restart, causing validators to reject each other's
+    /// blocks.
+    #[test]
+    fn genesis_timestamp_is_zero_for_deterministic_hash() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let args = SetupArgs {
+            validators: 1,
+            secondary_peers: 0,
+            chain_id: 1337,
+            output_dir: dir.path().to_path_buf(),
+            base_port: 30303,
+        };
+        run(args).expect("setup run");
+
+        let genesis_bytes = fs::read(dir.path().join("genesis.json")).expect("read genesis.json");
+        let genesis: serde_json::Value =
+            serde_json::from_slice(&genesis_bytes).expect("parse genesis.json");
+        assert_eq!(
+            genesis["timestamp"].as_u64(),
+            Some(0),
+            "genesis timestamp must be 0 for deterministic block hash"
+        );
+    }
+
+    /// Regression test for issue #4 (DKG init-config race).
+    ///
+    /// Verifies that `keygen setup` is idempotent for `genesis.json`: a second
+    /// invocation must preserve the existing file unchanged. Without this guard
+    /// each restart would overwrite genesis with a new timestamp, producing a
+    /// different genesis block hash and causing consensus to reject all prior
+    /// blocks.
+    #[test]
+    fn setup_preserves_existing_genesis_on_repeated_runs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let args = || SetupArgs {
+            validators: 1,
+            secondary_peers: 0,
+            chain_id: 1337,
+            output_dir: dir.path().to_path_buf(),
+            base_port: 30303,
+        };
+
+        run(args()).expect("first setup run");
+        let first =
+            fs::read(dir.path().join("genesis.json")).expect("read genesis after first run");
+
+        run(args()).expect("second setup run");
+        let second =
+            fs::read(dir.path().join("genesis.json")).expect("read genesis after second run");
+
+        assert_eq!(first, second, "genesis.json must be byte-identical across repeated setup runs");
     }
 }
