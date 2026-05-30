@@ -146,6 +146,11 @@ pub struct ConsensusConfig {
     pub validator_key: Option<PathBuf>,
 
     /// Threshold for consensus (e.g., 2f+1 of 3f+1).
+    ///
+    /// NOTE: This field is NOT used at runtime. The actual quorum is always
+    /// computed from the participant count via `N3f1::quorum()`. It is
+    /// retained for config-file documentation and validated against the
+    /// computed quorum in `NodeConfig::validate()`. See issue #057.
     #[serde(default = "default_threshold")]
     pub threshold: u32,
 
