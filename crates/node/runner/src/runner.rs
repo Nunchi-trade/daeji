@@ -151,8 +151,10 @@ fn default_page_cache(context: &cw_tokio::Context) -> CacheRef {
 /// Resolve the storage directory used by the Commonware runtime.
 ///
 /// By default this lives under `data_dir/runtime` so validator state survives
-/// restarts. Local devnets can set `KORA_RUNTIME_DIR` to put consensus journals
-/// on tmpfs and avoid Docker-volume fsync latency.
+/// restarts. Set `KORA_RUNTIME_DIR` to override the location (e.g. to mount a
+/// separate dedicated volume for consensus journal I/O). The override path must
+/// point to persistent storage; using a tmpfs mount will cause consensus state
+/// loss on container restart.
 #[must_use]
 pub fn runtime_storage_directory(data_dir: &Path) -> PathBuf {
     runtime_storage_directory_from(data_dir, std::env::var_os(RUNTIME_DIR_ENV))
