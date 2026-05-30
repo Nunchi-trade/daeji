@@ -3,10 +3,16 @@
 use serde::{Deserialize, Serialize};
 
 /// Default HTTP RPC address.
-pub const DEFAULT_HTTP_ADDR: &str = "0.0.0.0:8545";
+///
+/// Binds to localhost only so the RPC port is not reachable from external
+/// hosts by default. Operators who need external access must explicitly
+/// override this (e.g. `rpc.http_addr = "0.0.0.0:8545"` in their config).
+pub const DEFAULT_HTTP_ADDR: &str = "127.0.0.1:8545";
 
 /// Default WebSocket RPC address.
-pub const DEFAULT_WS_ADDR: &str = "0.0.0.0:8546";
+///
+/// Binds to localhost only for the same reason as [`DEFAULT_HTTP_ADDR`].
+pub const DEFAULT_WS_ADDR: &str = "127.0.0.1:8546";
 
 /// RPC server configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -43,6 +49,17 @@ mod tests {
         let config = RpcConfig::default();
         assert_eq!(config.http_addr, DEFAULT_HTTP_ADDR);
         assert_eq!(config.ws_addr, DEFAULT_WS_ADDR);
+        // Defaults must bind to loopback only, not 0.0.0.0.
+        assert!(
+            config.http_addr.starts_with("127.0.0.1"),
+            "DEFAULT_HTTP_ADDR must bind to 127.0.0.1, got {}",
+            config.http_addr
+        );
+        assert!(
+            config.ws_addr.starts_with("127.0.0.1"),
+            "DEFAULT_WS_ADDR must bind to 127.0.0.1, got {}",
+            config.ws_addr
+        );
     }
 
     #[test]
@@ -72,6 +89,9 @@ mod tests {
         let config: RpcConfig = serde_json::from_str("{}").expect("deserialize");
         assert_eq!(config.http_addr, DEFAULT_HTTP_ADDR);
         assert_eq!(config.ws_addr, DEFAULT_WS_ADDR);
+        // Serde defaults must also bind to loopback only.
+        assert!(config.http_addr.starts_with("127.0.0.1"));
+        assert!(config.ws_addr.starts_with("127.0.0.1"));
     }
 
     #[test]
