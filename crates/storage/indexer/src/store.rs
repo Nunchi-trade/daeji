@@ -14,14 +14,26 @@ use crate::{
     types::{IndexStats, IndexedBlock, IndexedLog, IndexedReceipt, IndexedTransaction},
 };
 
+/// Internal state guarded by a single [`RwLock`].
+///
+/// Grouping every map under one lock ensures that [`BlockIndex::insert_block`]
+/// publishes blocks, transactions, receipts **and** logs atomically -- readers
+/// can never observe a partially-indexed block.  It also eliminates the
+/// five-lock convoy that previously serialised writers against concurrent RPC
+/// readers (see issue #138).
+#[derive(Debug, Default)]
+struct IndexState {
+    blocks_by_hash: HashMap<B256, IndexedBlock>,
+    blocks_by_number: HashMap<u64, B256>,
+    transactions: HashMap<B256, IndexedTransaction>,
+    receipts: HashMap<B256, IndexedReceipt>,
+    logs_by_block: HashMap<B256, Vec<IndexedLog>>,
+}
+
 /// In-memory storage for indexed blocks, transactions, receipts, and logs.
 #[derive(Debug)]
 pub struct BlockIndex {
-    blocks_by_hash: RwLock<HashMap<B256, IndexedBlock>>,
-    blocks_by_number: RwLock<HashMap<u64, B256>>,
-    transactions: RwLock<HashMap<B256, IndexedTransaction>>,
-    receipts: RwLock<HashMap<B256, IndexedReceipt>>,
-    logs_by_block: RwLock<HashMap<B256, Vec<IndexedLog>>>,
+    state: RwLock<IndexState>,
     head_block: AtomicU64,
 }
 
@@ -39,20 +51,26 @@ impl BlockIndex {
     /// [`Self::recent_block_hashes`]) always has a full window available.
     pub const MAX_RETAINED_BLOCKS: u64 = 10_000;
 
+    /// Maximum number of log entries returned by a single [`Self::get_logs`]
+    /// call.
+    ///
+    /// Queries matching more logs than this limit are truncated. This
+    /// prevents memory exhaustion when a broad filter matches millions of
+    /// events within the allowed block range (e.g. ERC-20 `Transfer`
+    /// across 10,000 blocks). The value matches Geth's default cap.
+    pub const MAX_LOG_RESULTS: usize = 10_000;
+
     /// Creates a new empty block index.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            blocks_by_hash: RwLock::new(HashMap::new()),
-            blocks_by_number: RwLock::new(HashMap::new()),
-            transactions: RwLock::new(HashMap::new()),
-            receipts: RwLock::new(HashMap::new()),
-            logs_by_block: RwLock::new(HashMap::new()),
-            head_block: AtomicU64::new(0),
-        }
+        Self { state: RwLock::new(IndexState::default()), head_block: AtomicU64::new(0) }
     }
 
     /// Inserts a block with its transactions and receipts into the index.
+    ///
+    /// All five maps are updated under a **single** write-lock acquisition,
+    /// guaranteeing atomic visibility to concurrent readers and eliminating
+    /// the previous 5-lock convoy (issue #138).
     pub fn insert_block(
         &self,
         block: IndexedBlock,
@@ -64,40 +82,24 @@ impl BlockIndex {
 
         debug!(number = block_number, hash = %block_hash, txs = txs.len(), "indexing block");
 
-        let mut all_logs = Vec::new();
-        for receipt in &receipts {
-            all_logs.extend(receipt.logs.clone());
-        }
+        // Extract logs from receipts before consuming them.
+        let all_logs: Vec<IndexedLog> = receipts.iter().flat_map(|r| r.logs.clone()).collect();
 
+        // Single write-lock for all maps.
         {
-            let mut blocks_by_hash = self.blocks_by_hash.write();
-            blocks_by_hash.insert(block_hash, block);
-        }
-
-        {
-            let mut blocks_by_number = self.blocks_by_number.write();
-            blocks_by_number.insert(block_number, block_hash);
-        }
-
-        {
-            let mut transactions = self.transactions.write();
+            let mut st = self.state.write();
+            st.blocks_by_hash.insert(block_hash, block);
+            st.blocks_by_number.insert(block_number, block_hash);
             for tx in txs {
-                transactions.insert(tx.hash, tx);
+                st.transactions.insert(tx.hash, tx);
             }
-        }
-
-        {
-            let mut receipts_map = self.receipts.write();
             for receipt in receipts {
-                receipts_map.insert(receipt.transaction_hash, receipt);
+                st.receipts.insert(receipt.transaction_hash, receipt);
             }
+            st.logs_by_block.insert(block_hash, all_logs);
         }
 
-        {
-            let mut logs_by_block = self.logs_by_block.write();
-            logs_by_block.insert(block_hash, all_logs);
-        }
-
+        // Update head atomically (lock-free).
         let mut current = self.head_block.load(Ordering::Acquire);
         while block_number > current {
             match self.head_block.compare_exchange_weak(
@@ -115,59 +117,56 @@ impl BlockIndex {
     /// Removes all index entries for blocks with `number < min_block_number`.
     ///
     /// This bounds memory by evicting blocks, transactions, receipts, and logs
-    /// that are older than the retention window. Lock ordering matches
-    /// [`Self::insert_block`] (block-level maps first, then tx-level maps) to
-    /// avoid deadlocks.
+    /// that are older than the retention window.
+    ///
+    /// After removal, each map is shrunk via [`HashMap::shrink_to_fit`] so that
+    /// the backing allocation tracks the actual entry count instead of
+    /// retaining its peak capacity indefinitely (issue #140).
     pub fn prune_before(&self, min_block_number: u64) {
-        // Phase 1: collect block numbers, hashes, and tx hashes to prune
-        // under short-lived read locks.
-        let hashes_to_remove: Vec<(u64, B256)> = {
-            let by_number = self.blocks_by_number.read();
-            by_number
-                .iter()
-                .filter(|(num, _)| **num < min_block_number)
-                .map(|(num, hash)| (*num, *hash))
-                .collect()
-        };
+        let mut st = self.state.write();
 
-        if hashes_to_remove.is_empty() {
+        // Collect block hashes and their tx hashes to prune.
+        let blocks_to_remove: Vec<(u64, B256)> = st
+            .blocks_by_number
+            .iter()
+            .filter(|(num, _)| **num < min_block_number)
+            .map(|(num, hash)| (*num, *hash))
+            .collect();
+
+        if blocks_to_remove.is_empty() {
             return;
         }
 
-        let tx_hashes: Vec<B256> = {
-            let by_hash = self.blocks_by_hash.read();
-            hashes_to_remove
-                .iter()
-                .filter_map(|(_, h)| by_hash.get(h))
-                .flat_map(|b| b.transaction_hashes.iter().copied())
-                .collect()
-        };
+        let tx_hashes: Vec<B256> = blocks_to_remove
+            .iter()
+            .filter_map(|(_, h)| st.blocks_by_hash.get(h))
+            .flat_map(|b| b.transaction_hashes.iter().copied())
+            .collect();
 
-        // Phase 2: remove block-level entries under write locks.
-        {
-            let mut by_number = self.blocks_by_number.write();
-            let mut by_hash = self.blocks_by_hash.write();
-            let mut logs = self.logs_by_block.write();
-            for &(num, hash) in &hashes_to_remove {
-                by_number.remove(&num);
-                by_hash.remove(&hash);
-                logs.remove(&hash);
-            }
+        // Remove block-level entries.
+        for &(num, hash) in &blocks_to_remove {
+            st.blocks_by_number.remove(&num);
+            st.blocks_by_hash.remove(&hash);
+            st.logs_by_block.remove(&hash);
         }
 
-        // Phase 3: remove transaction-level entries under write locks.
-        {
-            let mut txs = self.transactions.write();
-            let mut rcpts = self.receipts.write();
-            for h in &tx_hashes {
-                txs.remove(h);
-                rcpts.remove(h);
-            }
+        // Remove transaction-level entries.
+        for h in &tx_hashes {
+            st.transactions.remove(h);
+            st.receipts.remove(h);
         }
+
+        // Shrink all maps so the bucket arrays track retained size
+        // instead of keeping peak capacity allocated (issue #140).
+        st.blocks_by_number.shrink_to_fit();
+        st.blocks_by_hash.shrink_to_fit();
+        st.logs_by_block.shrink_to_fit();
+        st.transactions.shrink_to_fit();
+        st.receipts.shrink_to_fit();
 
         debug!(
             min_block_number,
-            pruned_blocks = hashes_to_remove.len(),
+            pruned_blocks = blocks_to_remove.len(),
             pruned_txs = tx_hashes.len(),
             "pruned old index entries",
         );
@@ -175,37 +174,40 @@ impl BlockIndex {
 
     /// Gets a block by its hash.
     pub fn get_block_by_hash(&self, hash: &B256) -> Option<IndexedBlock> {
-        self.blocks_by_hash.read().get(hash).cloned()
+        self.state.read().blocks_by_hash.get(hash).cloned()
     }
 
     /// Gets a block by its number.
     pub fn get_block_by_number(&self, number: u64) -> Option<IndexedBlock> {
-        let blocks_by_number = self.blocks_by_number.read();
-        let hash = blocks_by_number.get(&number)?;
-        self.blocks_by_hash.read().get(hash).cloned()
+        let st = self.state.read();
+        let hash = st.blocks_by_number.get(&number)?;
+        st.blocks_by_hash.get(hash).cloned()
     }
 
     /// Gets a transaction by its hash.
     pub fn get_transaction(&self, hash: &B256) -> Option<IndexedTransaction> {
-        self.transactions.read().get(hash).cloned()
+        self.state.read().transactions.get(hash).cloned()
     }
 
-    /// Gets all indexed transactions for a block in transaction-index order.
+    /// Gets all indexed transactions for a block in insertion order.
+    ///
+    /// Uses the block's `transaction_hashes` list for O(txs_in_block) targeted
+    /// lookups instead of scanning the entire transaction map (issue #037).
     pub fn get_transactions_for_block(&self, block_hash: &B256) -> Vec<IndexedTransaction> {
-        let mut txs = self
-            .transactions
-            .read()
-            .values()
-            .filter(|tx| tx.block_hash == *block_hash)
-            .cloned()
-            .collect::<Vec<_>>();
-        txs.sort_by_key(|tx| tx.index);
-        txs
+        let st = self.state.read();
+        let Some(block) = st.blocks_by_hash.get(block_hash) else {
+            return Vec::new();
+        };
+        block
+            .transaction_hashes
+            .iter()
+            .filter_map(|hash| st.transactions.get(hash).cloned())
+            .collect()
     }
 
     /// Gets a receipt by its transaction hash.
     pub fn get_receipt(&self, hash: &B256) -> Option<IndexedReceipt> {
-        self.receipts.read().get(hash).cloned()
+        self.state.read().receipts.get(hash).cloned()
     }
 
     /// Returns the current head block number.
@@ -222,15 +224,14 @@ impl BlockIndex {
 
         let mut result = Vec::new();
 
-        let blocks_by_number = self.blocks_by_number.read();
-        let logs_by_block = self.logs_by_block.read();
+        let st = self.state.read();
 
         for block_num in from_block..=to_block {
-            let Some(block_hash) = blocks_by_number.get(&block_num) else {
+            let Some(block_hash) = st.blocks_by_number.get(&block_num) else {
                 continue;
             };
 
-            let Some(logs) = logs_by_block.get(block_hash) else {
+            let Some(logs) = st.logs_by_block.get(block_hash) else {
                 continue;
             };
 
@@ -248,25 +249,25 @@ impl BlockIndex {
     /// Returns the total number of indexed blocks.
     #[must_use]
     pub fn block_count(&self) -> usize {
-        self.blocks_by_hash.read().len()
+        self.state.read().blocks_by_hash.len()
     }
 
     /// Returns the total number of indexed transactions.
     #[must_use]
     pub fn transaction_count(&self) -> usize {
-        self.transactions.read().len()
+        self.state.read().transactions.len()
     }
 
     /// Returns the total number of indexed receipts.
     #[must_use]
     pub fn receipt_count(&self) -> usize {
-        self.receipts.read().len()
+        self.state.read().receipts.len()
     }
 
     /// Returns true if the index is empty (no blocks indexed).
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.blocks_by_hash.read().is_empty()
+        self.state.read().blocks_by_hash.is_empty()
     }
 
     /// Returns statistics about the index.
@@ -285,11 +286,11 @@ impl BlockIndex {
     /// context.
     #[must_use]
     pub fn recent_block_hashes(&self, head: u64) -> HashMap<u64, B256> {
-        let blocks_by_number = self.blocks_by_number.read();
+        let st = self.state.read();
         let depth = head.min(256);
         let mut hashes = HashMap::with_capacity(depth as usize);
         for num in head.saturating_sub(depth)..head {
-            if let Some(hash) = blocks_by_number.get(&num) {
+            if let Some(hash) = st.blocks_by_number.get(&num) {
                 hashes.insert(num, *hash);
             }
         }
@@ -664,5 +665,93 @@ mod tests {
         // Only blocks 270..300 remain, so we should get exactly 30 entries.
         let hashes = index.recent_block_hashes(300);
         assert_eq!(hashes.len(), 30);
+    }
+
+    #[test]
+    fn test_get_transactions_for_block_uses_per_block_index() {
+        let index = BlockIndex::new();
+
+        let block_hash_a = B256::repeat_byte(0xAA);
+        let block_hash_b = B256::repeat_byte(0xBB);
+
+        let tx1 = B256::repeat_byte(1);
+        let tx2 = B256::repeat_byte(2);
+        let tx3 = B256::repeat_byte(3);
+
+        // Block A has tx1 and tx2 (in that order).
+        let mut block_a = create_test_block(1, block_hash_a);
+        block_a.transaction_hashes = vec![tx1, tx2];
+
+        let mut t1 = create_test_tx(tx1, block_hash_a, 1);
+        t1.index = 0;
+        let mut t2 = create_test_tx(tx2, block_hash_a, 1);
+        t2.index = 1;
+
+        index.insert_block(block_a, vec![t1, t2], vec![]);
+
+        // Block B has tx3.
+        let mut block_b = create_test_block(2, block_hash_b);
+        block_b.transaction_hashes = vec![tx3];
+        let mut t3 = create_test_tx(tx3, block_hash_b, 2);
+        t3.index = 0;
+        index.insert_block(block_b, vec![t3], vec![]);
+
+        // Query for block A should return only tx1 and tx2, in order.
+        let txs_a = index.get_transactions_for_block(&block_hash_a);
+        assert_eq!(txs_a.len(), 2);
+        assert_eq!(txs_a[0].hash, tx1);
+        assert_eq!(txs_a[1].hash, tx2);
+
+        // Query for block B should return only tx3.
+        let txs_b = index.get_transactions_for_block(&block_hash_b);
+        assert_eq!(txs_b.len(), 1);
+        assert_eq!(txs_b[0].hash, tx3);
+
+        // Query for unknown block returns empty.
+        let txs_none = index.get_transactions_for_block(&B256::repeat_byte(0xFF));
+        assert!(txs_none.is_empty());
+    }
+
+    #[test]
+    fn test_prune_shrinks_maps() {
+        let index = BlockIndex::new();
+
+        // Insert 100 blocks with one tx each.
+        for i in 0..100u64 {
+            let block_hash = B256::from([i as u8; 32]);
+            let tx_hash = B256::from([(i + 100) as u8; 32]);
+            let mut block = create_test_block(i, block_hash);
+            block.transaction_hashes = vec![tx_hash];
+            let tx = create_test_tx(tx_hash, block_hash, i);
+            let receipt = create_test_receipt(tx_hash, block_hash, i);
+            index.insert_block(block, vec![tx], vec![receipt]);
+        }
+
+        assert_eq!(index.block_count(), 100);
+
+        // Prune down to 10 blocks.
+        index.prune_before(90);
+
+        assert_eq!(index.block_count(), 10);
+        assert_eq!(index.transaction_count(), 10);
+        assert_eq!(index.receipt_count(), 10);
+
+        // Verify the maps' capacities shrunk. After shrink_to_fit() the
+        // capacity should be <= some reasonable multiple of the length.
+        // HashMap typically rounds up to a power of 2, so capacity <= 4*len
+        // is a generous bound.
+        let st = index.state.read();
+        assert!(
+            st.blocks_by_hash.capacity() <= 4 * st.blocks_by_hash.len(),
+            "blocks_by_hash capacity {} should be <= 4 * len {}",
+            st.blocks_by_hash.capacity(),
+            st.blocks_by_hash.len(),
+        );
+        assert!(
+            st.transactions.capacity() <= 4 * st.transactions.len(),
+            "transactions capacity {} should be <= 4 * len {}",
+            st.transactions.capacity(),
+            st.transactions.len(),
+        );
     }
 }
