@@ -911,6 +911,8 @@ impl ProductionRunner {
                 .build_local_transport(validator_key, context.child("transport"))
                 .map_err(|e| anyhow::anyhow!("failed to build transport: {}", e))?;
 
+            // Capture data_dir before config is moved into NodeRunContext.
+            let data_dir = config.data_dir.clone();
             let ctx =
                 kora_service::NodeRunContext::new(context, std::sync::Arc::new(config), transport);
 
@@ -924,6 +926,15 @@ impl ProductionRunner {
                 _ = sigterm.recv() => {},
             }
             info!("Received shutdown signal, initiating graceful shutdown...");
+
+            // Persist pending transactions to disk so they survive the
+            // restart.  Done before the sleep to maximise the window
+            // available for the write to complete.
+            {
+                let pool = _ledger.txpool().await;
+                pool.save_to_disk(&data_dir);
+                info!("mempool persisted to disk on shutdown");
+            }
 
             // Allow a brief window for in-flight QMDB commits and log drains
             // to complete before the runtime drops all task contexts. The
@@ -1030,6 +1041,15 @@ impl NodeRunner for ProductionRunner {
         );
         let txpool = ledger.txpool().await;
         spawn_txpool_cleanup(txpool.clone(), context.child("txpool"));
+
+        // Restore any transactions that were persisted on the previous
+        // graceful shutdown.  This happens before gossip is wired so
+        // restored transactions can be re-broadcast immediately once the
+        // outbound sender is ready.
+        let mempool_restored = txpool.load_from_disk(&config.data_dir);
+        if mempool_restored > 0 {
+            info!(count = mempool_restored, "restored transactions from persisted mempool");
+        }
 
         // Initialize application-level Prometheus metrics and register them
         // with the commonware runtime so they appear on the /metrics endpoint.
