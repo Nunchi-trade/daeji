@@ -46,6 +46,10 @@ pub struct AppMetrics {
     pub txpool_queued: Gauge,
     /// Total rejected transactions, labelled by reason.
     pub txpool_rejected: Family<ReasonLabel, Counter>,
+    /// Total transactions evicted from the pool (replaced by a higher-fee transaction).
+    pub txpool_evicted: Counter,
+    /// Total transactions expired from the pool (TTL exceeded or nonce stale).
+    pub txpool_expired: Counter,
 
     // -- Block Building --
     /// Histogram of block build durations in seconds.
@@ -135,6 +139,8 @@ impl AppMetrics {
             txpool_pending: Gauge::default(),
             txpool_queued: Gauge::default(),
             txpool_rejected: Family::default(),
+            txpool_evicted: Counter::default(),
+            txpool_expired: Counter::default(),
             block_build_time: Histogram::new(BLOCK_BUILD_BUCKETS),
             block_txs_included: Gauge::default(),
             proposal_snapshot_misses: Counter::default(),
@@ -181,6 +187,16 @@ impl AppMetrics {
             "kora_txpool_rejected",
             "Total rejected transactions by reason",
             self.txpool_rejected.clone(),
+        );
+        registry.register(
+            "kora_txpool_evicted",
+            "Total transactions evicted from pool (replaced by higher-fee transaction)",
+            self.txpool_evicted.clone(),
+        );
+        registry.register(
+            "kora_txpool_expired",
+            "Total transactions expired from pool (TTL exceeded or stale nonce)",
+            self.txpool_expired.clone(),
         );
         registry.register(
             "kora_block_build_time_seconds",
