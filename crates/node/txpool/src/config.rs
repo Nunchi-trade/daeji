@@ -1,5 +1,8 @@
 //! Transaction pool configuration.
 
+/// Default block gas limit (matches `kora_config::DEFAULT_GAS_LIMIT`).
+const DEFAULT_BLOCK_GAS_LIMIT: u64 = 250_000_000;
+
 /// Configuration for the transaction pool.
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
@@ -19,6 +22,9 @@ pub struct PoolConfig {
     pub pending_ttl_secs: u64,
     /// Time-to-live for queued transactions, in seconds.
     pub queued_ttl_secs: u64,
+    /// Maximum gas limit per block. Transactions with gas limits exceeding
+    /// this value are rejected because they can never fit in any block.
+    pub block_gas_limit: u64,
 }
 
 impl Default for PoolConfig {
@@ -32,6 +38,7 @@ impl Default for PoolConfig {
             replacement_bump_percent: 10,
             pending_ttl_secs: 30 * 60,
             queued_ttl_secs: 60 * 60,
+            block_gas_limit: DEFAULT_BLOCK_GAS_LIMIT,
         }
     }
 }
@@ -48,6 +55,7 @@ impl PoolConfig {
             replacement_bump_percent: 10,
             pending_ttl_secs: 30 * 60,
             queued_ttl_secs: 60 * 60,
+            block_gas_limit: DEFAULT_BLOCK_GAS_LIMIT,
         }
     }
 
@@ -106,6 +114,13 @@ impl PoolConfig {
         self.queued_ttl_secs = ttl;
         self
     }
+
+    /// Sets the block gas limit for transaction validation.
+    #[must_use]
+    pub const fn with_block_gas_limit(mut self, limit: u64) -> Self {
+        self.block_gas_limit = limit;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -123,6 +138,7 @@ mod tests {
         assert_eq!(config.replacement_bump_percent, 10);
         assert_eq!(config.pending_ttl_secs, 30 * 60);
         assert_eq!(config.queued_ttl_secs, 60 * 60);
+        assert_eq!(config.block_gas_limit, DEFAULT_BLOCK_GAS_LIMIT);
     }
 
     #[test]
@@ -137,6 +153,7 @@ mod tests {
         assert_eq!(new.replacement_bump_percent, default.replacement_bump_percent);
         assert_eq!(new.pending_ttl_secs, default.pending_ttl_secs);
         assert_eq!(new.queued_ttl_secs, default.queued_ttl_secs);
+        assert_eq!(new.block_gas_limit, default.block_gas_limit);
     }
 
     #[test]
@@ -190,6 +207,12 @@ mod tests {
     }
 
     #[test]
+    fn builder_with_block_gas_limit() {
+        let config = PoolConfig::new().with_block_gas_limit(30_000_000);
+        assert_eq!(config.block_gas_limit, 30_000_000);
+    }
+
+    #[test]
     fn builder_chaining() {
         let config = PoolConfig::new()
             .with_max_pending_txs(10000)
@@ -199,7 +222,8 @@ mod tests {
             .with_min_gas_price(500)
             .with_replacement_bump_percent(15)
             .with_pending_ttl_secs(45)
-            .with_queued_ttl_secs(90);
+            .with_queued_ttl_secs(90)
+            .with_block_gas_limit(60_000_000);
 
         assert_eq!(config.max_pending_txs, 10000);
         assert_eq!(config.max_queued_txs, 5000);
@@ -209,6 +233,7 @@ mod tests {
         assert_eq!(config.replacement_bump_percent, 15);
         assert_eq!(config.pending_ttl_secs, 45);
         assert_eq!(config.queued_ttl_secs, 90);
+        assert_eq!(config.block_gas_limit, 60_000_000);
     }
 
     #[test]
