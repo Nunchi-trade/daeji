@@ -59,9 +59,17 @@ pub struct AppMetrics {
     /// layer is consistently slower than the consensus layer.
     pub proposal_snapshot_misses: Counter,
     /// Total proposals skipped because the tip was too far ahead of the
-    /// last finalized height (proposal lag guard).  A rising count means
-    /// finalization is not keeping up with block production.
+    /// last persisted height (execution backpressure guard, Issue #10).
+    /// A rising count means the execution pipeline is not keeping up with
+    /// block production.
     pub proposal_lag_skips: Counter,
+    /// Current gap between the consensus-finalized height and the last
+    /// height that has been fully persisted to QMDB (execution lag).
+    ///
+    /// Under steady-state operation this should stay near zero.  A
+    /// persistently non-zero value indicates the execution pipeline is
+    /// falling behind block production and backpressure is active.
+    pub execution_lag: Gauge,
     /// Histogram of time spent waiting for the parent snapshot to become
     /// available during `build_block`, in seconds.  Only recorded when at
     /// least one poll attempt was needed (i.e. the snapshot was not
@@ -140,6 +148,7 @@ impl AppMetrics {
             proposal_snapshot_misses: Counter::default(),
             proposal_lag_skips: Counter::default(),
             snapshot_poll_wait: Histogram::new(SNAPSHOT_POLL_BUCKETS),
+            execution_lag: Gauge::default(),
             finalization_failures: Counter::default(),
             blocks_finalized: Counter::default(),
             evm_execution_seconds: Histogram::new(EVM_EXEC_BUCKETS),
@@ -199,8 +208,13 @@ impl AppMetrics {
         );
         registry.register(
             "kora_proposal_lag_skips",
-            "Proposals skipped due to finalization lag guard",
+            "Proposals skipped due to execution backpressure guard",
             self.proposal_lag_skips.clone(),
+        );
+        registry.register(
+            "kora_execution_lag",
+            "Gap between consensus-finalized height and last QMDB-persisted height",
+            self.execution_lag.clone(),
         );
         registry.register(
             "kora_snapshot_poll_wait_seconds",

@@ -79,6 +79,14 @@ struct NodeStateInner {
     recovered_height: AtomicU64,
     /// Highest block height that has been fully verified via execution.
     last_verified_height: AtomicU64,
+    /// Highest block height that has been fully persisted to QMDB.
+    ///
+    /// Updated by the finalization reporter after `finalize_with_retry`
+    /// succeeds (i.e. after the block has been executed and written to
+    /// QMDB, not merely when the marshal delivers it).  This is the true
+    /// post-persistence signal used by the proposal lag guard to prevent
+    /// the leader from racing ahead of execution (Issue #10).
+    last_persisted_height: AtomicU64,
 }
 
 impl NodeState {
@@ -122,6 +130,7 @@ impl NodeState {
                 is_leader: RwLock::new(false),
                 recovered_height: AtomicU64::new(0),
                 last_verified_height: AtomicU64::new(0),
+                last_persisted_height: AtomicU64::new(0),
             }),
         }
     }
@@ -193,6 +202,23 @@ impl NodeState {
     /// Return the last verified height.
     pub fn last_verified_height(&self) -> u64 {
         self.inner.last_verified_height.load(Ordering::Relaxed)
+    }
+
+    /// Advance the last persisted height (monotonically increasing).
+    ///
+    /// Called by the finalization reporter after QMDB persistence succeeds.
+    /// This is distinct from [`Self::set_finalized_height`], which is called
+    /// when the marshal delivers a finalized block (before persistence).
+    pub fn set_last_persisted_height(&self, height: u64) {
+        self.inner.last_persisted_height.fetch_max(height, Ordering::Relaxed);
+    }
+
+    /// Return the highest block height that has been fully persisted to QMDB.
+    ///
+    /// Used by the proposal lag guard in `RevmApplication::propose()` to
+    /// prevent the leader from racing ahead of execution (Issue #10).
+    pub fn last_persisted_height(&self) -> u64 {
+        self.inner.last_persisted_height.load(Ordering::Relaxed)
     }
 
     /// Returns `true` when the node is catching up after recovery.

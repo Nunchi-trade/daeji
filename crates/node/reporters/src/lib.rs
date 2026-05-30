@@ -330,6 +330,32 @@ async fn handle_finalized_update<E, P>(
                 }
             }
 
+            // Advance the last-persisted-height counter now that QMDB
+            // persistence has completed (or was a no-op because the snapshot
+            // was already persisted).  This is the signal read by the proposal
+            // lag guard in `propose()` to enforce execution backpressure
+            // (Issue #10).
+            //
+            // `set_finalized_height` was called at the top of this arm when
+            // the marshal delivered the block; that marks the
+            // consensus-finalized height.  `set_last_persisted_height` here
+            // marks the execution-persisted height.  The proposal lag guard
+            // compares the two so that the consensus leader cannot race more
+            // than MAX_PROPOSAL_LAG blocks ahead of execution.
+            if let Some(ref ns) = node_state {
+                ns.set_last_persisted_height(block.height);
+                // Update the execution lag gauge so operators can observe how
+                // far behind execution is relative to consensus at any moment.
+                // After updating last_persisted_height to block.height, the
+                // lag is finalized_height - block.height (may be non-zero if
+                // the delivery queue had multiple blocks pending).
+                if let Some(ref m) = metrics {
+                    let finalized = ns.finalized_height();
+                    let lag = finalized.saturating_sub(block.height);
+                    m.execution_lag.set(lag as i64);
+                }
+            }
+
             acknowledge_checkpoint(pending_acks, block.height, checkpoint_interval, ack).await;
 
             // Prune the mempool -- the block is consensus-finalized, so its

@@ -47,19 +47,31 @@ const SNAPSHOT_WAIT_TIMEOUT: Duration = Duration::from_millis(100);
 /// leaders from pushing timestamps arbitrarily far forward.
 const MAX_FUTURE_TIMESTAMP_DRIFT: u64 = 15;
 
-/// Maximum number of unfinalized blocks a leader may be ahead of the last
-/// finalized height before it voluntarily skips its proposal turn.  This
-/// prevents a single fast leader from racing too far ahead of finalization,
-/// which can cascade into snapshot-miss failures for other validators.
+/// Maximum number of blocks a leader may be ahead of the last *persisted*
+/// height (i.e. the height at which QMDB execution has completed) before it
+/// voluntarily skips its proposal turn.
 ///
-/// The previous value of 8 was too tight under CPU contention and after node
-/// restarts: transient finalization stalls (or the finalization pipeline
-/// lagging during re-sync) would trip the guard and force every leader to
-/// skip, producing a cascade of nullifications that could stall the entire
-/// network.  A value of 64 gives finalization plenty of room to drain
-/// without stalling proposals on healthy nodes.  At the current throughput
-/// ceiling of ~30 blocks/s, a gap of 64 represents roughly 2 seconds of
-/// blocks.
+/// This is the primary backpressure mechanism between the Simplex consensus
+/// engine and the execution layer (Issue #10).  The guard prevents a fast
+/// leader from building an unbounded chain of unfinalized snapshots that the
+/// execution layer cannot process in time, which would cause:
+///
+/// * Unbounded tmpfs growth (~4.6 KB/block in freezer tables).
+/// * Snapshot eviction before finalization can consume them.
+/// * Heap growth proportional to the unprocessed block count.
+///
+/// The guard compares `parent.height` against `last_persisted_height` (the
+/// height at which QMDB persistence last completed) rather than against
+/// `finalized_height` (which is set when the marshal *delivers* a block,
+/// before execution).  Using the persisted height creates a true feedback
+/// loop: if execution falls behind, proposals pause until it catches up.
+///
+/// When the gap exceeds this threshold, `propose()` returns `None`, causing
+/// the view to timeout after `leader_timeout_secs` (currently 1 s).
+///
+/// Value rationale: 64 blocks is ~2 seconds at ~30 blocks/s, giving the
+/// execution pipeline enough room to absorb transient bursts while keeping
+/// the in-flight window small enough to bound tmpfs and heap growth.
 const MAX_PROPOSAL_LAG: u64 = 64;
 
 fn unix_timestamp_secs<Env: Clock>(env: &Env) -> u64 {
@@ -782,22 +794,32 @@ where
             let parent = ancestry.next().await?;
             let ancestry_elapsed = start.elapsed();
 
-            // Proposal lag guard: if the tip is too far ahead of the last
-            // finalized height, skip this proposal to let finalization catch
-            // up.  This prevents a fast leader from building an unbounded
-            // chain of unfinalized snapshots that other validators cannot
-            // verify in time.
+            // Execution backpressure guard (Issue #10): if the tip is too far
+            // ahead of the last *persisted* height (i.e. the height at which
+            // QMDB execution has completed), skip this proposal.
+            //
+            // `last_persisted_height` is advanced by the finalization
+            // reporter *after* QMDB persistence succeeds -- it is the true
+            // post-execution signal.  `finalized_height` is set when the
+            // marshal delivers a block (before execution), so it cannot
+            // serve as a backpressure signal: on a fast CPU, finalized_height
+            // races ahead of execution just as quickly as the consensus tip.
+            //
+            // By comparing against last_persisted_height we create a direct
+            // feedback loop between the execution pipeline and the proposal
+            // rate: when execution falls behind, proposals pause until the
+            // pipeline drains back within MAX_PROPOSAL_LAG blocks.
             if let Some(ref state) = node_state {
-                let finalized = state.finalized_height();
-                if parent.height > finalized + MAX_PROPOSAL_LAG {
+                let persisted = state.last_persisted_height();
+                if parent.height > persisted + MAX_PROPOSAL_LAG {
                     if let Some(ref m) = metrics {
                         m.proposal_lag_skips.inc();
                     }
                     warn!(
                         parent_height = parent.height,
-                        finalized_height = finalized,
+                        last_persisted_height = persisted,
                         max_lag = MAX_PROPOSAL_LAG,
-                        "skipping proposal: parent too far ahead of finalized height"
+                        "skipping proposal: parent too far ahead of last persisted height                          (execution backpressure)"
                     );
                     return None;
                 }
