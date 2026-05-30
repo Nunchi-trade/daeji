@@ -3,6 +3,9 @@ name: kora-devnet
 networks:
   kora-net:
     driver: bridge
+  obs-net:
+    driver: bridge
+    internal: true
 
 volumes:
   data_node0:
@@ -382,6 +385,7 @@ services:
       - "127.0.0.1:9090:9090"
     networks:
       - kora-net
+      - obs-net
 
   loki:
     image: grafana/loki:3.4.2
@@ -401,7 +405,7 @@ services:
     ports:
       - "127.0.0.1:3100:3100"
     networks:
-      - kora-net
+      - obs-net
 
   promtail:
     image: grafana/promtail:3.4.2
@@ -425,7 +429,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     command: -config.file=/etc/promtail/config.yml
     networks:
-      - kora-net
+      - obs-net
 
   grafana:
     image: grafana/grafana:latest
@@ -455,4 +459,4 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     networks:
-      - kora-net
+      - obs-net
