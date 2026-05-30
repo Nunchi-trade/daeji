@@ -1,0 +1,1186 @@
+# HELP application_metadata_keys number of tracked keys.
+# TYPE application_metadata_keys gauge
+application_metadata_keys 1
+# HELP application_metadata_sync_overwrites number of syncs that modified existing data.
+# TYPE application_metadata_sync_overwrites counter
+application_metadata_sync_overwrites_total 70608
+# HELP application_metadata_sync_rewrites number of syncs that rewrote all data.
+# TYPE application_metadata_sync_rewrites counter
+application_metadata_sync_rewrites_total 6
+# HELP broadcast_get Number of `get` requests by status.
+# TYPE broadcast_get counter
+broadcast_get_total{status="Failure"} 2490
+broadcast_get_total{status="Success"} 395545
+# HELP broadcast_peer Number of broadcasts received by peer.
+# TYPE broadcast_peer counter
+broadcast_peer_total{sequencer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef"} 16012
+broadcast_peer_total{sequencer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54"} 16113
+broadcast_peer_total{sequencer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64"} 19301
+# HELP broadcast_receive Number of received messages by status.
+# TYPE broadcast_receive counter
+broadcast_receive_total{status="Success"} 51413
+broadcast_receive_total{status="Dropped"} 13
+# HELP broadcast_subscribe Number of `subscribe` requests by status.
+# TYPE broadcast_subscribe counter
+broadcast_subscribe_total{status="Success"} 2490
+# HELP broadcast_waiters Number of digests being awaited.
+# TYPE broadcast_waiters gauge
+broadcast_waiters 0
+# HELP cache_cache_finalizations_gets Number of gets performed.
+# TYPE cache_cache_finalizations_gets counter
+cache_cache_finalizations_gets_total{epoch="0"} 0
+# HELP cache_cache_finalizations_has Number of has performed.
+# TYPE cache_cache_finalizations_has counter
+cache_cache_finalizations_has_total{epoch="0"} 0
+# HELP cache_cache_finalizations_index_items Number of items in the index.
+# TYPE cache_cache_finalizations_index_items gauge
+cache_cache_finalizations_index_items{epoch="0"} 45305
+# HELP cache_cache_finalizations_index_keys Number of translated keys in the index.
+# TYPE cache_cache_finalizations_index_keys gauge
+cache_cache_finalizations_index_keys{epoch="0"} 43165
+# HELP cache_cache_finalizations_index_pruned Number of items pruned.
+# TYPE cache_cache_finalizations_index_pruned counter
+cache_cache_finalizations_index_pruned_total{epoch="0"} 25309
+# HELP cache_cache_finalizations_indices_pruned Number of indices pruned.
+# TYPE cache_cache_finalizations_indices_pruned counter
+cache_cache_finalizations_indices_pruned_total{epoch="0"} 66032
+# HELP cache_cache_finalizations_items_tracked Number of items tracked.
+# TYPE cache_cache_finalizations_items_tracked gauge
+cache_cache_finalizations_items_tracked{epoch="0"} 4582
+# HELP cache_cache_finalizations_oversized_index_pruned Number of blobs pruned.
+# TYPE cache_cache_finalizations_oversized_index_pruned counter
+cache_cache_finalizations_oversized_index_pruned_total{epoch="0"} 22
+# HELP cache_cache_finalizations_oversized_index_synced Number of syncs.
+# TYPE cache_cache_finalizations_oversized_index_synced counter
+cache_cache_finalizations_oversized_index_synced_total{epoch="0"} 70614
+# HELP cache_cache_finalizations_oversized_index_tracked Number of blobs.
+# TYPE cache_cache_finalizations_oversized_index_tracked gauge
+cache_cache_finalizations_oversized_index_tracked{epoch="0"} 2
+# HELP cache_cache_finalizations_oversized_values_pruned Number of blobs pruned.
+# TYPE cache_cache_finalizations_oversized_values_pruned counter
+cache_cache_finalizations_oversized_values_pruned_total{epoch="0"} 22
+# HELP cache_cache_finalizations_oversized_values_synced Number of syncs.
+# TYPE cache_cache_finalizations_oversized_values_synced counter
+cache_cache_finalizations_oversized_values_synced_total{epoch="0"} 70614
+# HELP cache_cache_finalizations_oversized_values_tracked Number of blobs.
+# TYPE cache_cache_finalizations_oversized_values_tracked gauge
+cache_cache_finalizations_oversized_values_tracked{epoch="0"} 2
+# HELP cache_cache_finalizations_syncs Number of syncs called.
+# TYPE cache_cache_finalizations_syncs counter
+cache_cache_finalizations_syncs_total{epoch="0"} 70614
+# HELP cache_cache_finalizations_unnecessary_reads Number of unnecessary reads performed during key lookups.
+# TYPE cache_cache_finalizations_unnecessary_reads counter
+cache_cache_finalizations_unnecessary_reads_total{epoch="0"} 0
+# HELP cache_cache_notarizations_gets Number of gets performed.
+# TYPE cache_cache_notarizations_gets counter
+cache_cache_notarizations_gets_total{epoch="0"} 27659
+# HELP cache_cache_notarizations_has Number of has performed.
+# TYPE cache_cache_notarizations_has counter
+cache_cache_notarizations_has_total{epoch="0"} 0
+# HELP cache_cache_notarizations_index_items Number of items in the index.
+# TYPE cache_cache_notarizations_index_items gauge
+cache_cache_notarizations_index_items{epoch="0"} 45305
+# HELP cache_cache_notarizations_index_keys Number of translated keys in the index.
+# TYPE cache_cache_notarizations_index_keys gauge
+cache_cache_notarizations_index_keys{epoch="0"} 43165
+# HELP cache_cache_notarizations_index_pruned Number of items pruned.
+# TYPE cache_cache_notarizations_index_pruned counter
+cache_cache_notarizations_index_pruned_total{epoch="0"} 25309
+# HELP cache_cache_notarizations_indices_pruned Number of indices pruned.
+# TYPE cache_cache_notarizations_indices_pruned counter
+cache_cache_notarizations_indices_pruned_total{epoch="0"} 66032
+# HELP cache_cache_notarizations_items_tracked Number of items tracked.
+# TYPE cache_cache_notarizations_items_tracked gauge
+cache_cache_notarizations_items_tracked{epoch="0"} 4582
+# HELP cache_cache_notarizations_oversized_index_pruned Number of blobs pruned.
+# TYPE cache_cache_notarizations_oversized_index_pruned counter
+cache_cache_notarizations_oversized_index_pruned_total{epoch="0"} 22
+# HELP cache_cache_notarizations_oversized_index_synced Number of syncs.
+# TYPE cache_cache_notarizations_oversized_index_synced counter
+cache_cache_notarizations_oversized_index_synced_total{epoch="0"} 70614
+# HELP cache_cache_notarizations_oversized_index_tracked Number of blobs.
+# TYPE cache_cache_notarizations_oversized_index_tracked gauge
+cache_cache_notarizations_oversized_index_tracked{epoch="0"} 2
+# HELP cache_cache_notarizations_oversized_values_pruned Number of blobs pruned.
+# TYPE cache_cache_notarizations_oversized_values_pruned counter
+cache_cache_notarizations_oversized_values_pruned_total{epoch="0"} 22
+# HELP cache_cache_notarizations_oversized_values_synced Number of syncs.
+# TYPE cache_cache_notarizations_oversized_values_synced counter
+cache_cache_notarizations_oversized_values_synced_total{epoch="0"} 70614
+# HELP cache_cache_notarizations_oversized_values_tracked Number of blobs.
+# TYPE cache_cache_notarizations_oversized_values_tracked gauge
+cache_cache_notarizations_oversized_values_tracked{epoch="0"} 2
+# HELP cache_cache_notarizations_syncs Number of syncs called.
+# TYPE cache_cache_notarizations_syncs counter
+cache_cache_notarizations_syncs_total{epoch="0"} 70614
+# HELP cache_cache_notarizations_unnecessary_reads Number of unnecessary reads performed during key lookups.
+# TYPE cache_cache_notarizations_unnecessary_reads counter
+cache_cache_notarizations_unnecessary_reads_total{epoch="0"} 0
+# HELP cache_cache_notarized_gets Number of gets performed.
+# TYPE cache_cache_notarized_gets counter
+cache_cache_notarized_gets_total{epoch="0"} 2490
+# HELP cache_cache_notarized_has Number of has performed.
+# TYPE cache_cache_notarized_has counter
+cache_cache_notarized_has_total{epoch="0"} 0
+# HELP cache_cache_notarized_index_items Number of items in the index.
+# TYPE cache_cache_notarized_index_items gauge
+cache_cache_notarized_index_items{epoch="0"} 45305
+# HELP cache_cache_notarized_index_keys Number of translated keys in the index.
+# TYPE cache_cache_notarized_index_keys gauge
+cache_cache_notarized_index_keys{epoch="0"} 43165
+# HELP cache_cache_notarized_index_pruned Number of items pruned.
+# TYPE cache_cache_notarized_index_pruned counter
+cache_cache_notarized_index_pruned_total{epoch="0"} 25309
+# HELP cache_cache_notarized_indices_pruned Number of indices pruned.
+# TYPE cache_cache_notarized_indices_pruned counter
+cache_cache_notarized_indices_pruned_total{epoch="0"} 66032
+# HELP cache_cache_notarized_items_tracked Number of items tracked.
+# TYPE cache_cache_notarized_items_tracked gauge
+cache_cache_notarized_items_tracked{epoch="0"} 4582
+# HELP cache_cache_notarized_oversized_index_pruned Number of blobs pruned.
+# TYPE cache_cache_notarized_oversized_index_pruned counter
+cache_cache_notarized_oversized_index_pruned_total{epoch="0"} 22
+# HELP cache_cache_notarized_oversized_index_synced Number of syncs.
+# TYPE cache_cache_notarized_oversized_index_synced counter
+cache_cache_notarized_oversized_index_synced_total{epoch="0"} 70614
+# HELP cache_cache_notarized_oversized_index_tracked Number of blobs.
+# TYPE cache_cache_notarized_oversized_index_tracked gauge
+cache_cache_notarized_oversized_index_tracked{epoch="0"} 2
+# HELP cache_cache_notarized_oversized_values_pruned Number of blobs pruned.
+# TYPE cache_cache_notarized_oversized_values_pruned counter
+cache_cache_notarized_oversized_values_pruned_total{epoch="0"} 22
+# HELP cache_cache_notarized_oversized_values_synced Number of syncs.
+# TYPE cache_cache_notarized_oversized_values_synced counter
+cache_cache_notarized_oversized_values_synced_total{epoch="0"} 70614
+# HELP cache_cache_notarized_oversized_values_tracked Number of blobs.
+# TYPE cache_cache_notarized_oversized_values_tracked gauge
+cache_cache_notarized_oversized_values_tracked{epoch="0"} 2
+# HELP cache_cache_notarized_syncs Number of syncs called.
+# TYPE cache_cache_notarized_syncs counter
+cache_cache_notarized_syncs_total{epoch="0"} 70614
+# HELP cache_cache_notarized_unnecessary_reads Number of unnecessary reads performed during key lookups.
+# TYPE cache_cache_notarized_unnecessary_reads counter
+cache_cache_notarized_unnecessary_reads_total{epoch="0"} 136
+# HELP cache_cache_verified_gets Number of gets performed.
+# TYPE cache_cache_verified_gets counter
+cache_cache_verified_gets_total{epoch="0"} 2490
+# HELP cache_cache_verified_has Number of has performed.
+# TYPE cache_cache_verified_has counter
+cache_cache_verified_has_total{epoch="0"} 0
+# HELP cache_cache_verified_index_items Number of items in the index.
+# TYPE cache_cache_verified_index_items gauge
+cache_cache_verified_index_items{epoch="0"} 45306
+# HELP cache_cache_verified_index_keys Number of translated keys in the index.
+# TYPE cache_cache_verified_index_keys gauge
+cache_cache_verified_index_keys{epoch="0"} 43166
+# HELP cache_cache_verified_index_pruned Number of items pruned.
+# TYPE cache_cache_verified_index_pruned counter
+cache_cache_verified_index_pruned_total{epoch="0"} 25309
+# HELP cache_cache_verified_indices_pruned Number of indices pruned.
+# TYPE cache_cache_verified_indices_pruned counter
+cache_cache_verified_indices_pruned_total{epoch="0"} 66032
+# HELP cache_cache_verified_items_tracked Number of items tracked.
+# TYPE cache_cache_verified_items_tracked gauge
+cache_cache_verified_items_tracked{epoch="0"} 4583
+# HELP cache_cache_verified_oversized_index_pruned Number of blobs pruned.
+# TYPE cache_cache_verified_oversized_index_pruned counter
+cache_cache_verified_oversized_index_pruned_total{epoch="0"} 22
+# HELP cache_cache_verified_oversized_index_synced Number of syncs.
+# TYPE cache_cache_verified_oversized_index_synced counter
+cache_cache_verified_oversized_index_synced_total{epoch="0"} 70615
+# HELP cache_cache_verified_oversized_index_tracked Number of blobs.
+# TYPE cache_cache_verified_oversized_index_tracked gauge
+cache_cache_verified_oversized_index_tracked{epoch="0"} 2
+# HELP cache_cache_verified_oversized_values_pruned Number of blobs pruned.
+# TYPE cache_cache_verified_oversized_values_pruned counter
+cache_cache_verified_oversized_values_pruned_total{epoch="0"} 22
+# HELP cache_cache_verified_oversized_values_synced Number of syncs.
+# TYPE cache_cache_verified_oversized_values_synced counter
+cache_cache_verified_oversized_values_synced_total{epoch="0"} 70615
+# HELP cache_cache_verified_oversized_values_tracked Number of blobs.
+# TYPE cache_cache_verified_oversized_values_tracked gauge
+cache_cache_verified_oversized_values_tracked{epoch="0"} 2
+# HELP cache_cache_verified_syncs Number of syncs called.
+# TYPE cache_cache_verified_syncs counter
+cache_cache_verified_syncs_total{epoch="0"} 70615
+# HELP cache_cache_verified_unnecessary_reads Number of unnecessary reads performed during key lookups.
+# TYPE cache_cache_verified_unnecessary_reads counter
+cache_cache_verified_unnecessary_reads_total{epoch="0"} 136
+# HELP cache_metadata_keys number of tracked keys.
+# TYPE cache_metadata_keys gauge
+cache_metadata_keys 0
+# HELP cache_metadata_sync_overwrites number of syncs that modified existing data.
+# TYPE cache_metadata_sync_overwrites counter
+cache_metadata_sync_overwrites_total 0
+# HELP cache_metadata_sync_rewrites number of syncs that rewrote all data.
+# TYPE cache_metadata_sync_rewrites counter
+cache_metadata_sync_rewrites_total 0
+# HELP engine_batcher_added number of messages added to the verifier.
+# TYPE engine_batcher_added counter
+engine_batcher_added_total 635823
+# HELP engine_batcher_batch_size number of messages in a signature verification batch.
+# TYPE engine_batcher_batch_size histogram
+engine_batcher_batch_size_sum 340801.0
+engine_batcher_batch_size_count 166997
+engine_batcher_batch_size_bucket{le="1.0"} 0
+engine_batcher_batch_size_bucket{le="2.0"} 160190
+engine_batcher_batch_size_bucket{le="4.0"} 166997
+engine_batcher_batch_size_bucket{le="8.0"} 166997
+engine_batcher_batch_size_bucket{le="16.0"} 166997
+engine_batcher_batch_size_bucket{le="32.0"} 166997
+engine_batcher_batch_size_bucket{le="64.0"} 166997
+engine_batcher_batch_size_bucket{le="128.0"} 166997
+engine_batcher_batch_size_bucket{le="256.0"} 166997
+engine_batcher_batch_size_bucket{le="512.0"} 166997
+engine_batcher_batch_size_bucket{le="+Inf"} 166997
+# HELP engine_batcher_inbound_messages number of inbound messages.
+# TYPE engine_batcher_inbound_messages counter
+engine_batcher_inbound_messages_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",message="Notarization"} 70614
+engine_batcher_inbound_messages_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",message="Finalize"} 54507
+engine_batcher_inbound_messages_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",message="Nullify"} 41875
+engine_batcher_inbound_messages_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",message="Nullification"} 25774
+engine_batcher_inbound_messages_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",message="Notarize"} 54598
+engine_batcher_inbound_messages_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64",message="Finalization"} 70614
+engine_batcher_inbound_messages_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64",message="Nullify"} 25774
+engine_batcher_inbound_messages_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",message="Finalization"} 70614
+engine_batcher_inbound_messages_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64",message="Notarize"} 70605
+engine_batcher_inbound_messages_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",message="Finalization"} 70614
+engine_batcher_inbound_messages_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",message="Notarize"} 54491
+engine_batcher_inbound_messages_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64",message="Notarization"} 70614
+engine_batcher_inbound_messages_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",message="Finalize"} 54605
+engine_batcher_inbound_messages_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",message="Nullification"} 25774
+engine_batcher_inbound_messages_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",message="Notarization"} 70614
+engine_batcher_inbound_messages_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64",message="Nullification"} 25774
+engine_batcher_inbound_messages_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64",message="Finalize"} 70606
+engine_batcher_inbound_messages_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",message="Nullify"} 41778
+# HELP engine_batcher_latest_vote view of latest vote received per peer.
+# TYPE engine_batcher_latest_vote gauge
+engine_batcher_latest_vote{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54"} 96389
+engine_batcher_latest_vote{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef"} 96389
+engine_batcher_latest_vote{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64"} 96389
+engine_batcher_latest_vote{peer="36249a90f910dff08e4e78ab7cf58612a14926eb80b6cee296c38c4b0995cb02"} 0
+# HELP engine_batcher_recover_latency certificate recover latency.
+# TYPE engine_batcher_recover_latency histogram
+engine_batcher_recover_latency_sum 110.39310691899911
+engine_batcher_recover_latency_count 166997
+engine_batcher_recover_latency_bucket{le="0.000003"} 0
+engine_batcher_recover_latency_bucket{le="0.00001"} 0
+engine_batcher_recover_latency_bucket{le="0.00003"} 0
+engine_batcher_recover_latency_bucket{le="0.0001"} 0
+engine_batcher_recover_latency_bucket{le="0.0003"} 1
+engine_batcher_recover_latency_bucket{le="0.001"} 158228
+engine_batcher_recover_latency_bucket{le="0.002"} 164180
+engine_batcher_recover_latency_bucket{le="0.003"} 166635
+engine_batcher_recover_latency_bucket{le="0.005"} 166860
+engine_batcher_recover_latency_bucket{le="0.01"} 166949
+engine_batcher_recover_latency_bucket{le="0.015"} 166972
+engine_batcher_recover_latency_bucket{le="0.02"} 166983
+engine_batcher_recover_latency_bucket{le="0.025"} 166989
+engine_batcher_recover_latency_bucket{le="0.03"} 166989
+engine_batcher_recover_latency_bucket{le="0.1"} 166997
+engine_batcher_recover_latency_bucket{le="0.2"} 166997
+engine_batcher_recover_latency_bucket{le="+Inf"} 166997
+# HELP engine_batcher_verified number of messages verified.
+# TYPE engine_batcher_verified counter
+engine_batcher_verified_total 340801
+# HELP engine_batcher_verify_latency latency of signature verification.
+# TYPE engine_batcher_verify_latency histogram
+engine_batcher_verify_latency_sum 445.966627696989
+engine_batcher_verify_latency_count 166997
+engine_batcher_verify_latency_bucket{le="0.000003"} 0
+engine_batcher_verify_latency_bucket{le="0.00001"} 0
+engine_batcher_verify_latency_bucket{le="0.00003"} 0
+engine_batcher_verify_latency_bucket{le="0.0001"} 0
+engine_batcher_verify_latency_bucket{le="0.0003"} 0
+engine_batcher_verify_latency_bucket{le="0.001"} 0
+engine_batcher_verify_latency_bucket{le="0.002"} 1
+engine_batcher_verify_latency_bucket{le="0.003"} 143843
+engine_batcher_verify_latency_bucket{le="0.005"} 165476
+engine_batcher_verify_latency_bucket{le="0.01"} 166730
+engine_batcher_verify_latency_bucket{le="0.015"} 166872
+engine_batcher_verify_latency_bucket{le="0.02"} 166909
+engine_batcher_verify_latency_bucket{le="0.025"} 166937
+engine_batcher_verify_latency_bucket{le="0.03"} 166954
+engine_batcher_verify_latency_bucket{le="0.1"} 166997
+engine_batcher_verify_latency_bucket{le="0.2"} 166997
+engine_batcher_verify_latency_bucket{le="+Inf"} 166997
+# HELP engine_resolver_resolver_cancel Number of canceled fetches by status.
+# TYPE engine_resolver_resolver_cancel counter
+engine_resolver_resolver_cancel_total{status="Dropped"} 166995
+# HELP engine_resolver_resolver_fetch_active Current number of active fetch requests.
+# TYPE engine_resolver_resolver_fetch_active gauge
+engine_resolver_resolver_fetch_active 0
+# HELP engine_resolver_resolver_fetch_duration Histogram of successful fetches.
+# TYPE engine_resolver_resolver_fetch_duration histogram
+engine_resolver_resolver_fetch_duration_sum 0.0
+engine_resolver_resolver_fetch_duration_count 0
+engine_resolver_resolver_fetch_duration_bucket{le="0.01"} 0
+engine_resolver_resolver_fetch_duration_bucket{le="0.02"} 0
+engine_resolver_resolver_fetch_duration_bucket{le="0.05"} 0
+engine_resolver_resolver_fetch_duration_bucket{le="0.1"} 0
+engine_resolver_resolver_fetch_duration_bucket{le="0.2"} 0
+engine_resolver_resolver_fetch_duration_bucket{le="0.5"} 0
+engine_resolver_resolver_fetch_duration_bucket{le="1.0"} 0
+engine_resolver_resolver_fetch_duration_bucket{le="2.0"} 0
+engine_resolver_resolver_fetch_duration_bucket{le="5.0"} 0
+engine_resolver_resolver_fetch_duration_bucket{le="10.0"} 0
+engine_resolver_resolver_fetch_duration_bucket{le="30.0"} 0
+engine_resolver_resolver_fetch_duration_bucket{le="60.0"} 0
+engine_resolver_resolver_fetch_duration_bucket{le="300.0"} 0
+engine_resolver_resolver_fetch_duration_bucket{le="+Inf"} 0
+# HELP engine_resolver_resolver_fetch_pending Current number of pending fetch requests.
+# TYPE engine_resolver_resolver_fetch_pending gauge
+engine_resolver_resolver_fetch_pending 0
+# HELP engine_resolver_resolver_fetcher_resolves Number and duration of requests that were resolved.
+# TYPE engine_resolver_resolver_fetcher_resolves histogram
+engine_resolver_resolver_fetcher_resolves_sum 0.0
+engine_resolver_resolver_fetcher_resolves_count 0
+engine_resolver_resolver_fetcher_resolves_bucket{le="0.01"} 0
+engine_resolver_resolver_fetcher_resolves_bucket{le="0.02"} 0
+engine_resolver_resolver_fetcher_resolves_bucket{le="0.05"} 0
+engine_resolver_resolver_fetcher_resolves_bucket{le="0.1"} 0
+engine_resolver_resolver_fetcher_resolves_bucket{le="0.2"} 0
+engine_resolver_resolver_fetcher_resolves_bucket{le="0.5"} 0
+engine_resolver_resolver_fetcher_resolves_bucket{le="1.0"} 0
+engine_resolver_resolver_fetcher_resolves_bucket{le="2.0"} 0
+engine_resolver_resolver_fetcher_resolves_bucket{le="5.0"} 0
+engine_resolver_resolver_fetcher_resolves_bucket{le="10.0"} 0
+engine_resolver_resolver_fetcher_resolves_bucket{le="30.0"} 0
+engine_resolver_resolver_fetcher_resolves_bucket{le="60.0"} 0
+engine_resolver_resolver_fetcher_resolves_bucket{le="300.0"} 0
+engine_resolver_resolver_fetcher_resolves_bucket{le="+Inf"} 0
+# HELP engine_resolver_resolver_peers_blocked Current number of blocked peers.
+# TYPE engine_resolver_resolver_peers_blocked gauge
+engine_resolver_resolver_peers_blocked 0
+# HELP engine_resolver_resolver_serve_duration Histogram of successful serves.
+# TYPE engine_resolver_resolver_serve_duration histogram
+engine_resolver_resolver_serve_duration_sum 0.0
+engine_resolver_resolver_serve_duration_count 0
+engine_resolver_resolver_serve_duration_bucket{le="0.000003"} 0
+engine_resolver_resolver_serve_duration_bucket{le="0.00001"} 0
+engine_resolver_resolver_serve_duration_bucket{le="0.00003"} 0
+engine_resolver_resolver_serve_duration_bucket{le="0.0001"} 0
+engine_resolver_resolver_serve_duration_bucket{le="0.0003"} 0
+engine_resolver_resolver_serve_duration_bucket{le="0.001"} 0
+engine_resolver_resolver_serve_duration_bucket{le="0.003"} 0
+engine_resolver_resolver_serve_duration_bucket{le="0.01"} 0
+engine_resolver_resolver_serve_duration_bucket{le="0.03"} 0
+engine_resolver_resolver_serve_duration_bucket{le="0.1"} 0
+engine_resolver_resolver_serve_duration_bucket{le="0.3"} 0
+engine_resolver_resolver_serve_duration_bucket{le="1.0"} 0
+engine_resolver_resolver_serve_duration_bucket{le="+Inf"} 0
+# HELP engine_resolver_resolver_serve_processing Current number of serves currently processing.
+# TYPE engine_resolver_resolver_serve_processing gauge
+engine_resolver_resolver_serve_processing 0
+# HELP engine_voter_finalization_latency finalization latency.
+# TYPE engine_voter_finalization_latency histogram
+engine_voter_finalization_latency_sum 338.077532239002
+engine_voter_finalization_latency_count 19205
+engine_voter_finalization_latency_bucket{le="0.05"} 19129
+engine_voter_finalization_latency_bucket{le="0.1"} 19203
+engine_voter_finalization_latency_bucket{le="0.125"} 19204
+engine_voter_finalization_latency_bucket{le="0.15"} 19205
+engine_voter_finalization_latency_bucket{le="0.16"} 19205
+engine_voter_finalization_latency_bucket{le="0.17"} 19205
+engine_voter_finalization_latency_bucket{le="0.18"} 19205
+engine_voter_finalization_latency_bucket{le="0.19"} 19205
+engine_voter_finalization_latency_bucket{le="0.2"} 19205
+engine_voter_finalization_latency_bucket{le="0.21"} 19205
+engine_voter_finalization_latency_bucket{le="0.22"} 19205
+engine_voter_finalization_latency_bucket{le="0.23"} 19205
+engine_voter_finalization_latency_bucket{le="0.24"} 19205
+engine_voter_finalization_latency_bucket{le="0.25"} 19205
+engine_voter_finalization_latency_bucket{le="0.26"} 19205
+engine_voter_finalization_latency_bucket{le="0.27"} 19205
+engine_voter_finalization_latency_bucket{le="0.28"} 19205
+engine_voter_finalization_latency_bucket{le="0.29"} 19205
+engine_voter_finalization_latency_bucket{le="0.3"} 19205
+engine_voter_finalization_latency_bucket{le="0.31"} 19205
+engine_voter_finalization_latency_bucket{le="0.32"} 19205
+engine_voter_finalization_latency_bucket{le="0.33"} 19205
+engine_voter_finalization_latency_bucket{le="0.34"} 19205
+engine_voter_finalization_latency_bucket{le="0.35"} 19205
+engine_voter_finalization_latency_bucket{le="0.36"} 19205
+engine_voter_finalization_latency_bucket{le="0.37"} 19205
+engine_voter_finalization_latency_bucket{le="0.38"} 19205
+engine_voter_finalization_latency_bucket{le="0.39"} 19205
+engine_voter_finalization_latency_bucket{le="0.4"} 19205
+engine_voter_finalization_latency_bucket{le="0.45"} 19205
+engine_voter_finalization_latency_bucket{le="0.5"} 19205
+engine_voter_finalization_latency_bucket{le="0.6"} 19205
+engine_voter_finalization_latency_bucket{le="0.7"} 19205
+engine_voter_finalization_latency_bucket{le="0.8"} 19205
+engine_voter_finalization_latency_bucket{le="0.9"} 19205
+engine_voter_finalization_latency_bucket{le="1.0"} 19205
+engine_voter_finalization_latency_bucket{le="+Inf"} 19205
+# HELP engine_voter_journal_pruned Number of blobs pruned.
+# TYPE engine_voter_journal_pruned counter
+engine_voter_journal_pruned_total 96130
+# HELP engine_voter_journal_synced Number of syncs.
+# TYPE engine_voter_journal_synced counter
+engine_voter_journal_synced_total 404593
+# HELP engine_voter_journal_tracked Number of blobs.
+# TYPE engine_voter_journal_tracked gauge
+engine_voter_journal_tracked 259
+# HELP engine_voter_notarization_latency notarization latency.
+# TYPE engine_voter_notarization_latency histogram
+engine_voter_notarization_latency_sum 227.36154781699995
+engine_voter_notarization_latency_count 19205
+engine_voter_notarization_latency_bucket{le="0.05"} 19175
+engine_voter_notarization_latency_bucket{le="0.1"} 19204
+engine_voter_notarization_latency_bucket{le="0.125"} 19204
+engine_voter_notarization_latency_bucket{le="0.15"} 19205
+engine_voter_notarization_latency_bucket{le="0.16"} 19205
+engine_voter_notarization_latency_bucket{le="0.17"} 19205
+engine_voter_notarization_latency_bucket{le="0.18"} 19205
+engine_voter_notarization_latency_bucket{le="0.19"} 19205
+engine_voter_notarization_latency_bucket{le="0.2"} 19205
+engine_voter_notarization_latency_bucket{le="0.21"} 19205
+engine_voter_notarization_latency_bucket{le="0.22"} 19205
+engine_voter_notarization_latency_bucket{le="0.23"} 19205
+engine_voter_notarization_latency_bucket{le="0.24"} 19205
+engine_voter_notarization_latency_bucket{le="0.25"} 19205
+engine_voter_notarization_latency_bucket{le="0.26"} 19205
+engine_voter_notarization_latency_bucket{le="0.27"} 19205
+engine_voter_notarization_latency_bucket{le="0.28"} 19205
+engine_voter_notarization_latency_bucket{le="0.29"} 19205
+engine_voter_notarization_latency_bucket{le="0.3"} 19205
+engine_voter_notarization_latency_bucket{le="0.31"} 19205
+engine_voter_notarization_latency_bucket{le="0.32"} 19205
+engine_voter_notarization_latency_bucket{le="0.33"} 19205
+engine_voter_notarization_latency_bucket{le="0.34"} 19205
+engine_voter_notarization_latency_bucket{le="0.35"} 19205
+engine_voter_notarization_latency_bucket{le="0.36"} 19205
+engine_voter_notarization_latency_bucket{le="0.37"} 19205
+engine_voter_notarization_latency_bucket{le="0.38"} 19205
+engine_voter_notarization_latency_bucket{le="0.39"} 19205
+engine_voter_notarization_latency_bucket{le="0.4"} 19205
+engine_voter_notarization_latency_bucket{le="0.45"} 19205
+engine_voter_notarization_latency_bucket{le="0.5"} 19205
+engine_voter_notarization_latency_bucket{le="0.6"} 19205
+engine_voter_notarization_latency_bucket{le="0.7"} 19205
+engine_voter_notarization_latency_bucket{le="0.8"} 19205
+engine_voter_notarization_latency_bucket{le="0.9"} 19205
+engine_voter_notarization_latency_bucket{le="1.0"} 19205
+engine_voter_notarization_latency_bucket{le="+Inf"} 19205
+# HELP engine_voter_outbound_messages number of outbound messages.
+# TYPE engine_voter_outbound_messages counter
+engine_voter_outbound_messages_total{message="Notarization"} 70614
+engine_voter_outbound_messages_total{message="Finalization"} 70614
+engine_voter_outbound_messages_total{message="Notarize"} 70604
+engine_voter_outbound_messages_total{message="Nullify"} 25778
+engine_voter_outbound_messages_total{message="Nullification"} 25774
+engine_voter_outbound_messages_total{message="Finalize"} 70607
+# HELP engine_voter_state_current_view current view.
+# TYPE engine_voter_state_current_view gauge
+engine_voter_state_current_view 96389
+# HELP engine_voter_state_nullifications nullifications.
+# TYPE engine_voter_state_nullifications counter
+engine_voter_state_nullifications_total{leader="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54"} 8032
+engine_voter_state_nullifications_total{leader="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef"} 8062
+engine_voter_state_nullifications_total{leader="36249a90f910dff08e4e78ab7cf58612a14926eb80b6cee296c38c4b0995cb02"} 4871
+engine_voter_state_nullifications_total{leader="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64"} 4809
+# HELP engine_voter_state_timeouts timed out views.
+# TYPE engine_voter_state_timeouts counter
+engine_voter_state_timeouts_total{leader="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",reason="LeaderNullify"} 8031
+engine_voter_state_timeouts_total{leader="36249a90f910dff08e4e78ab7cf58612a14926eb80b6cee296c38c4b0995cb02",reason="MissingProposal"} 4871
+engine_voter_state_timeouts_total{leader="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",reason="LeaderNullify"} 8062
+engine_voter_state_timeouts_total{leader="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64",reason="LeaderNullify"} 4808
+engine_voter_state_timeouts_total{leader="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",reason="LeaderTimeout"} 1
+# HELP engine_voter_state_tracked_views tracked views.
+# TYPE engine_voter_state_tracked_views gauge
+engine_voter_state_tracked_views 259
+# HELP finalizations_by_height_freezer_gets number of get operations.
+# TYPE finalizations_by_height_freezer_gets counter
+finalizations_by_height_freezer_gets_total 0
+# HELP finalizations_by_height_freezer_oversized_index_pruned Number of blobs pruned.
+# TYPE finalizations_by_height_freezer_oversized_index_pruned counter
+finalizations_by_height_freezer_oversized_index_pruned_total 0
+# HELP finalizations_by_height_freezer_oversized_index_synced Number of syncs.
+# TYPE finalizations_by_height_freezer_oversized_index_synced counter
+finalizations_by_height_freezer_oversized_index_synced_total 70614
+# HELP finalizations_by_height_freezer_oversized_index_tracked Number of blobs.
+# TYPE finalizations_by_height_freezer_oversized_index_tracked gauge
+finalizations_by_height_freezer_oversized_index_tracked 1
+# HELP finalizations_by_height_freezer_oversized_values_pruned Number of blobs pruned.
+# TYPE finalizations_by_height_freezer_oversized_values_pruned counter
+finalizations_by_height_freezer_oversized_values_pruned_total 0
+# HELP finalizations_by_height_freezer_oversized_values_synced Number of syncs.
+# TYPE finalizations_by_height_freezer_oversized_values_synced counter
+finalizations_by_height_freezer_oversized_values_synced_total 70614
+# HELP finalizations_by_height_freezer_oversized_values_tracked Number of blobs.
+# TYPE finalizations_by_height_freezer_oversized_values_tracked gauge
+finalizations_by_height_freezer_oversized_values_tracked 1
+# HELP finalizations_by_height_freezer_puts number of put operations.
+# TYPE finalizations_by_height_freezer_puts counter
+finalizations_by_height_freezer_puts_total 70614
+# HELP finalizations_by_height_freezer_resizes number of table resizing operations.
+# TYPE finalizations_by_height_freezer_resizes counter
+finalizations_by_height_freezer_resizes_total 0
+# HELP finalizations_by_height_freezer_unnecessary_reads number of unnecessary reads performed during key lookups.
+# TYPE finalizations_by_height_freezer_unnecessary_reads counter
+finalizations_by_height_freezer_unnecessary_reads_total 0
+# HELP finalizations_by_height_freezer_unnecessary_writes number of unnecessary writes performed during resize.
+# TYPE finalizations_by_height_freezer_unnecessary_writes counter
+finalizations_by_height_freezer_unnecessary_writes_total 0
+# HELP finalizations_by_height_gets Number of gets performed.
+# TYPE finalizations_by_height_gets counter
+finalizations_by_height_gets_total 70614
+# HELP finalizations_by_height_has Number of has performed.
+# TYPE finalizations_by_height_has counter
+finalizations_by_height_has_total 0
+# HELP finalizations_by_height_metadata_keys number of tracked keys.
+# TYPE finalizations_by_height_metadata_keys gauge
+finalizations_by_height_metadata_keys 2
+# HELP finalizations_by_height_metadata_sync_overwrites number of syncs that modified existing data.
+# TYPE finalizations_by_height_metadata_sync_overwrites counter
+finalizations_by_height_metadata_sync_overwrites_total 70612
+# HELP finalizations_by_height_metadata_sync_rewrites number of syncs that rewrote all data.
+# TYPE finalizations_by_height_metadata_sync_rewrites counter
+finalizations_by_height_metadata_sync_rewrites_total 2
+# HELP finalizations_by_height_ordinal_gets Number of get calls.
+# TYPE finalizations_by_height_ordinal_gets counter
+finalizations_by_height_ordinal_gets_total 70614
+# HELP finalizations_by_height_ordinal_has Number of has calls.
+# TYPE finalizations_by_height_ordinal_has counter
+finalizations_by_height_ordinal_has_total 70614
+# HELP finalizations_by_height_ordinal_pruned Number of pruned blobs.
+# TYPE finalizations_by_height_ordinal_pruned counter
+finalizations_by_height_ordinal_pruned_total 0
+# HELP finalizations_by_height_ordinal_puts Number of put calls.
+# TYPE finalizations_by_height_ordinal_puts counter
+finalizations_by_height_ordinal_puts_total 70614
+# HELP finalizations_by_height_ordinal_syncs Number of sync calls.
+# TYPE finalizations_by_height_ordinal_syncs counter
+finalizations_by_height_ordinal_syncs_total 70614
+# HELP finalizations_by_height_syncs Number of syncs called.
+# TYPE finalizations_by_height_syncs counter
+finalizations_by_height_syncs_total 70614
+# HELP finalized_blocks_freezer_gets number of get operations.
+# TYPE finalized_blocks_freezer_gets counter
+finalized_blocks_freezer_gets_total 2490
+# HELP finalized_blocks_freezer_oversized_index_pruned Number of blobs pruned.
+# TYPE finalized_blocks_freezer_oversized_index_pruned counter
+finalized_blocks_freezer_oversized_index_pruned_total 0
+# HELP finalized_blocks_freezer_oversized_index_synced Number of syncs.
+# TYPE finalized_blocks_freezer_oversized_index_synced counter
+finalized_blocks_freezer_oversized_index_synced_total 70614
+# HELP finalized_blocks_freezer_oversized_index_tracked Number of blobs.
+# TYPE finalized_blocks_freezer_oversized_index_tracked gauge
+finalized_blocks_freezer_oversized_index_tracked 1
+# HELP finalized_blocks_freezer_oversized_values_pruned Number of blobs pruned.
+# TYPE finalized_blocks_freezer_oversized_values_pruned counter
+finalized_blocks_freezer_oversized_values_pruned_total 0
+# HELP finalized_blocks_freezer_oversized_values_synced Number of syncs.
+# TYPE finalized_blocks_freezer_oversized_values_synced counter
+finalized_blocks_freezer_oversized_values_synced_total 70614
+# HELP finalized_blocks_freezer_oversized_values_tracked Number of blobs.
+# TYPE finalized_blocks_freezer_oversized_values_tracked gauge
+finalized_blocks_freezer_oversized_values_tracked 1
+# HELP finalized_blocks_freezer_puts number of put operations.
+# TYPE finalized_blocks_freezer_puts counter
+finalized_blocks_freezer_puts_total 70614
+# HELP finalized_blocks_freezer_resizes number of table resizing operations.
+# TYPE finalized_blocks_freezer_resizes counter
+finalized_blocks_freezer_resizes_total 0
+# HELP finalized_blocks_freezer_unnecessary_reads number of unnecessary reads performed during key lookups.
+# TYPE finalized_blocks_freezer_unnecessary_reads counter
+finalized_blocks_freezer_unnecessary_reads_total 39
+# HELP finalized_blocks_freezer_unnecessary_writes number of unnecessary writes performed during resize.
+# TYPE finalized_blocks_freezer_unnecessary_writes counter
+finalized_blocks_freezer_unnecessary_writes_total 0
+# HELP finalized_blocks_gets Number of gets performed.
+# TYPE finalized_blocks_gets counter
+finalized_blocks_gets_total 214333
+# HELP finalized_blocks_has Number of has performed.
+# TYPE finalized_blocks_has counter
+finalized_blocks_has_total 0
+# HELP finalized_blocks_metadata_keys number of tracked keys.
+# TYPE finalized_blocks_metadata_keys gauge
+finalized_blocks_metadata_keys 2
+# HELP finalized_blocks_metadata_sync_overwrites number of syncs that modified existing data.
+# TYPE finalized_blocks_metadata_sync_overwrites counter
+finalized_blocks_metadata_sync_overwrites_total 70612
+# HELP finalized_blocks_metadata_sync_rewrites number of syncs that rewrote all data.
+# TYPE finalized_blocks_metadata_sync_rewrites counter
+finalized_blocks_metadata_sync_rewrites_total 2
+# HELP finalized_blocks_ordinal_gets Number of get calls.
+# TYPE finalized_blocks_ordinal_gets counter
+finalized_blocks_ordinal_gets_total 211843
+# HELP finalized_blocks_ordinal_has Number of has calls.
+# TYPE finalized_blocks_ordinal_has counter
+finalized_blocks_ordinal_has_total 70614
+# HELP finalized_blocks_ordinal_pruned Number of pruned blobs.
+# TYPE finalized_blocks_ordinal_pruned counter
+finalized_blocks_ordinal_pruned_total 0
+# HELP finalized_blocks_ordinal_puts Number of put calls.
+# TYPE finalized_blocks_ordinal_puts counter
+finalized_blocks_ordinal_puts_total 70614
+# HELP finalized_blocks_ordinal_syncs Number of sync calls.
+# TYPE finalized_blocks_ordinal_syncs counter
+finalized_blocks_ordinal_syncs_total 70614
+# HELP finalized_blocks_syncs Number of syncs called.
+# TYPE finalized_blocks_syncs counter
+finalized_blocks_syncs_total 70614
+# HELP finalized_height Finalized height of application.
+# TYPE finalized_height gauge
+finalized_height 70614
+# HELP marshaled_build_duration Histogram of time taken for the application to build a new block, in seconds.
+# TYPE marshaled_build_duration histogram
+marshaled_build_duration_sum 0.8860583200000028
+marshaled_build_duration_count 24076
+marshaled_build_duration_bucket{le="0.000003"} 0
+marshaled_build_duration_bucket{le="0.00001"} 1629
+marshaled_build_duration_bucket{le="0.00003"} 6618
+marshaled_build_duration_bucket{le="0.0001"} 23852
+marshaled_build_duration_bucket{le="0.0003"} 24062
+marshaled_build_duration_bucket{le="0.001"} 24073
+marshaled_build_duration_bucket{le="0.003"} 24073
+marshaled_build_duration_bucket{le="0.01"} 24075
+marshaled_build_duration_bucket{le="0.03"} 24076
+marshaled_build_duration_bucket{le="0.1"} 24076
+marshaled_build_duration_bucket{le="0.3"} 24076
+marshaled_build_duration_bucket{le="1.0"} 24076
+marshaled_build_duration_bucket{le="+Inf"} 24076
+# HELP network_dialer_attempts The number of dial attempts made to each peer.
+# TYPE network_dialer_attempts counter
+network_dialer_attempts_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64"} 5
+network_dialer_attempts_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef"} 4
+network_dialer_attempts_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54"} 4
+# HELP network_listener_handshake_concurrent_rate_limited number of handshake attempts dropped because maximum concurrent handshakes was reached.
+# TYPE network_listener_handshake_concurrent_rate_limited counter
+network_listener_handshake_concurrent_rate_limited_total 0
+# HELP network_listener_handshake_ip_rate_limited number of handshake attempts dropped because an IP exceeded its rate limit.
+# TYPE network_listener_handshake_ip_rate_limited counter
+network_listener_handshake_ip_rate_limited_total 0
+# HELP network_listener_handshake_subnet_rate_limited number of handshake attempts dropped because a subnet exceeded its rate limit.
+# TYPE network_listener_handshake_subnet_rate_limited counter
+network_listener_handshake_subnet_rate_limited_total 0
+# HELP network_listener_handshakes_blocked number of handshake attempts blocked because the IP was private.
+# TYPE network_listener_handshakes_blocked counter
+network_listener_handshakes_blocked_total 0
+# HELP network_spawner_messages_received messages received.
+# TYPE network_spawner_messages_received counter
+network_spawner_messages_received_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64",message="bit_vec"} 237
+network_spawner_messages_received_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",message="greeting"} 1
+network_spawner_messages_received_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",message="data_4"} 13289
+network_spawner_messages_received_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",message="bit_vec"} 237
+network_spawner_messages_received_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",message="data_1"} 167002
+network_spawner_messages_received_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64",message="data_3"} 19301
+network_spawner_messages_received_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64",message="data_0"} 166985
+network_spawner_messages_received_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64",message="data_4"} 2492
+network_spawner_messages_received_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",message="peers"} 1
+network_spawner_messages_received_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",message="data_4"} 15653
+network_spawner_messages_received_total{peer="03415a85a1aad15f287ad222e7dbdaaadfee727485b3dc544574ae0bc37f118b",message="bit_vec"} 237
+network_spawner_messages_received_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",message="greeting"} 1
+network_spawner_messages_received_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64",message="greeting"} 1
+network_spawner_messages_received_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",message="data_0"} 150873
+network_spawner_messages_received_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",message="data_0"} 150981
+network_spawner_messages_received_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",message="bit_vec"} 237
+network_spawner_messages_received_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",message="peers"} 1
+network_spawner_messages_received_total{peer="03415a85a1aad15f287ad222e7dbdaaadfee727485b3dc544574ae0bc37f118b",message="greeting"} 1
+network_spawner_messages_received_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",message="data_3"} 16012
+network_spawner_messages_received_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64",message="data_1"} 167002
+network_spawner_messages_received_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",message="data_3"} 16113
+network_spawner_messages_received_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",message="data_1"} 167002
+# HELP network_spawner_messages_sent messages sent.
+# TYPE network_spawner_messages_sent counter
+network_spawner_messages_sent_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",message="peers"} 237
+network_spawner_messages_sent_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64",message="greeting"} 1
+network_spawner_messages_sent_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64",message="data_4"} 2492
+network_spawner_messages_sent_total{peer="03415a85a1aad15f287ad222e7dbdaaadfee727485b3dc544574ae0bc37f118b",message="data_0"} 166985
+network_spawner_messages_sent_total{peer="03415a85a1aad15f287ad222e7dbdaaadfee727485b3dc544574ae0bc37f118b",message="bit_vec"} 237
+network_spawner_messages_sent_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",message="data_0"} 166985
+network_spawner_messages_sent_total{peer="03415a85a1aad15f287ad222e7dbdaaadfee727485b3dc544574ae0bc37f118b",message="data_3"} 19205
+network_spawner_messages_sent_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",message="data_4"} 15653
+network_spawner_messages_sent_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",message="data_1"} 167002
+network_spawner_messages_sent_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64",message="bit_vec"} 237
+network_spawner_messages_sent_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",message="greeting"} 1
+network_spawner_messages_sent_total{peer="03415a85a1aad15f287ad222e7dbdaaadfee727485b3dc544574ae0bc37f118b",message="data_1"} 167002
+network_spawner_messages_sent_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",message="data_1"} 167002
+network_spawner_messages_sent_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64",message="data_3"} 19233
+network_spawner_messages_sent_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",message="peers"} 237
+network_spawner_messages_sent_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",message="data_3"} 23900
+network_spawner_messages_sent_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",message="bit_vec"} 237
+network_spawner_messages_sent_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",message="greeting"} 1
+network_spawner_messages_sent_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",message="data_0"} 166985
+network_spawner_messages_sent_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64",message="peers"} 1
+network_spawner_messages_sent_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef",message="data_4"} 13289
+network_spawner_messages_sent_total{peer="03415a85a1aad15f287ad222e7dbdaaadfee727485b3dc544574ae0bc37f118b",message="greeting"} 1
+network_spawner_messages_sent_total{peer="03415a85a1aad15f287ad222e7dbdaaadfee727485b3dc544574ae0bc37f118b",message="peers"} 237
+network_spawner_messages_sent_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",message="bit_vec"} 237
+network_spawner_messages_sent_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64",message="data_0"} 166984
+network_spawner_messages_sent_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64",message="data_1"} 167002
+network_spawner_messages_sent_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54",message="data_3"} 23808
+# HELP network_tracker_directory_connected Unix timestamp in milliseconds when each connected peer became active.
+# TYPE network_tracker_directory_connected gauge
+network_tracker_directory_connected{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef"} 1779308215557
+network_tracker_directory_connected{peer="03415a85a1aad15f287ad222e7dbdaaadfee727485b3dc544574ae0bc37f118b"} 1779308215669
+network_tracker_directory_connected{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54"} 1779308215706
+network_tracker_directory_connected{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64"} 1779308216557
+# HELP network_tracker_directory_limits Count of the number of rate-limited reservation events for each peer.
+# TYPE network_tracker_directory_limits counter
+network_tracker_directory_limits_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64"} 1
+# HELP network_tracker_directory_reserved Total number of outstanding reservations.
+# TYPE network_tracker_directory_reserved gauge
+network_tracker_directory_reserved 4
+# HELP network_tracker_directory_tracked Total number of unique peers in all peer sets being tracked.
+# TYPE network_tracker_directory_tracked gauge
+network_tracker_directory_tracked 4
+# HELP network_tracker_directory_updates Count of the number of updates for each peer.
+# TYPE network_tracker_directory_updates counter
+network_tracker_directory_updates_total{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54"} 1
+network_tracker_directory_updates_total{peer="03415a85a1aad15f287ad222e7dbdaaadfee727485b3dc544574ae0bc37f118b"} 1
+network_tracker_directory_updates_total{peer="d18314631c60e4d255bb7a1e0c004f5f476dfd469a86750670992d484a05b9ef"} 1
+network_tracker_directory_updates_total{peer="d0e2a51fb6836ce402527408e98ccd1c79d5568a6051ee703b475c684e9d9b64"} 1
+# HELP processed_height Processed height of application.
+# TYPE processed_height gauge
+processed_height 70614
+# HELP resolver_resolver_cancel Number of canceled fetches by status.
+# TYPE resolver_resolver_cancel counter
+resolver_resolver_cancel_total{status="Success"} 2490
+resolver_resolver_cancel_total{status="Dropped"} 209352
+# HELP resolver_resolver_fetch Number of fetches by status.
+# TYPE resolver_resolver_fetch counter
+resolver_resolver_fetch_total{status="Failure"} 2490
+# HELP resolver_resolver_fetch_active Current number of active fetch requests.
+# TYPE resolver_resolver_fetch_active gauge
+resolver_resolver_fetch_active 0
+# HELP resolver_resolver_fetch_duration Histogram of successful fetches.
+# TYPE resolver_resolver_fetch_duration histogram
+resolver_resolver_fetch_duration_sum 0.0
+resolver_resolver_fetch_duration_count 0
+resolver_resolver_fetch_duration_bucket{le="0.01"} 0
+resolver_resolver_fetch_duration_bucket{le="0.02"} 0
+resolver_resolver_fetch_duration_bucket{le="0.05"} 0
+resolver_resolver_fetch_duration_bucket{le="0.1"} 0
+resolver_resolver_fetch_duration_bucket{le="0.2"} 0
+resolver_resolver_fetch_duration_bucket{le="0.5"} 0
+resolver_resolver_fetch_duration_bucket{le="1.0"} 0
+resolver_resolver_fetch_duration_bucket{le="2.0"} 0
+resolver_resolver_fetch_duration_bucket{le="5.0"} 0
+resolver_resolver_fetch_duration_bucket{le="10.0"} 0
+resolver_resolver_fetch_duration_bucket{le="30.0"} 0
+resolver_resolver_fetch_duration_bucket{le="60.0"} 0
+resolver_resolver_fetch_duration_bucket{le="300.0"} 0
+resolver_resolver_fetch_duration_bucket{le="+Inf"} 0
+# HELP resolver_resolver_fetch_pending Current number of pending fetch requests.
+# TYPE resolver_resolver_fetch_pending gauge
+resolver_resolver_fetch_pending 0
+# HELP resolver_resolver_fetcher_peer_performance Per-peer performance (exponential moving average of response time in ms).
+# TYPE resolver_resolver_fetcher_peer_performance gauge
+resolver_resolver_fetcher_peer_performance{peer="75645516dbea77db7d72e0e7655644de743e4de021e08cac6b1bef0b4a504c54"} 200
+# HELP resolver_resolver_fetcher_requests_created Status of request creation attempts.
+# TYPE resolver_resolver_fetcher_requests_created counter
+resolver_resolver_fetcher_requests_created_total{status="Success"} 2490
+# HELP resolver_resolver_fetcher_requests_sent Status of individual network requests sent to peers.
+# TYPE resolver_resolver_fetcher_requests_sent counter
+resolver_resolver_fetcher_requests_sent_total{status="Success"} 2490
+# HELP resolver_resolver_fetcher_resolves Number and duration of requests that were resolved.
+# TYPE resolver_resolver_fetcher_resolves histogram
+resolver_resolver_fetcher_resolves_sum 0.0
+resolver_resolver_fetcher_resolves_count 0
+resolver_resolver_fetcher_resolves_bucket{le="0.01"} 0
+resolver_resolver_fetcher_resolves_bucket{le="0.02"} 0
+resolver_resolver_fetcher_resolves_bucket{le="0.05"} 0
+resolver_resolver_fetcher_resolves_bucket{le="0.1"} 0
+resolver_resolver_fetcher_resolves_bucket{le="0.2"} 0
+resolver_resolver_fetcher_resolves_bucket{le="0.5"} 0
+resolver_resolver_fetcher_resolves_bucket{le="1.0"} 0
+resolver_resolver_fetcher_resolves_bucket{le="2.0"} 0
+resolver_resolver_fetcher_resolves_bucket{le="5.0"} 0
+resolver_resolver_fetcher_resolves_bucket{le="10.0"} 0
+resolver_resolver_fetcher_resolves_bucket{le="30.0"} 0
+resolver_resolver_fetcher_resolves_bucket{le="60.0"} 0
+resolver_resolver_fetcher_resolves_bucket{le="300.0"} 0
+resolver_resolver_fetcher_resolves_bucket{le="+Inf"} 0
+# HELP resolver_resolver_peers_blocked Current number of blocked peers.
+# TYPE resolver_resolver_peers_blocked gauge
+resolver_resolver_peers_blocked 0
+# HELP resolver_resolver_serve Number of serves by status.
+# TYPE resolver_resolver_serve counter
+resolver_resolver_serve_total{status="Failure"} 3361
+resolver_resolver_serve_total{status="Success"} 25583
+# HELP resolver_resolver_serve_duration Histogram of successful serves.
+# TYPE resolver_resolver_serve_duration histogram
+resolver_resolver_serve_duration_sum 15.002032577000023
+resolver_resolver_serve_duration_count 25583
+resolver_resolver_serve_duration_bucket{le="0.000003"} 1
+resolver_resolver_serve_duration_bucket{le="0.00001"} 1
+resolver_resolver_serve_duration_bucket{le="0.00003"} 130
+resolver_resolver_serve_duration_bucket{le="0.0001"} 1555
+resolver_resolver_serve_duration_bucket{le="0.0003"} 16725
+resolver_resolver_serve_duration_bucket{le="0.001"} 19089
+resolver_resolver_serve_duration_bucket{le="0.003"} 25411
+resolver_resolver_serve_duration_bucket{le="0.01"} 25573
+resolver_resolver_serve_duration_bucket{le="0.03"} 25579
+resolver_resolver_serve_duration_bucket{le="0.1"} 25583
+resolver_resolver_serve_duration_bucket{le="0.3"} 25583
+resolver_resolver_serve_duration_bucket{le="1.0"} 25583
+resolver_resolver_serve_duration_bucket{le="+Inf"} 25583
+# HELP resolver_resolver_serve_processing Current number of serves currently processing.
+# TYPE resolver_resolver_serve_processing gauge
+resolver_resolver_serve_processing 0
+# HELP runtime_inbound_bandwidth Bandwidth used by receiving data from others.
+# TYPE runtime_inbound_bandwidth counter
+runtime_inbound_bandwidth_total 154038143
+# HELP runtime_inbound_connections Number of connections created by dialing us.
+# TYPE runtime_inbound_connections counter
+runtime_inbound_connections_total 125
+# HELP runtime_network_buffer_pool_buffer_pool_oversized_total Total number of allocation requests exceeding max buffer size.
+# TYPE runtime_network_buffer_pool_buffer_pool_oversized_total counter
+runtime_network_buffer_pool_buffer_pool_oversized_total_total 0
+# HELP runtime_open_blobs Number of open blobs.
+# TYPE runtime_open_blobs gauge
+runtime_open_blobs 318
+# HELP runtime_outbound_bandwidth Bandwidth used by sending data to others.
+# TYPE runtime_outbound_bandwidth counter
+runtime_outbound_bandwidth_total 221592179
+# HELP runtime_outbound_connections Number of connections created by dialing others.
+# TYPE runtime_outbound_connections counter
+runtime_outbound_connections_total 2
+# HELP runtime_process_rss Resident set size of the current process.
+# TYPE runtime_process_rss gauge
+runtime_process_rss 1053683712
+# HELP runtime_process_virtual_memory Virtual memory size of the current process.
+# TYPE runtime_process_virtual_memory gauge
+runtime_process_virtual_memory 7999344640
+# HELP runtime_storage_buffer_pool_buffer_pool_created Number of tracked buffers currently created for the pool.
+# TYPE runtime_storage_buffer_pool_buffer_pool_created gauge
+runtime_storage_buffer_pool_buffer_pool_created{size_class="65536"} 64
+runtime_storage_buffer_pool_buffer_pool_created{size_class="131072"} 64
+runtime_storage_buffer_pool_buffer_pool_created{size_class="4096"} 64
+runtime_storage_buffer_pool_buffer_pool_created{size_class="32768"} 25
+runtime_storage_buffer_pool_buffer_pool_created{size_class="8192"} 64
+runtime_storage_buffer_pool_buffer_pool_created{size_class="1048576"} 64
+runtime_storage_buffer_pool_buffer_pool_created{size_class="16384"} 64
+# HELP runtime_storage_buffer_pool_buffer_pool_exhausted_total Total number of failed allocations due to pool exhaustion.
+# TYPE runtime_storage_buffer_pool_buffer_pool_exhausted_total counter
+runtime_storage_buffer_pool_buffer_pool_exhausted_total_total{size_class="65536"} 9936
+runtime_storage_buffer_pool_buffer_pool_exhausted_total_total{size_class="16384"} 1984
+runtime_storage_buffer_pool_buffer_pool_exhausted_total_total{size_class="4096"} 16320
+runtime_storage_buffer_pool_buffer_pool_exhausted_total_total{size_class="1048576"} 565084
+runtime_storage_buffer_pool_buffer_pool_exhausted_total_total{size_class="131072"} 686921
+runtime_storage_buffer_pool_buffer_pool_exhausted_total_total{size_class="8192"} 140967
+# HELP runtime_storage_buffer_pool_buffer_pool_oversized_total Total number of allocation requests exceeding max buffer size.
+# TYPE runtime_storage_buffer_pool_buffer_pool_oversized_total counter
+runtime_storage_buffer_pool_buffer_pool_oversized_total_total 96389
+# HELP runtime_storage_read_bytes Total amount of data read from disk.
+# TYPE runtime_storage_read_bytes counter
+runtime_storage_read_bytes_total 24170512
+# HELP runtime_storage_reads Total number of disk reads.
+# TYPE runtime_storage_reads counter
+runtime_storage_reads_total 309265
+# HELP runtime_storage_write_bytes Total amount of data written to disk.
+# TYPE runtime_storage_write_bytes counter
+runtime_storage_write_bytes_total 41628867965
+# HELP runtime_storage_writes Total number of disk writes.
+# TYPE runtime_storage_writes counter
+runtime_storage_writes_total 2691829
+# HELP runtime_tasks_running Number of tasks currently running.
+# TYPE runtime_tasks_running gauge
+runtime_tasks_running{name="network_spawner_peer",kind="Task",execution="Shared"} 4
+runtime_tasks_running{name="marshaled_propose",kind="Task",execution="Shared"} 0
+runtime_tasks_running{name="network_router",kind="Task",execution="Shared"} 1
+runtime_tasks_running{name="network",kind="Task",execution="Shared"} 1
+runtime_tasks_running{name="network_listener",kind="Task",execution="Shared"} 1
+runtime_tasks_running{name="network_spawner_peer_sender",kind="Task",execution="Shared"} 4
+runtime_tasks_running{name="network_dialer_dialer",kind="Task",execution="Shared"} 0
+runtime_tasks_running{name="marshaled_inline_verify",kind="Task",execution="Shared"} 0
+runtime_tasks_running{name="",kind="Root",execution="Shared"} 0
+runtime_tasks_running{name="marshaled_inline_certify",kind="Task",execution="Shared"} 0
+runtime_tasks_running{name="network_spawner_peer_receiver",kind="Task",execution="Shared"} 4
+runtime_tasks_running{name="engine",kind="Task",execution="Shared"} 1
+runtime_tasks_running{name="network_listener_handshaker",kind="Task",execution="Shared"} 0
+runtime_tasks_running{name="network_tracker",kind="Task",execution="Shared"} 1
+runtime_tasks_running{name="",kind="Task",execution="SharedBlocking"} 1
+runtime_tasks_running{name="broadcast",kind="Task",execution="Shared"} 1
+runtime_tasks_running{name="",kind="Task",execution="Shared"} 1
+runtime_tasks_running{name="engine_resolver",kind="Task",execution="Shared"} 1
+runtime_tasks_running{name="engine_batcher",kind="Task",execution="Shared"} 1
+runtime_tasks_running{name="engine_resolver_resolver",kind="Task",execution="Shared"} 1
+runtime_tasks_running{name="network_dialer",kind="Task",execution="Shared"} 1
+runtime_tasks_running{name="resolver_resolver",kind="Task",execution="Shared"} 1
+runtime_tasks_running{name="rayon_thread",kind="Task",execution="Dedicated"} 2
+runtime_tasks_running{name="network_spawner",kind="Task",execution="Shared"} 1
+runtime_tasks_running{name="engine_voter",kind="Task",execution="Shared"} 1
+# HELP runtime_tasks_spawned Total number of tasks spawned.
+# TYPE runtime_tasks_spawned counter
+runtime_tasks_spawned_total{name="network_listener",kind="Task",execution="Shared"} 1
+runtime_tasks_spawned_total{name="",kind="Root",execution="Shared"} 1
+runtime_tasks_spawned_total{name="network_router",kind="Task",execution="Shared"} 1
+runtime_tasks_spawned_total{name="rayon_thread",kind="Task",execution="Dedicated"} 2
+runtime_tasks_spawned_total{name="",kind="Task",execution="Shared"} 1
+runtime_tasks_spawned_total{name="network_listener_handshaker",kind="Task",execution="Shared"} 125
+runtime_tasks_spawned_total{name="network_spawner_peer_sender",kind="Task",execution="Shared"} 4
+runtime_tasks_spawned_total{name="network_spawner_peer_receiver",kind="Task",execution="Shared"} 4
+runtime_tasks_spawned_total{name="network_dialer_dialer",kind="Task",execution="Shared"} 13
+runtime_tasks_spawned_total{name="marshaled_propose",kind="Task",execution="Shared"} 24076
+runtime_tasks_spawned_total{name="engine_resolver_resolver",kind="Task",execution="Shared"} 1
+runtime_tasks_spawned_total{name="marshaled_inline_certify",kind="Task",execution="Shared"} 19213
+runtime_tasks_spawned_total{name="network_spawner",kind="Task",execution="Shared"} 1
+runtime_tasks_spawned_total{name="marshaled_inline_verify",kind="Task",execution="Shared"} 51410
+runtime_tasks_spawned_total{name="network_tracker",kind="Task",execution="Shared"} 1
+runtime_tasks_spawned_total{name="broadcast",kind="Task",execution="Shared"} 1
+runtime_tasks_spawned_total{name="engine_batcher",kind="Task",execution="Shared"} 1
+runtime_tasks_spawned_total{name="engine_voter",kind="Task",execution="Shared"} 1
+runtime_tasks_spawned_total{name="",kind="Task",execution="SharedBlocking"} 70615
+runtime_tasks_spawned_total{name="network",kind="Task",execution="Shared"} 1
+runtime_tasks_spawned_total{name="engine",kind="Task",execution="Shared"} 1
+runtime_tasks_spawned_total{name="network_spawner_peer",kind="Task",execution="Shared"} 4
+runtime_tasks_spawned_total{name="network_dialer",kind="Task",execution="Shared"} 1
+runtime_tasks_spawned_total{name="engine_resolver",kind="Task",execution="Shared"} 1
+runtime_tasks_spawned_total{name="resolver_resolver",kind="Task",execution="Shared"} 1
+# HELP state_qmdb_accounts_index_items Number of items in the index.
+# TYPE state_qmdb_accounts_index_items gauge
+state_qmdb_accounts_index_items 57
+state_qmdb_accounts_index_items 57
+# HELP state_qmdb_accounts_index_keys Number of translated keys in the index.
+# TYPE state_qmdb_accounts_index_keys gauge
+state_qmdb_accounts_index_keys 57
+state_qmdb_accounts_index_keys 57
+# HELP state_qmdb_accounts_index_pruned Number of items pruned.
+# TYPE state_qmdb_accounts_index_pruned counter
+state_qmdb_accounts_index_pruned_total 0
+state_qmdb_accounts_index_pruned_total 0
+# HELP state_qmdb_accounts_log_journal_data_pruned Number of blobs pruned.
+# TYPE state_qmdb_accounts_log_journal_data_pruned counter
+state_qmdb_accounts_log_journal_data_pruned_total 0
+state_qmdb_accounts_log_journal_data_pruned_total 0
+# HELP state_qmdb_accounts_log_journal_data_synced Number of syncs.
+# TYPE state_qmdb_accounts_log_journal_data_synced counter
+state_qmdb_accounts_log_journal_data_synced_total 2
+state_qmdb_accounts_log_journal_data_synced_total 1
+# HELP state_qmdb_accounts_log_journal_data_tracked Number of blobs.
+# TYPE state_qmdb_accounts_log_journal_data_tracked gauge
+state_qmdb_accounts_log_journal_data_tracked 1
+state_qmdb_accounts_log_journal_data_tracked 1
+# HELP state_qmdb_accounts_log_journal_offsets_blobs_pruned Number of blobs pruned.
+# TYPE state_qmdb_accounts_log_journal_offsets_blobs_pruned counter
+state_qmdb_accounts_log_journal_offsets_blobs_pruned_total 0
+state_qmdb_accounts_log_journal_offsets_blobs_pruned_total 0
+# HELP state_qmdb_accounts_log_journal_offsets_blobs_synced Number of syncs.
+# TYPE state_qmdb_accounts_log_journal_offsets_blobs_synced counter
+state_qmdb_accounts_log_journal_offsets_blobs_synced_total 2
+state_qmdb_accounts_log_journal_offsets_blobs_synced_total 2
+# HELP state_qmdb_accounts_log_journal_offsets_blobs_tracked Number of blobs.
+# TYPE state_qmdb_accounts_log_journal_offsets_blobs_tracked gauge
+state_qmdb_accounts_log_journal_offsets_blobs_tracked 1
+state_qmdb_accounts_log_journal_offsets_blobs_tracked 1
+# HELP state_qmdb_accounts_log_journal_offsets_meta_keys number of tracked keys.
+# TYPE state_qmdb_accounts_log_journal_offsets_meta_keys gauge
+state_qmdb_accounts_log_journal_offsets_meta_keys 0
+state_qmdb_accounts_log_journal_offsets_meta_keys 0
+# HELP state_qmdb_accounts_log_journal_offsets_meta_sync_overwrites number of syncs that modified existing data.
+# TYPE state_qmdb_accounts_log_journal_offsets_meta_sync_overwrites counter
+state_qmdb_accounts_log_journal_offsets_meta_sync_overwrites_total 0
+state_qmdb_accounts_log_journal_offsets_meta_sync_overwrites_total 0
+# HELP state_qmdb_accounts_log_journal_offsets_meta_sync_rewrites number of syncs that rewrote all data.
+# TYPE state_qmdb_accounts_log_journal_offsets_meta_sync_rewrites counter
+state_qmdb_accounts_log_journal_offsets_meta_sync_rewrites_total 0
+state_qmdb_accounts_log_journal_offsets_meta_sync_rewrites_total 0
+# HELP state_qmdb_accounts_log_merkle_merkle_journal_blobs_pruned Number of blobs pruned.
+# TYPE state_qmdb_accounts_log_merkle_merkle_journal_blobs_pruned counter
+state_qmdb_accounts_log_merkle_merkle_journal_blobs_pruned_total 0
+state_qmdb_accounts_log_merkle_merkle_journal_blobs_pruned_total 0
+# HELP state_qmdb_accounts_log_merkle_merkle_journal_blobs_synced Number of syncs.
+# TYPE state_qmdb_accounts_log_merkle_merkle_journal_blobs_synced counter
+state_qmdb_accounts_log_merkle_merkle_journal_blobs_synced_total 1
+state_qmdb_accounts_log_merkle_merkle_journal_blobs_synced_total 1
+# HELP state_qmdb_accounts_log_merkle_merkle_journal_blobs_tracked Number of blobs.
+# TYPE state_qmdb_accounts_log_merkle_merkle_journal_blobs_tracked gauge
+state_qmdb_accounts_log_merkle_merkle_journal_blobs_tracked 1
+state_qmdb_accounts_log_merkle_merkle_journal_blobs_tracked 1
+# HELP state_qmdb_accounts_log_merkle_merkle_journal_meta_keys number of tracked keys.
+# TYPE state_qmdb_accounts_log_merkle_merkle_journal_meta_keys gauge
+state_qmdb_accounts_log_merkle_merkle_journal_meta_keys 0
+state_qmdb_accounts_log_merkle_merkle_journal_meta_keys 0
+# HELP state_qmdb_accounts_log_merkle_merkle_journal_meta_sync_overwrites number of syncs that modified existing data.
+# TYPE state_qmdb_accounts_log_merkle_merkle_journal_meta_sync_overwrites counter
+state_qmdb_accounts_log_merkle_merkle_journal_meta_sync_overwrites_total 0
+state_qmdb_accounts_log_merkle_merkle_journal_meta_sync_overwrites_total 0
+# HELP state_qmdb_accounts_log_merkle_merkle_journal_meta_sync_rewrites number of syncs that rewrote all data.
+# TYPE state_qmdb_accounts_log_merkle_merkle_journal_meta_sync_rewrites counter
+state_qmdb_accounts_log_merkle_merkle_journal_meta_sync_rewrites_total 0
+state_qmdb_accounts_log_merkle_merkle_journal_meta_sync_rewrites_total 0
+# HELP state_qmdb_accounts_log_merkle_merkle_metadata_keys number of tracked keys.
+# TYPE state_qmdb_accounts_log_merkle_merkle_metadata_keys gauge
+state_qmdb_accounts_log_merkle_merkle_metadata_keys 0
+state_qmdb_accounts_log_merkle_merkle_metadata_keys 0
+# HELP state_qmdb_accounts_log_merkle_merkle_metadata_sync_overwrites number of syncs that modified existing data.
+# TYPE state_qmdb_accounts_log_merkle_merkle_metadata_sync_overwrites counter
+state_qmdb_accounts_log_merkle_merkle_metadata_sync_overwrites_total 0
+state_qmdb_accounts_log_merkle_merkle_metadata_sync_overwrites_total 0
+# HELP state_qmdb_accounts_log_merkle_merkle_metadata_sync_rewrites number of syncs that rewrote all data.
+# TYPE state_qmdb_accounts_log_merkle_merkle_metadata_sync_rewrites counter
+state_qmdb_accounts_log_merkle_merkle_metadata_sync_rewrites_total 0
+state_qmdb_accounts_log_merkle_merkle_metadata_sync_rewrites_total 0
+# HELP state_qmdb_code_index_items Number of items in the index.
+# TYPE state_qmdb_code_index_items gauge
+state_qmdb_code_index_items 0
+state_qmdb_code_index_items 0
+# HELP state_qmdb_code_index_keys Number of translated keys in the index.
+# TYPE state_qmdb_code_index_keys gauge
+state_qmdb_code_index_keys 0
+state_qmdb_code_index_keys 0
+# HELP state_qmdb_code_index_pruned Number of items pruned.
+# TYPE state_qmdb_code_index_pruned counter
+state_qmdb_code_index_pruned_total 0
+state_qmdb_code_index_pruned_total 0
+# HELP state_qmdb_code_log_journal_data_pruned Number of blobs pruned.
+# TYPE state_qmdb_code_log_journal_data_pruned counter
+state_qmdb_code_log_journal_data_pruned_total 0
+state_qmdb_code_log_journal_data_pruned_total 0
+# HELP state_qmdb_code_log_journal_data_synced Number of syncs.
+# TYPE state_qmdb_code_log_journal_data_synced counter
+state_qmdb_code_log_journal_data_synced_total 2
+state_qmdb_code_log_journal_data_synced_total 1
+# HELP state_qmdb_code_log_journal_data_tracked Number of blobs.
+# TYPE state_qmdb_code_log_journal_data_tracked gauge
+state_qmdb_code_log_journal_data_tracked 1
+state_qmdb_code_log_journal_data_tracked 1
+# HELP state_qmdb_code_log_journal_offsets_blobs_pruned Number of blobs pruned.
+# TYPE state_qmdb_code_log_journal_offsets_blobs_pruned counter
+state_qmdb_code_log_journal_offsets_blobs_pruned_total 0
+state_qmdb_code_log_journal_offsets_blobs_pruned_total 0
+# HELP state_qmdb_code_log_journal_offsets_blobs_synced Number of syncs.
+# TYPE state_qmdb_code_log_journal_offsets_blobs_synced counter
+state_qmdb_code_log_journal_offsets_blobs_synced_total 2
+state_qmdb_code_log_journal_offsets_blobs_synced_total 2
+# HELP state_qmdb_code_log_journal_offsets_blobs_tracked Number of blobs.
+# TYPE state_qmdb_code_log_journal_offsets_blobs_tracked gauge
+state_qmdb_code_log_journal_offsets_blobs_tracked 1
+state_qmdb_code_log_journal_offsets_blobs_tracked 1
+# HELP state_qmdb_code_log_journal_offsets_meta_keys number of tracked keys.
+# TYPE state_qmdb_code_log_journal_offsets_meta_keys gauge
+state_qmdb_code_log_journal_offsets_meta_keys 0
+state_qmdb_code_log_journal_offsets_meta_keys 0
+# HELP state_qmdb_code_log_journal_offsets_meta_sync_overwrites number of syncs that modified existing data.
+# TYPE state_qmdb_code_log_journal_offsets_meta_sync_overwrites counter
+state_qmdb_code_log_journal_offsets_meta_sync_overwrites_total 0
+state_qmdb_code_log_journal_offsets_meta_sync_overwrites_total 0
+# HELP state_qmdb_code_log_journal_offsets_meta_sync_rewrites number of syncs that rewrote all data.
+# TYPE state_qmdb_code_log_journal_offsets_meta_sync_rewrites counter
+state_qmdb_code_log_journal_offsets_meta_sync_rewrites_total 0
+state_qmdb_code_log_journal_offsets_meta_sync_rewrites_total 0
+# HELP state_qmdb_code_log_merkle_merkle_journal_blobs_pruned Number of blobs pruned.
+# TYPE state_qmdb_code_log_merkle_merkle_journal_blobs_pruned counter
+state_qmdb_code_log_merkle_merkle_journal_blobs_pruned_total 0
+state_qmdb_code_log_merkle_merkle_journal_blobs_pruned_total 0
+# HELP state_qmdb_code_log_merkle_merkle_journal_blobs_synced Number of syncs.
+# TYPE state_qmdb_code_log_merkle_merkle_journal_blobs_synced counter
+state_qmdb_code_log_merkle_merkle_journal_blobs_synced_total 1
+state_qmdb_code_log_merkle_merkle_journal_blobs_synced_total 1
+# HELP state_qmdb_code_log_merkle_merkle_journal_blobs_tracked Number of blobs.
+# TYPE state_qmdb_code_log_merkle_merkle_journal_blobs_tracked gauge
+state_qmdb_code_log_merkle_merkle_journal_blobs_tracked 1
+state_qmdb_code_log_merkle_merkle_journal_blobs_tracked 1
+# HELP state_qmdb_code_log_merkle_merkle_journal_meta_keys number of tracked keys.
+# TYPE state_qmdb_code_log_merkle_merkle_journal_meta_keys gauge
+state_qmdb_code_log_merkle_merkle_journal_meta_keys 0
+state_qmdb_code_log_merkle_merkle_journal_meta_keys 0
+# HELP state_qmdb_code_log_merkle_merkle_journal_meta_sync_overwrites number of syncs that modified existing data.
+# TYPE state_qmdb_code_log_merkle_merkle_journal_meta_sync_overwrites counter
+state_qmdb_code_log_merkle_merkle_journal_meta_sync_overwrites_total 0
+state_qmdb_code_log_merkle_merkle_journal_meta_sync_overwrites_total 0
+# HELP state_qmdb_code_log_merkle_merkle_journal_meta_sync_rewrites number of syncs that rewrote all data.
+# TYPE state_qmdb_code_log_merkle_merkle_journal_meta_sync_rewrites counter
+state_qmdb_code_log_merkle_merkle_journal_meta_sync_rewrites_total 0
+state_qmdb_code_log_merkle_merkle_journal_meta_sync_rewrites_total 0
+# HELP state_qmdb_code_log_merkle_merkle_metadata_keys number of tracked keys.
+# TYPE state_qmdb_code_log_merkle_merkle_metadata_keys gauge
+state_qmdb_code_log_merkle_merkle_metadata_keys 0
+state_qmdb_code_log_merkle_merkle_metadata_keys 0
+# HELP state_qmdb_code_log_merkle_merkle_metadata_sync_overwrites number of syncs that modified existing data.
+# TYPE state_qmdb_code_log_merkle_merkle_metadata_sync_overwrites counter
+state_qmdb_code_log_merkle_merkle_metadata_sync_overwrites_total 0
+state_qmdb_code_log_merkle_merkle_metadata_sync_overwrites_total 0
+# HELP state_qmdb_code_log_merkle_merkle_metadata_sync_rewrites number of syncs that rewrote all data.
+# TYPE state_qmdb_code_log_merkle_merkle_metadata_sync_rewrites counter
+state_qmdb_code_log_merkle_merkle_metadata_sync_rewrites_total 0
+state_qmdb_code_log_merkle_merkle_metadata_sync_rewrites_total 0
+# HELP state_qmdb_storage_index_items Number of items in the index.
+# TYPE state_qmdb_storage_index_items gauge
+state_qmdb_storage_index_items 0
+state_qmdb_storage_index_items 0
+# HELP state_qmdb_storage_index_keys Number of translated keys in the index.
+# TYPE state_qmdb_storage_index_keys gauge
+state_qmdb_storage_index_keys 0
+state_qmdb_storage_index_keys 0
+# HELP state_qmdb_storage_index_pruned Number of items pruned.
+# TYPE state_qmdb_storage_index_pruned counter
+state_qmdb_storage_index_pruned_total 0
+state_qmdb_storage_index_pruned_total 0
+# HELP state_qmdb_storage_log_journal_data_pruned Number of blobs pruned.
+# TYPE state_qmdb_storage_log_journal_data_pruned counter
+state_qmdb_storage_log_journal_data_pruned_total 0
+state_qmdb_storage_log_journal_data_pruned_total 0
+# HELP state_qmdb_storage_log_journal_data_synced Number of syncs.
+# TYPE state_qmdb_storage_log_journal_data_synced counter
+state_qmdb_storage_log_journal_data_synced_total 2
+state_qmdb_storage_log_journal_data_synced_total 1
+# HELP state_qmdb_storage_log_journal_data_tracked Number of blobs.
+# TYPE state_qmdb_storage_log_journal_data_tracked gauge
+state_qmdb_storage_log_journal_data_tracked 1
+state_qmdb_storage_log_journal_data_tracked 1
+# HELP state_qmdb_storage_log_journal_offsets_blobs_pruned Number of blobs pruned.
+# TYPE state_qmdb_storage_log_journal_offsets_blobs_pruned counter
+state_qmdb_storage_log_journal_offsets_blobs_pruned_total 0
+state_qmdb_storage_log_journal_offsets_blobs_pruned_total 0
+# HELP state_qmdb_storage_log_journal_offsets_blobs_synced Number of syncs.
+# TYPE state_qmdb_storage_log_journal_offsets_blobs_synced counter
+state_qmdb_storage_log_journal_offsets_blobs_synced_total 2
+state_qmdb_storage_log_journal_offsets_blobs_synced_total 2
+# HELP state_qmdb_storage_log_journal_offsets_blobs_tracked Number of blobs.
+# TYPE state_qmdb_storage_log_journal_offsets_blobs_tracked gauge
+state_qmdb_storage_log_journal_offsets_blobs_tracked 1
+state_qmdb_storage_log_journal_offsets_blobs_tracked 1
+# HELP state_qmdb_storage_log_journal_offsets_meta_keys number of tracked keys.
+# TYPE state_qmdb_storage_log_journal_offsets_meta_keys gauge
+state_qmdb_storage_log_journal_offsets_meta_keys 0
+state_qmdb_storage_log_journal_offsets_meta_keys 0
+# HELP state_qmdb_storage_log_journal_offsets_meta_sync_overwrites number of syncs that modified existing data.
+# TYPE state_qmdb_storage_log_journal_offsets_meta_sync_overwrites counter
+state_qmdb_storage_log_journal_offsets_meta_sync_overwrites_total 0
+state_qmdb_storage_log_journal_offsets_meta_sync_overwrites_total 0
+# HELP state_qmdb_storage_log_journal_offsets_meta_sync_rewrites number of syncs that rewrote all data.
+# TYPE state_qmdb_storage_log_journal_offsets_meta_sync_rewrites counter
+state_qmdb_storage_log_journal_offsets_meta_sync_rewrites_total 0
+state_qmdb_storage_log_journal_offsets_meta_sync_rewrites_total 0
+# HELP state_qmdb_storage_log_merkle_merkle_journal_blobs_pruned Number of blobs pruned.
+# TYPE state_qmdb_storage_log_merkle_merkle_journal_blobs_pruned counter
+state_qmdb_storage_log_merkle_merkle_journal_blobs_pruned_total 0
+state_qmdb_storage_log_merkle_merkle_journal_blobs_pruned_total 0
+# HELP state_qmdb_storage_log_merkle_merkle_journal_blobs_synced Number of syncs.
+# TYPE state_qmdb_storage_log_merkle_merkle_journal_blobs_synced counter
+state_qmdb_storage_log_merkle_merkle_journal_blobs_synced_total 1
+state_qmdb_storage_log_merkle_merkle_journal_blobs_synced_total 1
+# HELP state_qmdb_storage_log_merkle_merkle_journal_blobs_tracked Number of blobs.
+# TYPE state_qmdb_storage_log_merkle_merkle_journal_blobs_tracked gauge
+state_qmdb_storage_log_merkle_merkle_journal_blobs_tracked 1
+state_qmdb_storage_log_merkle_merkle_journal_blobs_tracked 1
+# HELP state_qmdb_storage_log_merkle_merkle_journal_meta_keys number of tracked keys.
+# TYPE state_qmdb_storage_log_merkle_merkle_journal_meta_keys gauge
+state_qmdb_storage_log_merkle_merkle_journal_meta_keys 0
+state_qmdb_storage_log_merkle_merkle_journal_meta_keys 0
+# HELP state_qmdb_storage_log_merkle_merkle_journal_meta_sync_overwrites number of syncs that modified existing data.
+# TYPE state_qmdb_storage_log_merkle_merkle_journal_meta_sync_overwrites counter
+state_qmdb_storage_log_merkle_merkle_journal_meta_sync_overwrites_total 0
+state_qmdb_storage_log_merkle_merkle_journal_meta_sync_overwrites_total 0
+# HELP state_qmdb_storage_log_merkle_merkle_journal_meta_sync_rewrites number of syncs that rewrote all data.
+# TYPE state_qmdb_storage_log_merkle_merkle_journal_meta_sync_rewrites counter
+state_qmdb_storage_log_merkle_merkle_journal_meta_sync_rewrites_total 0
+state_qmdb_storage_log_merkle_merkle_journal_meta_sync_rewrites_total 0
+# HELP state_qmdb_storage_log_merkle_merkle_metadata_keys number of tracked keys.
+# TYPE state_qmdb_storage_log_merkle_merkle_metadata_keys gauge
+state_qmdb_storage_log_merkle_merkle_metadata_keys 0
+state_qmdb_storage_log_merkle_merkle_metadata_keys 0
+# HELP state_qmdb_storage_log_merkle_merkle_metadata_sync_overwrites number of syncs that modified existing data.
+# TYPE state_qmdb_storage_log_merkle_merkle_metadata_sync_overwrites counter
+state_qmdb_storage_log_merkle_merkle_metadata_sync_overwrites_total 0
+state_qmdb_storage_log_merkle_merkle_metadata_sync_overwrites_total 0
+# HELP state_qmdb_storage_log_merkle_merkle_metadata_sync_rewrites number of syncs that rewrote all data.
+# TYPE state_qmdb_storage_log_merkle_merkle_metadata_sync_rewrites counter
+state_qmdb_storage_log_merkle_merkle_metadata_sync_rewrites_total 0
+state_qmdb_storage_log_merkle_merkle_metadata_sync_rewrites_total 0
+# EOF

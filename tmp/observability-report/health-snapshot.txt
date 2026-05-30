@@ -1,0 +1,59 @@
+============================================
+  KORA DEVNET HEALTH REPORT
+  2026-05-20 20:36:37 UTC
+============================================
+
+## Cluster Status
+  Validators up: 4 / 4
+  Finalized height: 70511
+  Current view: 96247
+  Height drift: 707
+  ⚠ WARNING: nodes are diverging!
+
+## Per-Node Finalized Height
+  node0: 70056
+  node3: 70347
+  node2: 70511
+  node1: 69804
+
+## Throughput
+  Blocks/sec (1m avg): 56.86508427767429
+
+## Latency (1m avg)
+  Notarization: 0.011913325696477949s
+  Finalization: 0.017662433245790615s
+  Block build: 0.00003878118281985084s
+  Sig verify: 0.0027976020017433326s
+
+## Faults
+  Total nullifications: 102432
+  Total timeouts: 134456
+  Nullification rate (5m): 84.72221245368574/s
+  Avg skip rate (wasted views): 0.2679735672840892
+
+  Timeouts by reason:
+    LeaderNullify: 60741
+    MissingProposal: 25630
+    LeaderTimeout: 3
+    Inactivity: 48082
+
+## Resources
+  Memory (RSS) per node:
+  node0: 1053564928
+  node3: 1046810624
+  node2: 1050193920
+  node1: 1049346048
+
+  Total disk written: 161364995760 bytes
+  Total disk read: 94974381 bytes
+
+## Network
+  Inbound bandwidth: 428132.2824737415 B/s
+  Outbound bandwidth: 514481.3783520634 B/s
+  Inbound connections: 1925
+  Outbound connections: 1452
+
+============================================
+  Dashboard: http://localhost:3000/d/kora-overview
+  Prometheus: http://localhost:9090
+============================================
