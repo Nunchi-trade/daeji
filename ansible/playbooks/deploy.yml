@@ -3,6 +3,21 @@
 - name: Deploy devnet
   hosts: devnet
   become: true
+  pre_tasks:
+    - name: Validate trusted_ips is not wide open
+      ansible.builtin.fail:
+        msg: >
+          trusted_ips contains 0.0.0.0/0, which allows all internet traffic to
+          RPC/metrics/Grafana. Override in host_vars with specific CIDRs.
+      when: "'0.0.0.0/0' in (trusted_ips | default([]))"
+
+    - name: Validate Grafana password is not default
+      ansible.builtin.fail:
+        msg: >
+          grafana_admin_password is still 'admin'. Set a strong password in
+          host_vars or via ansible-vault before deploying.
+      when: "(grafana_admin_password | default('')) == 'admin'"
+
   roles:
     - role: sync
       tags: [sync]
