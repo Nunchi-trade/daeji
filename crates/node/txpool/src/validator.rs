@@ -19,6 +19,12 @@ const TX_CREATE_GAS: u64 = 32000;
 const TX_ACCESS_LIST_ADDRESS_GAS: u64 = 2400;
 const TX_ACCESS_LIST_STORAGE_KEY_GAS: u64 = 1900;
 
+/// EIP-3860: per-word cost for initcode in contract creation transactions.
+const INITCODE_WORD_GAS: u64 = 2;
+
+/// EIP-3860: maximum allowed initcode size (2 * MAX_CODE_SIZE = 2 * 24576).
+const MAX_INITCODE_SIZE: usize = 49_152;
+
 /// A validated transaction ready for pool insertion.
 #[derive(Debug, Clone)]
 pub struct ValidatedTransaction {
@@ -90,12 +96,29 @@ impl<S: StateDbRead> TransactionValidator<S> {
             });
         }
 
+        // EIP-3860: reject contract creation transactions with oversized initcode.
+        if envelope.to().is_none() && envelope.input().len() > MAX_INITCODE_SIZE {
+            return Err(TxPoolError::InitcodeTooLarge {
+                size: envelope.input().len(),
+                max: MAX_INITCODE_SIZE,
+            });
+        }
+
         let intrinsic_gas = intrinsic_gas(&envelope);
         let gas_limit = envelope.gas_limit();
         if gas_limit < intrinsic_gas {
             return Err(TxPoolError::IntrinsicGasTooLow {
                 limit: gas_limit,
                 intrinsic: intrinsic_gas,
+            });
+        }
+
+        // Reject transactions whose gas limit exceeds the block gas limit;
+        // they can never be included in any block.
+        if gas_limit > self.config.block_gas_limit {
+            return Err(TxPoolError::GasLimitTooHigh {
+                limit: gas_limit,
+                max: self.config.block_gas_limit,
             });
         }
 
@@ -215,6 +238,10 @@ fn intrinsic_gas(envelope: &TxEnvelope) -> u64 {
 
     if envelope.to().is_none() {
         gas += TX_CREATE_GAS;
+        // EIP-3860: add per-word initcode cost for contract creation.
+        let initcode_len = input.len() as u64;
+        let initcode_words = initcode_len.div_ceil(32);
+        gas += INITCODE_WORD_GAS * initcode_words;
     }
 
     let access_list_gas = match envelope {
@@ -242,8 +269,16 @@ fn max_tx_cost(envelope: &TxEnvelope) -> U256 {
     let gas_limit = U256::from(envelope.gas_limit());
     let max_fee = U256::from(effective_gas_price(envelope));
     let value = envelope.value();
+    let mut cost = gas_limit * max_fee + value;
 
-    gas_limit * max_fee + value
+    // EIP-4844: include blob gas cost for blob transactions.
+    if let Some(blob_gas) = envelope.blob_gas_used()
+        && let Some(max_blob_fee) = envelope.max_fee_per_blob_gas()
+    {
+        cost += U256::from(blob_gas) * U256::from(max_blob_fee);
+    }
+
+    cost
 }
 
 #[cfg(test)]
@@ -315,37 +350,16 @@ mod tests {
         to: Option<Address>,
     ) -> (Address, TxEnvelope, Tx) {
         let signing_key = SigningKey::random(&mut OsRng);
-        let verifying_key = signing_key.verifying_key();
-        let pubkey = verifying_key.to_encoded_point(false);
-        let pubkey_bytes = pubkey.as_bytes();
-        let pubkey_hash = sha3::Keccak256::digest(&pubkey_bytes[1..]);
-        let sender = Address::from_slice(&pubkey_hash[12..]);
-
-        let tx = TxEip1559 {
+        sign_eip1559_tx_with_key_and_input(
+            &signing_key,
             chain_id,
             nonce,
             gas_limit,
             max_fee_per_gas,
-            max_priority_fee_per_gas: max_fee_per_gas,
-            to: to.map(TxKind::Call).unwrap_or(TxKind::Create),
             value,
-            access_list: Default::default(),
-            input: Bytes::new(),
-        };
-
-        let sig_hash = tx.signature_hash();
-        let (sig, recovery_id) = signing_key.sign_prehash_recoverable(sig_hash.as_slice()).unwrap();
-        let r = U256::from_be_slice(&sig.r().to_bytes());
-        let s = U256::from_be_slice(&sig.s().to_bytes());
-        let v = recovery_id.is_y_odd();
-        let signature = Signature::new(r, s, v);
-
-        let signed = tx.into_signed(signature);
-        let envelope = TxEnvelope::from(signed);
-        let mut raw_bytes = Vec::new();
-        envelope.encode_2718(&mut raw_bytes);
-
-        (sender, envelope, Tx::new(raw_bytes.into()))
+            to,
+            Bytes::new(),
+        )
     }
 
     fn sign_legacy_tx(
@@ -388,6 +402,72 @@ mod tests {
         (sender, envelope, Tx::new(raw_bytes.into()))
     }
 
+    /// Sign a transaction with a given key and return (sender, signed_envelope, raw_bytes).
+    fn sign_eip1559_tx_with_key(
+        signing_key: &SigningKey,
+        chain_id: u64,
+        nonce: u64,
+        gas_limit: u64,
+        max_fee_per_gas: u128,
+        value: U256,
+        to: Option<Address>,
+    ) -> (Address, TxEnvelope, Tx) {
+        sign_eip1559_tx_with_key_and_input(
+            signing_key,
+            chain_id,
+            nonce,
+            gas_limit,
+            max_fee_per_gas,
+            value,
+            to,
+            Bytes::new(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn sign_eip1559_tx_with_key_and_input(
+        signing_key: &SigningKey,
+        chain_id: u64,
+        nonce: u64,
+        gas_limit: u64,
+        max_fee_per_gas: u128,
+        value: U256,
+        to: Option<Address>,
+        input: Bytes,
+    ) -> (Address, TxEnvelope, Tx) {
+        let verifying_key = signing_key.verifying_key();
+        let pubkey = verifying_key.to_encoded_point(false);
+        let pubkey_bytes = pubkey.as_bytes();
+        let pubkey_hash = sha3::Keccak256::digest(&pubkey_bytes[1..]);
+        let sender = Address::from_slice(&pubkey_hash[12..]);
+
+        let tx = TxEip1559 {
+            chain_id,
+            nonce,
+            gas_limit,
+            max_fee_per_gas,
+            max_priority_fee_per_gas: max_fee_per_gas,
+            to: to.map(TxKind::Call).unwrap_or(TxKind::Create),
+            value,
+            access_list: Default::default(),
+            input,
+        };
+
+        let sig_hash = tx.signature_hash();
+        let (sig, recovery_id) = signing_key.sign_prehash_recoverable(sig_hash.as_slice()).unwrap();
+        let r = U256::from_be_slice(&sig.r().to_bytes());
+        let s = U256::from_be_slice(&sig.s().to_bytes());
+        let v = recovery_id.is_y_odd();
+        let signature = Signature::new(r, s, v);
+
+        let signed = tx.into_signed(signature);
+        let envelope = TxEnvelope::from(signed);
+        let mut raw_bytes = Vec::new();
+        envelope.encode_2718(&mut raw_bytes);
+
+        (sender, envelope, Tx::new(raw_bytes.into()))
+    }
+
     #[tokio::test]
     async fn validate_valid_eip1559_transaction() {
         let chain_id = 1u64;
@@ -399,15 +479,12 @@ mod tests {
             U256::from(1000),
             Some(Address::ZERO),
         );
-
         let state =
             MockState::new().with_account(sender, 0, U256::from(1_000_000_000_000_000_000u64));
         let config = PoolConfig::default();
         let validator = TransactionValidator::new(chain_id, state, config);
-
         let result = validator.validate(raw_tx).await;
         assert!(result.is_ok());
-
         let validated = result.unwrap();
         assert_eq!(validated.sender, sender);
         assert_eq!(validated.nonce, 0);
@@ -425,12 +502,10 @@ mod tests {
             U256::from(1000),
             Some(Address::ZERO),
         );
-
         let state =
             MockState::new().with_account(sender, 0, U256::from(1_000_000_000_000_000_000u64));
         let config = PoolConfig::default();
         let validator = TransactionValidator::new(chain_id, state, config);
-
         let result = validator.validate(raw_tx).await;
         assert!(result.is_ok());
     }
@@ -440,12 +515,10 @@ mod tests {
         let chain_id = 1u64;
         let (sender, _, raw_tx) =
             sign_eip1559_tx(chain_id, 0, 21000, 1_000_000_000, U256::ZERO, Some(Address::ZERO));
-
         let state =
             MockState::new().with_account(sender, 0, U256::from(1_000_000_000_000_000_000u64));
-        let config = PoolConfig::default().with_max_tx_size(10); // Very small limit
+        let config = PoolConfig::default().with_max_tx_size(10);
         let validator = TransactionValidator::new(chain_id, state, config);
-
         let result = validator.validate(raw_tx).await;
         assert!(matches!(result, Err(TxPoolError::TxTooLarge { .. })));
     }
@@ -462,12 +535,10 @@ mod tests {
             U256::ZERO,
             Some(Address::ZERO),
         );
-
         let state =
             MockState::new().with_account(sender, 0, U256::from(1_000_000_000_000_000_000u64));
         let config = PoolConfig::default();
         let validator = TransactionValidator::new(chain_id, state, config);
-
         let result = validator.validate(raw_tx).await;
         assert!(matches!(result, Err(TxPoolError::InvalidChainId { got: 5, expected: 1 })));
     }
@@ -475,20 +546,12 @@ mod tests {
     #[tokio::test]
     async fn reject_gas_price_too_low() {
         let chain_id = 1u64;
-        let (sender, _, raw_tx) = sign_eip1559_tx(
-            chain_id,
-            0,
-            21000,
-            100, // Low gas price
-            U256::ZERO,
-            Some(Address::ZERO),
-        );
-
+        let (sender, _, raw_tx) =
+            sign_eip1559_tx(chain_id, 0, 21000, 100, U256::ZERO, Some(Address::ZERO));
         let state =
             MockState::new().with_account(sender, 0, U256::from(1_000_000_000_000_000_000u64));
-        let config = PoolConfig::default(); // min_gas_price defaults to 1 gwei
+        let config = PoolConfig::default();
         let validator = TransactionValidator::new(chain_id, state, config);
-
         let result = validator.validate(raw_tx).await;
         assert!(matches!(result, Err(TxPoolError::GasPriceTooLow { .. })));
     }
@@ -496,20 +559,12 @@ mod tests {
     #[tokio::test]
     async fn reject_intrinsic_gas_too_low() {
         let chain_id = 1u64;
-        let (sender, _, raw_tx) = sign_eip1559_tx(
-            chain_id,
-            0,
-            1000, // Gas limit below intrinsic (21000)
-            1_000_000_000,
-            U256::ZERO,
-            Some(Address::ZERO),
-        );
-
+        let (sender, _, raw_tx) =
+            sign_eip1559_tx(chain_id, 0, 1000, 1_000_000_000, U256::ZERO, Some(Address::ZERO));
         let state =
             MockState::new().with_account(sender, 0, U256::from(1_000_000_000_000_000_000u64));
         let config = PoolConfig::default();
         let validator = TransactionValidator::new(chain_id, state, config);
-
         let result = validator.validate(raw_tx).await;
         assert!(matches!(result, Err(TxPoolError::IntrinsicGasTooLow { .. })));
     }
@@ -517,20 +572,12 @@ mod tests {
     #[tokio::test]
     async fn reject_nonce_too_low() {
         let chain_id = 1u64;
-        let (sender, _, raw_tx) = sign_eip1559_tx(
-            chain_id,
-            0, // nonce 0
-            21000,
-            1_000_000_000,
-            U256::ZERO,
-            Some(Address::ZERO),
-        );
-
+        let (sender, _, raw_tx) =
+            sign_eip1559_tx(chain_id, 0, 21000, 1_000_000_000, U256::ZERO, Some(Address::ZERO));
         let state =
-            MockState::new().with_account(sender, 5, U256::from(1_000_000_000_000_000_000u64)); // State nonce is 5
+            MockState::new().with_account(sender, 5, U256::from(1_000_000_000_000_000_000u64));
         let config = PoolConfig::default();
         let validator = TransactionValidator::new(chain_id, state, config);
-
         let result = validator.validate(raw_tx).await;
         assert!(matches!(result, Err(TxPoolError::NonceTooLow { got: 0, expected: 5 })));
     }
@@ -540,18 +587,14 @@ mod tests {
         let chain_id = 1u64;
         let (sender, _, raw_tx) =
             sign_eip1559_tx(chain_id, 100, 21000, 1_000_000_000, U256::ZERO, Some(Address::ZERO));
-
         let state =
             MockState::new().with_account(sender, 0, U256::from(1_000_000_000_000_000_000u64));
         let config = PoolConfig::default().with_max_txs_per_sender(16);
         let validator = TransactionValidator::new(chain_id, state, config);
-
         let result = validator.validate(raw_tx).await;
         assert!(matches!(result, Err(TxPoolError::NonceGap { got: 100, expected: 0 })));
     }
 
-    /// Sign `count` legacy txs with the same key, returning (sender, raw_txs[]).
-    /// Each tx has a sequential nonce starting at `start_nonce`.
     fn sign_legacy_burst(chain_id: u64, start_nonce: u64, count: u64) -> (Address, Vec<Tx>) {
         let signing_key = SigningKey::random(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
@@ -559,7 +602,6 @@ mod tests {
         let pubkey_bytes = pubkey.as_bytes();
         let pubkey_hash = sha3::Keccak256::digest(&pubkey_bytes[1..]);
         let sender = Address::from_slice(&pubkey_hash[12..]);
-
         let mut raws = Vec::with_capacity(count as usize);
         for i in 0..count {
             let tx = TxLegacy {
@@ -587,23 +629,14 @@ mod tests {
         (sender, raws)
     }
 
-    /// Regression: a fresh deployer submitting 39 sequential txs (the typical
-    /// contract-deploy burst — e.g. the Mirage agents+exchange stack) must not
-    /// be rejected by the per-sender cap before any of them mine.
-    ///
-    /// Pre-fix: `max_txs_per_sender = 16` rejected tx 17+ as `NonceGap` even
-    /// though the txs are perfectly contiguous from `state_nonce = 0`. Bursty
-    /// devnet deploys (Foundry Forge + Cannon + raw-RPC scripts) hit this.
     #[tokio::test]
     async fn accept_burst_of_39_sequential_nonces_from_single_sender() {
         let chain_id = 1u64;
         let (sender, raws) = sign_legacy_burst(chain_id, 0, 39);
-
         let state =
             MockState::new().with_account(sender, 0, U256::from(10_000_000_000_000_000_000u128));
         let config = PoolConfig::default();
         let validator = TransactionValidator::new(chain_id, state, config);
-
         for (i, raw) in raws.into_iter().enumerate() {
             let res = validator.validate(raw).await;
             assert!(res.is_ok(), "tx {} (nonce={}) was rejected: {:?}", i, i, res.err());
@@ -619,15 +652,13 @@ mod tests {
             chain_id,
             0,
             21000,
-            1_000_000_000,                        // 1 gwei
-            U256::from(1_000_000_000_000_000u64), // 0.001 ETH
+            1_000_000_000,
+            U256::from(1_000_000_000_000_000u64),
             Some(Address::ZERO),
         );
-
-        let state = MockState::new().with_account(sender, 0, U256::from(1000)); // Only 1000 wei
+        let state = MockState::new().with_account(sender, 0, U256::from(1000));
         let config = PoolConfig::default();
         let validator = TransactionValidator::new(chain_id, state, config);
-
         let result = validator.validate(raw_tx).await;
         assert!(matches!(result, Err(TxPoolError::InsufficientBalance { .. })));
     }
@@ -635,20 +666,12 @@ mod tests {
     #[tokio::test]
     async fn accept_future_nonce() {
         let chain_id = 1u64;
-        let (sender, _, raw_tx) = sign_eip1559_tx(
-            chain_id,
-            10, // Future nonce
-            21000,
-            1_000_000_000,
-            U256::ZERO,
-            Some(Address::ZERO),
-        );
-
+        let (sender, _, raw_tx) =
+            sign_eip1559_tx(chain_id, 10, 21000, 1_000_000_000, U256::ZERO, Some(Address::ZERO));
         let state =
             MockState::new().with_account(sender, 0, U256::from(1_000_000_000_000_000_000u64));
         let config = PoolConfig::default();
         let validator = TransactionValidator::new(chain_id, state, config);
-
         let result = validator.validate(raw_tx).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap().nonce, 10);
@@ -659,16 +682,13 @@ mod tests {
         let chain_id = 1u64;
         let (sender, _, raw_tx) =
             sign_eip1559_tx(chain_id, 0, 21000, 1_000_000_000, U256::ZERO, Some(Address::ZERO));
-
         let state =
             MockState::new().with_account(sender, 0, U256::from(1_000_000_000_000_000_000u64));
         let config = PoolConfig::default();
         let validator = TransactionValidator::new(chain_id, state, config);
-
         let validated = validator.validate(raw_tx).await.unwrap();
         let timestamp = 1234567890u64;
         let ordered = validated.into_ordered(timestamp);
-
         assert_eq!(ordered.sender, sender);
         assert_eq!(ordered.nonce, 0);
         assert_eq!(ordered.timestamp, timestamp);
@@ -690,7 +710,6 @@ mod tests {
         let sig = Signature::from_scalars_and_parity(B256::ZERO, B256::ZERO, false);
         let signed = tx.into_signed(sig);
         let envelope = TxEnvelope::from(signed);
-
         assert_eq!(effective_gas_price(&envelope), 2_000_000_000);
     }
 
@@ -708,7 +727,6 @@ mod tests {
         let sig = Signature::from_scalars_and_parity(B256::ZERO, B256::ZERO, false);
         let signed = tx.into_signed(sig);
         let envelope = TxEnvelope::from(signed);
-
         assert_eq!(effective_gas_price(&envelope), 3_000_000_000);
     }
 
@@ -728,7 +746,6 @@ mod tests {
         let sig = Signature::from_scalars_and_parity(B256::ZERO, B256::ZERO, false);
         let signed = tx.into_signed(sig);
         let envelope = TxEnvelope::from(signed);
-
         assert_eq!(intrinsic_gas(&envelope), TX_BASE_GAS);
     }
 
@@ -743,13 +760,11 @@ mod tests {
             to: TxKind::Call(Address::ZERO),
             value: U256::ZERO,
             access_list: Default::default(),
-            input: Bytes::from(vec![0u8, 1u8, 0u8, 2u8]), // 2 zero bytes, 2 non-zero
+            input: Bytes::from(vec![0u8, 1u8, 0u8, 2u8]),
         };
         let sig = Signature::from_scalars_and_parity(B256::ZERO, B256::ZERO, false);
         let signed = tx.into_signed(sig);
         let envelope = TxEnvelope::from(signed);
-
-        // base + 2*zero + 2*nonzero = 21000 + 2*4 + 2*16 = 21040
         assert_eq!(
             intrinsic_gas(&envelope),
             TX_BASE_GAS + 2 * TX_DATA_ZERO_GAS + 2 * TX_DATA_NON_ZERO_GAS
@@ -772,8 +787,51 @@ mod tests {
         let sig = Signature::from_scalars_and_parity(B256::ZERO, B256::ZERO, false);
         let signed = tx.into_signed(sig);
         let envelope = TxEnvelope::from(signed);
-
         assert_eq!(intrinsic_gas(&envelope), TX_BASE_GAS + TX_CREATE_GAS);
+    }
+
+    #[test]
+    fn intrinsic_gas_contract_creation_with_initcode() {
+        let initcode = Bytes::from(vec![0xffu8; 64]);
+        let tx = TxEip1559 {
+            chain_id: 1,
+            nonce: 0,
+            gas_limit: 200_000,
+            max_fee_per_gas: 1_000_000_000,
+            max_priority_fee_per_gas: 1_000_000_000,
+            to: TxKind::Create,
+            value: U256::ZERO,
+            access_list: Default::default(),
+            input: initcode,
+        };
+        let sig = Signature::from_scalars_and_parity(B256::ZERO, B256::ZERO, false);
+        let signed = tx.into_signed(sig);
+        let envelope = TxEnvelope::from(signed);
+        let expected =
+            TX_BASE_GAS + TX_CREATE_GAS + 64 * TX_DATA_NON_ZERO_GAS + 2 * INITCODE_WORD_GAS;
+        assert_eq!(intrinsic_gas(&envelope), expected);
+    }
+
+    #[test]
+    fn intrinsic_gas_contract_creation_initcode_partial_word() {
+        let initcode = Bytes::from(vec![0x01u8; 33]);
+        let tx = TxEip1559 {
+            chain_id: 1,
+            nonce: 0,
+            gas_limit: 200_000,
+            max_fee_per_gas: 1_000_000_000,
+            max_priority_fee_per_gas: 1_000_000_000,
+            to: TxKind::Create,
+            value: U256::ZERO,
+            access_list: Default::default(),
+            input: initcode,
+        };
+        let sig = Signature::from_scalars_and_parity(B256::ZERO, B256::ZERO, false);
+        let signed = tx.into_signed(sig);
+        let envelope = TxEnvelope::from(signed);
+        let expected =
+            TX_BASE_GAS + TX_CREATE_GAS + 33 * TX_DATA_NON_ZERO_GAS + 2 * INITCODE_WORD_GAS;
+        assert_eq!(intrinsic_gas(&envelope), expected);
     }
 
     #[test]
@@ -782,7 +840,6 @@ mod tests {
             address: Address::ZERO,
             storage_keys: vec![B256::ZERO, B256::ZERO],
         }]);
-
         let tx = TxEip1559 {
             chain_id: 1,
             nonce: 0,
@@ -797,8 +854,6 @@ mod tests {
         let sig = Signature::from_scalars_and_parity(B256::ZERO, B256::ZERO, false);
         let signed = tx.into_signed(sig);
         let envelope = TxEnvelope::from(signed);
-
-        // base + 1 address + 2 storage keys = 21000 + 2400 + 2*1900 = 27200
         assert_eq!(
             intrinsic_gas(&envelope),
             TX_BASE_GAS + TX_ACCESS_LIST_ADDRESS_GAS + 2 * TX_ACCESS_LIST_STORAGE_KEY_GAS
@@ -821,8 +876,6 @@ mod tests {
         let sig = Signature::from_scalars_and_parity(B256::ZERO, B256::ZERO, false);
         let signed = tx.into_signed(sig);
         let envelope = TxEnvelope::from(signed);
-
-        // gas_limit * max_fee + value = 21000 * 1e9 + 1e12 = 21e12 + 1e12 = 22e12
         let expected = U256::from(21000u64) * U256::from(1_000_000_000u64)
             + U256::from(1_000_000_000_000_000_000u64);
         assert_eq!(max_tx_cost(&envelope), expected);
@@ -836,7 +889,6 @@ mod tests {
         let pubkey_bytes = pubkey.as_bytes();
         let pubkey_hash = sha3::Keccak256::digest(&pubkey_bytes[1..]);
         let expected_sender = Address::from_slice(&pubkey_hash[12..]);
-
         let tx = TxEip1559 {
             chain_id: 1,
             nonce: 0,
@@ -848,17 +900,14 @@ mod tests {
             access_list: Default::default(),
             input: Bytes::new(),
         };
-
         let sig_hash = tx.signature_hash();
         let (sig, recovery_id) = signing_key.sign_prehash_recoverable(sig_hash.as_slice()).unwrap();
         let r = U256::from_be_slice(&sig.r().to_bytes());
         let s = U256::from_be_slice(&sig.s().to_bytes());
         let v = recovery_id.is_y_odd();
         let signature = Signature::new(r, s, v);
-
         let signed = tx.into_signed(signature);
         let envelope = TxEnvelope::from(signed);
-
         let recovered = recover_sender_from_envelope(&envelope).unwrap();
         assert_eq!(recovered, expected_sender);
     }
@@ -869,53 +918,9 @@ mod tests {
         let state = MockState::new();
         let config = PoolConfig::default();
         let validator = TransactionValidator::new(chain_id, state, config);
-
         let invalid_tx = Tx::new(Bytes::from(vec![0xffu8; 100]));
         let result = validator.validate(invalid_tx).await;
         assert!(matches!(result, Err(TxPoolError::DecodeError(_))));
-    }
-
-    /// Sign a transaction with a given key and return (sender, signed_envelope, raw_bytes).
-    fn sign_eip1559_tx_with_key(
-        signing_key: &SigningKey,
-        chain_id: u64,
-        nonce: u64,
-        gas_limit: u64,
-        max_fee_per_gas: u128,
-        value: U256,
-        to: Option<Address>,
-    ) -> (Address, TxEnvelope, Tx) {
-        let verifying_key = signing_key.verifying_key();
-        let pubkey = verifying_key.to_encoded_point(false);
-        let pubkey_bytes = pubkey.as_bytes();
-        let pubkey_hash = sha3::Keccak256::digest(&pubkey_bytes[1..]);
-        let sender = Address::from_slice(&pubkey_hash[12..]);
-
-        let tx = TxEip1559 {
-            chain_id,
-            nonce,
-            gas_limit,
-            max_fee_per_gas,
-            max_priority_fee_per_gas: max_fee_per_gas,
-            to: to.map(TxKind::Call).unwrap_or(TxKind::Create),
-            value,
-            access_list: Default::default(),
-            input: Bytes::new(),
-        };
-
-        let sig_hash = tx.signature_hash();
-        let (sig, recovery_id) = signing_key.sign_prehash_recoverable(sig_hash.as_slice()).unwrap();
-        let r = U256::from_be_slice(&sig.r().to_bytes());
-        let s = U256::from_be_slice(&sig.s().to_bytes());
-        let v = recovery_id.is_y_odd();
-        let signature = Signature::new(r, s, v);
-
-        let signed = tx.into_signed(signature);
-        let envelope = TxEnvelope::from(signed);
-        let mut raw_bytes = Vec::new();
-        envelope.encode_2718(&mut raw_bytes);
-
-        (sender, envelope, Tx::new(raw_bytes.into()))
     }
 
     #[tokio::test]
@@ -931,7 +936,6 @@ mod tests {
             U256::from(1000),
             Some(Address::ZERO),
         );
-        // Create a second tx with the same sender+nonce but different value.
         let (_, _, raw_tx2) = sign_eip1559_tx_with_key(
             &key,
             chain_id,
@@ -941,19 +945,14 @@ mod tests {
             U256::from(2000),
             Some(Address::ZERO),
         );
-
         let state =
             MockState::new().with_account(sender, 0, U256::from(1_000_000_000_000_000_000u64));
         let pool = TransactionPool::new(PoolConfig::default());
-
-        // Validate and insert the first transaction into the pool.
         let config = PoolConfig::default();
         let validator = TransactionValidator::new(chain_id, state.clone(), config.clone())
             .with_pool(pool.clone());
         let validated = validator.validate(raw_tx1).await.unwrap();
         pool.add(validated.into_ordered(0)).unwrap();
-
-        // The second tx with the same sender+nonce should be rejected.
         let validator2 = TransactionValidator::new(chain_id, state, config).with_pool(pool);
         let result = validator2.validate(raw_tx2).await;
         assert!(
@@ -965,8 +964,6 @@ mod tests {
 
     #[tokio::test]
     async fn allow_different_nonce_with_pool() {
-        // A transaction with a different nonce should still pass when
-        // the pool has a tx from the same sender at a lower nonce.
         let chain_id = 1u64;
         let key = SigningKey::random(&mut OsRng);
         let (sender, _, raw_tx0) = sign_eip1559_tx_with_key(
@@ -987,26 +984,20 @@ mod tests {
             U256::from(1000),
             Some(Address::ZERO),
         );
-
         let state =
             MockState::new().with_account(sender, 0, U256::from(1_000_000_000_000_000_000u64));
         let pool = TransactionPool::new(PoolConfig::default());
-
         let config = PoolConfig::default();
         let validator = TransactionValidator::new(chain_id, state.clone(), config.clone())
             .with_pool(pool.clone());
         let validated = validator.validate(raw_tx0).await.unwrap();
         pool.add(validated.into_ordered(0)).unwrap();
-
-        // nonce 1 should pass
         let validator2 = TransactionValidator::new(chain_id, state, config).with_pool(pool);
         assert!(validator2.validate(raw_tx1).await.is_ok());
     }
 
     #[tokio::test]
     async fn allow_same_nonce_without_pool() {
-        // Without a pool attached, the validator cannot detect same-nonce
-        // conflicts.  Both transactions should pass validation independently.
         let chain_id = 1u64;
         let key = SigningKey::random(&mut OsRng);
         let (sender, _, raw_tx1) = sign_eip1559_tx_with_key(
@@ -1027,13 +1018,113 @@ mod tests {
             U256::from(2000),
             Some(Address::ZERO),
         );
-
         let state =
             MockState::new().with_account(sender, 0, U256::from(1_000_000_000_000_000_000u64));
         let config = PoolConfig::default();
         let validator = TransactionValidator::new(chain_id, state, config);
-
         assert!(validator.validate(raw_tx1).await.is_ok());
         assert!(validator.validate(raw_tx2).await.is_ok());
+    }
+
+    // --- Issue #198: EIP-3860 initcode size limit ---
+
+    #[tokio::test]
+    async fn reject_oversized_initcode() {
+        let chain_id = 1u64;
+        let signing_key = SigningKey::random(&mut OsRng);
+        let oversized_initcode = Bytes::from(vec![0x01u8; MAX_INITCODE_SIZE + 1]);
+        let (sender, _, raw_tx) = sign_eip1559_tx_with_key_and_input(
+            &signing_key,
+            chain_id,
+            0,
+            10_000_000,
+            1_000_000_000,
+            U256::ZERO,
+            None,
+            oversized_initcode,
+        );
+        let state =
+            MockState::new().with_account(sender, 0, U256::from(100_000_000_000_000_000_000u128));
+        let config = PoolConfig::default();
+        let validator = TransactionValidator::new(chain_id, state, config);
+        let result = validator.validate(raw_tx).await;
+        assert!(
+            matches!(result, Err(TxPoolError::InitcodeTooLarge { .. })),
+            "expected InitcodeTooLarge, got: {:?}",
+            result,
+        );
+    }
+
+    #[tokio::test]
+    async fn accept_max_initcode() {
+        let chain_id = 1u64;
+        let signing_key = SigningKey::random(&mut OsRng);
+        let initcode = Bytes::from(vec![0x01u8; MAX_INITCODE_SIZE]);
+        let required_gas = TX_BASE_GAS
+            + TX_CREATE_GAS
+            + MAX_INITCODE_SIZE as u64 * TX_DATA_NON_ZERO_GAS
+            + (MAX_INITCODE_SIZE as u64).div_ceil(32) * INITCODE_WORD_GAS;
+        let (sender, _, raw_tx) = sign_eip1559_tx_with_key_and_input(
+            &signing_key,
+            chain_id,
+            0,
+            required_gas + 1000,
+            1_000_000_000,
+            U256::ZERO,
+            None,
+            initcode,
+        );
+        let state =
+            MockState::new().with_account(sender, 0, U256::from(100_000_000_000_000_000_000u128));
+        let config = PoolConfig::default();
+        let validator = TransactionValidator::new(chain_id, state, config);
+        let result = validator.validate(raw_tx).await;
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
+    }
+
+    // --- Issue #199: Block gas limit validation ---
+
+    #[tokio::test]
+    async fn reject_gas_limit_exceeds_block_gas_limit() {
+        let chain_id = 1u64;
+        let block_gas_limit = 30_000_000u64;
+        let (sender, _, raw_tx) = sign_eip1559_tx(
+            chain_id,
+            0,
+            block_gas_limit + 1,
+            1_000_000_000,
+            U256::ZERO,
+            Some(Address::ZERO),
+        );
+        let state =
+            MockState::new().with_account(sender, 0, U256::from(100_000_000_000_000_000_000u128));
+        let config = PoolConfig::default().with_block_gas_limit(block_gas_limit);
+        let validator = TransactionValidator::new(chain_id, state, config);
+        let result = validator.validate(raw_tx).await;
+        assert!(
+            matches!(result, Err(TxPoolError::GasLimitTooHigh { .. })),
+            "expected GasLimitTooHigh, got: {:?}",
+            result,
+        );
+    }
+
+    #[tokio::test]
+    async fn accept_gas_limit_at_block_gas_limit() {
+        let chain_id = 1u64;
+        let block_gas_limit = 30_000_000u64;
+        let (sender, _, raw_tx) = sign_eip1559_tx(
+            chain_id,
+            0,
+            block_gas_limit,
+            1_000_000_000,
+            U256::ZERO,
+            Some(Address::ZERO),
+        );
+        let state =
+            MockState::new().with_account(sender, 0, U256::from(100_000_000_000_000_000_000u128));
+        let config = PoolConfig::default().with_block_gas_limit(block_gas_limit);
+        let validator = TransactionValidator::new(chain_id, state, config);
+        let result = validator.validate(raw_tx).await;
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
     }
 }

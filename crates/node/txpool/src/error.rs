@@ -105,6 +105,24 @@ pub enum TxPoolError {
     /// Replacement transaction does not have sufficient gas price bump.
     #[error("replacement transaction underpriced")]
     ReplacementUnderpriced,
+
+    /// Contract creation initcode exceeds EIP-3860 maximum size.
+    #[error("initcode size {size} exceeds EIP-3860 maximum {max}")]
+    InitcodeTooLarge {
+        /// Actual initcode size in bytes.
+        size: usize,
+        /// Maximum allowed initcode size (49,152 bytes).
+        max: usize,
+    },
+
+    /// Transaction gas limit exceeds the block gas limit.
+    #[error("gas limit {limit} exceeds block gas limit {max}")]
+    GasLimitTooHigh {
+        /// Provided gas limit.
+        limit: u64,
+        /// Maximum block gas limit.
+        max: u64,
+    },
 }
 
 #[cfg(test)]
@@ -230,5 +248,17 @@ mod tests {
         assert!(debug.contains("NonceTooLow"));
         assert!(debug.contains("got: 1"));
         assert!(debug.contains("expected: 5"));
+    }
+
+    #[test]
+    fn test_initcode_too_large_display() {
+        let err = TxPoolError::InitcodeTooLarge { size: 50000, max: 49152 };
+        assert_eq!(err.to_string(), "initcode size 50000 exceeds EIP-3860 maximum 49152");
+    }
+
+    #[test]
+    fn test_gas_limit_too_high_display() {
+        let err = TxPoolError::GasLimitTooHigh { limit: 500_000_000, max: 250_000_000 };
+        assert_eq!(err.to_string(), "gas limit 500000000 exceeds block gas limit 250000000");
     }
 }
