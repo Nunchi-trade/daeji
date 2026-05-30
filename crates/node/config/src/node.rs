@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use commonware_codec::ReadExt as _;
 use serde::{Deserialize, Serialize};
 
-use crate::{ConfigError, ConsensusConfig, ExecutionConfig, NetworkConfig, RpcConfig};
+use crate::{ConfigError, ConsensusConfig, ExecutionConfig, NetworkConfig, RpcConfig, SyncConfig};
 
 /// Default chain ID for local development.
 pub const DEFAULT_CHAIN_ID: u64 = 1;
@@ -49,6 +49,14 @@ pub struct NodeConfig {
     /// RPC configuration.
     #[serde(default)]
     pub rpc: RpcConfig,
+
+    /// State sync and crash recovery configuration.
+    ///
+    /// Controls how many recent finalized blocks are pre-populated into the
+    /// in-memory snapshot cache on startup and when to warn about large
+    /// catch-up gaps. See [`SyncConfig`] for details.
+    #[serde(default)]
+    pub sync: SyncConfig,
 }
 
 impl Default for NodeConfig {
@@ -61,6 +69,7 @@ impl Default for NodeConfig {
             network: NetworkConfig::default(),
             execution: ExecutionConfig::default(),
             rpc: RpcConfig::default(),
+            sync: SyncConfig::default(),
         }
     }
 }

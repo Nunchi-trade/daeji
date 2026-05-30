@@ -274,17 +274,6 @@ fn index_recovered_block(
     index.insert_block(indexed_block, Vec::new(), Vec::new());
 }
 
-/// Number of recent blocks to restore during startup to pre-populate the
-/// snapshot cache. This ensures that blocks arriving shortly after restart
-/// can find their parent snapshot without entering catch-up mode.
-///
-/// A larger window (64 blocks) means the node can survive outages where
-/// the network advances up to 64 blocks before the node restarts.  Blocks
-/// within this window are resolved from the local archive without needing
-/// catch-up trust.  Beyond this window, the catch-up mechanism in
-/// `RevmApplication::verify_block` handles the gap.
-const SNAPSHOT_PREPOPULATE_COUNT: u64 = 64;
-
 async fn recover_finalized_state<FB, FC>(
     ledger: &LedgerService,
     block_index: &Arc<kora_indexer::BlockIndex>,
@@ -1162,6 +1151,10 @@ impl NodeRunner for ProductionRunner {
         // snapshot. Without this, only the HEAD snapshot exists after
         // recovery, and verify_block would fail for any block whose parent
         // is not HEAD.
+        //
+        // The count is driven by `config.sync.snapshot_prepopulate_count`
+        // (default 64) so operators can tune it without recompiling.
+        let snapshot_prepopulate_count = config.sync.snapshot_prepopulate_count;
         if let Some((head_height, replayed_tail)) = recovered_head_height
             && !replayed_tail
         {
@@ -1169,9 +1162,33 @@ impl NodeRunner for ProductionRunner {
                 &ledger,
                 &finalized_blocks,
                 head_height,
-                SNAPSHOT_PREPOPULATE_COUNT,
+                snapshot_prepopulate_count,
             )
             .await;
+        }
+
+        // Warn if the restored height is significantly behind the archive
+        // head.  A large gap means the graduated-blocker catch-up path may
+        // take an extended period before the node can produce blocks.
+        // Phase 2 (peer sync) will automate recovery in this case.
+        if let Some((head_height, _)) = recovered_head_height {
+            let local_finalized = finalized_blocks.last_index().unwrap_or(0);
+            let sync_threshold = config.sync.sync_threshold;
+            if local_finalized > head_height.saturating_add(sync_threshold) {
+                warn!(
+                    local_finalized,
+                    restored_height = head_height,
+                    sync_threshold,
+                    "startup: restored height is significantly behind archive head;                      node may need extended catch-up before producing blocks                      (Phase 2 peer-sync will address this automatically)"
+                );
+            } else {
+                info!(
+                    restored_height = head_height,
+                    local_finalized,
+                    snapshot_prepopulate_count,
+                    "startup recovery complete: snapshot cache pre-populated"
+                );
+            }
         }
 
         if let Some((node_state, addr)) = &self.rpc_config {
