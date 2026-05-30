@@ -1390,6 +1390,9 @@ impl NodeRunner for ProductionRunner {
             fee_recipient,
         );
         app = app.with_metrics(app_metrics.clone());
+        if config.execution.min_block_interval_ms > 0 {
+            app = app.with_min_block_interval(Duration::from_millis(config.execution.min_block_interval_ms));
+        }
         if let Some((height, _)) = recovered_head_height {
             app = app.with_recovered_height(height);
             // Seed the block-fee cache from the block index so that the

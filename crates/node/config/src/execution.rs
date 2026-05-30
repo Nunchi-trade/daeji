@@ -14,6 +14,9 @@ pub const DEFAULT_GAS_LIMIT: u64 = 250_000_000;
 /// a reasonable default for devnets.
 pub const INITIAL_BASE_FEE: u64 = 1_000_000_000;
 
+/// Default minimum block interval in milliseconds (0 = disabled).
+pub const DEFAULT_MIN_BLOCK_INTERVAL_MS: u64 = 0;
+
 /// Execution layer configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExecutionConfig {
@@ -34,16 +37,24 @@ pub struct ExecutionConfig {
         deserialize_with = "deserialize_optional_address"
     )]
     pub fee_recipient: Option<Address>,
+
+    /// Min interval between proposals in ms (0 = no throttle).
+    #[serde(default = "default_min_block_interval_ms")]
+    pub min_block_interval_ms: u64,
 }
 
 impl Default for ExecutionConfig {
     fn default() -> Self {
-        Self { gas_limit: DEFAULT_GAS_LIMIT, fee_recipient: None }
+        Self { gas_limit: DEFAULT_GAS_LIMIT, fee_recipient: None, min_block_interval_ms: DEFAULT_MIN_BLOCK_INTERVAL_MS }
     }
 }
 
 const fn default_gas_limit() -> u64 {
     DEFAULT_GAS_LIMIT
+}
+
+const fn default_min_block_interval_ms() -> u64 {
+    DEFAULT_MIN_BLOCK_INTERVAL_MS
 }
 
 fn serialize_optional_address<S>(addr: &Option<Address>, serializer: S) -> Result<S::Ok, S::Error>
@@ -83,7 +94,7 @@ mod tests {
 
     #[test]
     fn test_execution_config_serde_roundtrip() {
-        let config = ExecutionConfig { gas_limit: 300_000_000, fee_recipient: None };
+        let config = ExecutionConfig { gas_limit: 300_000_000, fee_recipient: None, min_block_interval_ms: 0 };
         let serialized = serde_json::to_string(&config).expect("serialize");
         let deserialized: ExecutionConfig = serde_json::from_str(&serialized).expect("deserialize");
         assert_eq!(config, deserialized);
@@ -91,7 +102,7 @@ mod tests {
 
     #[test]
     fn test_execution_config_toml_roundtrip() {
-        let config = ExecutionConfig { gas_limit: 150_000_000, fee_recipient: None };
+        let config = ExecutionConfig { gas_limit: 150_000_000, fee_recipient: None, min_block_interval_ms: 0 };
         let serialized = toml::to_string(&config).expect("serialize toml");
         let deserialized: ExecutionConfig = toml::from_str(&serialized).expect("deserialize toml");
         assert_eq!(config, deserialized);
@@ -119,7 +130,7 @@ mod tests {
 
     #[test]
     fn test_execution_config_clone_and_eq() {
-        let config = ExecutionConfig { gas_limit: 999, fee_recipient: None };
+        let config = ExecutionConfig { gas_limit: 999, fee_recipient: None, min_block_interval_ms: 0 };
         assert_eq!(config, config.clone());
         assert_ne!(config, ExecutionConfig::default());
     }
@@ -127,7 +138,7 @@ mod tests {
     #[test]
     fn test_fee_recipient_json_roundtrip() {
         let addr = "0xdead000000000000000000000000000000000001".parse::<Address>().unwrap();
-        let config = ExecutionConfig { gas_limit: DEFAULT_GAS_LIMIT, fee_recipient: Some(addr) };
+        let config = ExecutionConfig { gas_limit: DEFAULT_GAS_LIMIT, fee_recipient: Some(addr), min_block_interval_ms: 0 };
         let serialized = serde_json::to_string(&config).expect("serialize");
         assert!(serialized.contains("0xdead"));
         let deserialized: ExecutionConfig = serde_json::from_str(&serialized).expect("deserialize");
