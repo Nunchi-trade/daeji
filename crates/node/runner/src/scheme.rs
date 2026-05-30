@@ -12,6 +12,7 @@ use commonware_cryptography::{
 };
 use commonware_utils::ordered::Set;
 use kora_dkg::DkgOutput;
+use zeroize::Zeroizing;
 
 /// BLS12-381 threshold signature scheme used for consensus.
 pub type ThresholdScheme = bls12381_threshold::Scheme<ed25519::PublicKey, MinSig>;
@@ -20,7 +21,7 @@ const SIMPLEX_NAMESPACE: &[u8] = b"_COMMONWARE_KORA_SIMPLEX";
 
 /// Load a threshold signing scheme from DKG output files.
 pub fn load_threshold_scheme(data_dir: &Path) -> anyhow::Result<ThresholdScheme> {
-    let output = DkgOutput::load(data_dir)?;
+    let mut output = DkgOutput::load(data_dir)?;
 
     let participants: Vec<ed25519::PublicKey> = output
         .participant_keys
@@ -43,7 +44,8 @@ pub fn load_threshold_scheme(data_dir: &Path) -> anyhow::Result<ThresholdScheme>
     )
     .map_err(|e| anyhow::anyhow!("failed to decode public polynomial: {:?}", e))?;
 
-    let share = Share::read_cfg(&mut output.share_secret.as_slice(), &())
+    let share_secret = Zeroizing::new(std::mem::take(&mut output.share_secret));
+    let share = Share::read_cfg(&mut share_secret.as_slice(), &())
         .map_err(|e| anyhow::anyhow!("failed to decode share: {:?}", e))?;
 
     let scheme =

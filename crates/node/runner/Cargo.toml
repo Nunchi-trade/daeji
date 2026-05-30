@@ -48,6 +48,7 @@ hex.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
+zeroize.workspace = true
 rand.workspace = true
 
 [dev-dependencies]
