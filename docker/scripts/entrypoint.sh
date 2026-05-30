@@ -197,10 +197,37 @@ case "$MODE" in
             log "Transaction gossip DISABLED (set TX_GOSSIP=true to enable)"
         fi
 
+        # Generate config.toml from environment variables so operators can
+        # tune consensus, networking, and RPC settings without rebuilding the
+        # image.  The dialable_addr defaults to "$(hostname):30303" which
+        # resolves inside Docker networks; without it nodes advertise
+        # 0.0.0.0:30303 which is not routable between containers.
+        CONFIG_FILE="${DATA_DIR}/config.toml"
+        DIALABLE_ADDR="${KORA_DIALABLE_ADDR:-$(hostname):30303}"
+        cat > "$CONFIG_FILE" <<EOF
+chain_id = ${CHAIN_ID:-1337}
+
+[consensus.simplex]
+leader_timeout_secs = ${KORA_LEADER_TIMEOUT:-1}
+certification_timeout_secs = ${KORA_CERT_TIMEOUT:-2}
+timeout_retry_secs = ${KORA_TIMEOUT_RETRY:-1}
+
+[network]
+listen_addr = "${KORA_LISTEN_ADDR:-0.0.0.0:30303}"
+dialable_addr = "${DIALABLE_ADDR}"
+
+[rpc]
+http_addr = "${KORA_RPC_ADDR:-0.0.0.0:8545}"
+
+[execution]
+gas_limit = ${KORA_GAS_LIMIT:-250000000}
+EOF
+        log "Generated config: ${CONFIG_FILE} (dialable_addr=${DIALABLE_ADDR})"
+
         exec /usr/local/bin/kora validator \
+            --config "$CONFIG_FILE" \
             --data-dir "$DATA_DIR" \
             --peers "${SHARED_DIR}/peers.json" \
-            --chain-id "$CHAIN_ID" \
             $GOSSIP_FLAG \
             "$@"
         ;;
