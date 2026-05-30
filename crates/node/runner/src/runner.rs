@@ -1415,9 +1415,9 @@ impl NodeRunner for ProductionRunner {
             Reporters::from((marshal_mailbox.clone(), node_state_reporter));
         let reporter = Reporters::from((seed_reporter, inner_reporters));
 
-        for tx in &self.bootstrap.bootstrap_txs {
+        for (idx, tx) in self.bootstrap.bootstrap_txs.iter().enumerate() {
             if !ledger.submit_tx(tx.clone()).await {
-                warn!("failed to submit bootstrap transaction to mempool");
+                warn!(tx_index = idx, "failed to submit bootstrap transaction to mempool");
             }
         }
 

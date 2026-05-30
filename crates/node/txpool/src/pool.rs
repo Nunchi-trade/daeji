@@ -287,16 +287,23 @@ impl TransactionPool {
         drop(inner);
 
         if let Some(events) = &self.events {
-            if let Some(hash) = replaced_hash {
-                let _ =
-                    events.send(MempoolEvent::TxEvicted { hash, reason: "replaced".to_string() });
+            if let Some(hash) = replaced_hash
+                && events
+                    .send(MempoolEvent::TxEvicted { hash, reason: "replaced".to_string() })
+                    .is_err()
+            {
+                trace!("no active subscribers for mempool TxEvicted(replaced) event");
             }
-            if !inserted_evicted {
-                let _ = events.send(added_event);
+            if !inserted_evicted && events.send(added_event).is_err() {
+                trace!("no active subscribers for mempool TxAdded event");
             }
             for hash in &evicted_hashes {
-                let _ = events
-                    .send(MempoolEvent::TxEvicted { hash: *hash, reason: "evicted".to_string() });
+                if events
+                    .send(MempoolEvent::TxEvicted { hash: *hash, reason: "evicted".to_string() })
+                    .is_err()
+                {
+                    trace!("no active subscribers for mempool TxEvicted(evicted) event");
+                }
             }
         }
 
@@ -422,9 +429,12 @@ impl TransactionPool {
         inner.update_counts();
         drop(inner);
 
-        if let Some(events) = &self.events {
-            let _ =
-                events.send(MempoolEvent::TxEvicted { hash: *hash, reason: reason.to_string() });
+        if let Some(events) = &self.events
+            && events
+                .send(MempoolEvent::TxEvicted { hash: *hash, reason: reason.to_string() })
+                .is_err()
+        {
+            trace!("no active subscribers for mempool TxEvicted event");
         }
 
         self.sync_metrics();
@@ -598,7 +608,13 @@ fn tx_added_event(tx: &OrderedTransaction) -> MempoolEvent {
 }
 
 fn current_timestamp() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_secs(),
+        Err(err) => {
+            warn!(error = %err, "system clock is before Unix epoch; using 0 as transaction timestamp");
+            0
+        }
+    }
 }
 
 fn ordered_to_tx(tx: &OrderedTransaction) -> Tx {
@@ -634,8 +650,20 @@ fn rejection_reason(err: &TxPoolError) -> String {
 }
 
 fn tx_to_ordered(tx: &Tx) -> Option<OrderedTransaction> {
-    let envelope = TxEnvelope::decode_2718(&mut tx.bytes.as_ref()).ok()?;
-    let sender = recover_sender_from_envelope(&envelope).ok()?;
+    let envelope = match TxEnvelope::decode_2718(&mut tx.bytes.as_ref()) {
+        Ok(env) => env,
+        Err(err) => {
+            debug!(error = %err, "failed to decode transaction envelope in pool");
+            return None;
+        }
+    };
+    let sender = match recover_sender_from_envelope(&envelope) {
+        Ok(s) => s,
+        Err(err) => {
+            debug!(error = %err, "failed to recover sender from transaction in pool");
+            return None;
+        }
+    };
     let hash = alloy_primitives::keccak256(&tx.bytes);
     let nonce = envelope.nonce();
     let effective_gas_price = match &envelope {

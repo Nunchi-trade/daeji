@@ -63,7 +63,13 @@ const MAX_FUTURE_TIMESTAMP_DRIFT: u64 = 15;
 const MAX_PROPOSAL_LAG: u64 = 64;
 
 fn unix_timestamp_secs<Env: Clock>(env: &Env) -> u64 {
-    env.current().duration_since(UNIX_EPOCH).map(|duration| duration.as_secs()).unwrap_or(0)
+    match env.current().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs(),
+        Err(err) => {
+            warn!(error = %err, "system clock is before Unix epoch; using 0 as timestamp");
+            0
+        }
+    }
 }
 
 /// Number of blocks the network must advance PAST the recovered height
@@ -251,7 +257,10 @@ where
     }
 
     async fn get_prevrandao(&self, parent_digest: ConsensusDigest) -> B256 {
-        self.ledger.seed_for_parent(parent_digest).await.unwrap_or(B256::ZERO)
+        self.ledger.seed_for_parent(parent_digest).await.unwrap_or_else(|| {
+            debug!(?parent_digest, "seed cache miss, falling back to zero prevrandao");
+            B256::ZERO
+        })
     }
 
     async fn build_block(&self, parent: &Block, timestamp: u64) -> Option<Block> {
@@ -290,7 +299,7 @@ where
                     if let Some(ref m) = self.metrics {
                         m.proposal_snapshot_misses.inc();
                     }
-                    warn!(
+                    debug!(
                         parent_height = parent.height,
                         ?parent_digest,
                         wait_ms = wait_start.elapsed().as_millis(),
@@ -663,11 +672,12 @@ where
                 self.ledger.restore_persisted_snapshot(block).await;
                 return true;
             }
-            warn!(
+            error!(
                 ?digest,
+                height = block.height,
                 expected = ?block.state_root,
                 computed = ?state_root,
-                "state root mismatch"
+                "state root mismatch -- possible state corruption or byzantine proposer"
             );
             return false;
         }
@@ -834,11 +844,11 @@ where
                     );
                 }
                 None => {
-                    warn!(
+                    debug!(
                         parent_height = parent.height,
                         parent_digest = ?parent.commitment(),
                         build_ms = build_elapsed.as_millis(),
-                        "propose failed: build_block returned None \
+                        "propose: build_block returned None, skipping proposal \
                          (likely missing parent snapshot -- node may still be catching up)"
                     );
                 }
