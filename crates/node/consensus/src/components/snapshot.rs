@@ -1,7 +1,7 @@
 //! In-memory snapshot store implementation.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     sync::Arc,
 };
 
@@ -36,6 +36,8 @@ pub struct InMemorySnapshotStore<S> {
     persisting: Arc<RwLock<BTreeSet<Digest>>>,
     /// Insertion-ordered queue of persisted digests, used for oldest-first eviction.
     persisted_order: Arc<RwLock<VecDeque<Digest>>>,
+    /// Reference-counted pins that prevent eviction of specific snapshots.
+    pinned: Arc<RwLock<HashMap<Digest, usize>>>,
     /// Maximum number of persisted snapshots to retain in memory.
     max_persisted_retained: usize,
 }
@@ -47,6 +49,7 @@ impl<S> Clone for InMemorySnapshotStore<S> {
             persisted: Arc::clone(&self.persisted),
             persisting: Arc::clone(&self.persisting),
             persisted_order: Arc::clone(&self.persisted_order),
+            pinned: Arc::clone(&self.pinned),
             max_persisted_retained: self.max_persisted_retained,
         }
     }
@@ -68,6 +71,7 @@ impl<S> InMemorySnapshotStore<S> {
             persisted: Arc::new(RwLock::new(BTreeSet::new())),
             persisting: Arc::new(RwLock::new(BTreeSet::new())),
             persisted_order: Arc::new(RwLock::new(VecDeque::new())),
+            pinned: Arc::new(RwLock::new(HashMap::new())),
             max_persisted_retained,
         }
     }
@@ -123,6 +127,23 @@ impl<S> InMemorySnapshotStore<S> {
         }
     }
 
+    /// Pin a snapshot to prevent it from being evicted.
+    pub fn pin(&self, digest: Digest) {
+        let mut pinned = self.pinned.write();
+        *pinned.entry(digest).or_insert(0) += 1;
+    }
+
+    /// Unpin a snapshot, decrementing its reference count.
+    pub fn unpin(&self, digest: &Digest) {
+        let mut pinned = self.pinned.write();
+        if let Some(count) = pinned.get_mut(digest) {
+            *count -= 1;
+            if *count == 0 {
+                pinned.remove(digest);
+            }
+        }
+    }
+
     /// Evict the oldest persisted snapshots that exceed the retention limit.
     ///
     /// After a successful `persist_snapshot` call, this method should be invoked
@@ -146,16 +167,23 @@ impl<S> InMemorySnapshotStore<S> {
         let persisted = self.persisted.read();
         let mut order = self.persisted_order.write();
 
+        let pinned = self.pinned.read();
         let mut evicted = 0usize;
-        while order.len() > self.max_persisted_retained {
+        let mut skipped_pinned = Vec::new();
+        while order.len() > self.max_persisted_retained + skipped_pinned.len() {
             let Some(oldest) = order.pop_front() else {
                 break;
             };
-            // Only remove snapshot data if it is actually persisted.
-            // (Guards against stale entries in the order queue.)
+            if pinned.contains_key(&oldest) {
+                skipped_pinned.push(oldest);
+                continue;
+            }
             if persisted.contains(&oldest) && snapshots.remove(&oldest).is_some() {
                 evicted += 1;
             }
+        }
+        for digest in skipped_pinned.into_iter().rev() {
+            order.push_front(digest);
         }
 
         if evicted > 0 {
@@ -547,6 +575,40 @@ mod tests {
         assert_eq!(store.persisted_count(), 1);
         // Eviction with only 1 persisted and limit 1 should evict nothing.
         assert_eq!(store.evict_persisted(), 0);
+    }
+
+    #[test]
+    fn evict_persisted_skips_pinned_snapshots() {
+        let store = InMemorySnapshotStore::<MockStateDb>::with_max_persisted_retained(1);
+        let d1 = make_digest(0x01);
+        let d2 = make_digest(0x02);
+        let d3 = make_digest(0x03);
+        store.insert(d1, make_snapshot(None));
+        store.insert(d2, make_snapshot(Some(d1)));
+        store.insert(d3, make_snapshot(Some(d2)));
+        store.mark_persisted(&[d1, d2]);
+        store.pin(d1);
+        assert_eq!(store.evict_persisted(), 0);
+        assert!(store.get(&d1).is_some());
+        store.unpin(&d1);
+        assert_eq!(store.evict_persisted(), 1);
+        assert!(store.get(&d1).is_none());
+        assert!(store.get(&d2).is_some());
+    }
+
+    #[test]
+    fn pin_is_reference_counted() {
+        let store = InMemorySnapshotStore::<MockStateDb>::with_max_persisted_retained(0);
+        let d1 = make_digest(0x01);
+        store.insert(d1, make_snapshot(None));
+        store.mark_persisted(&[d1]);
+        store.pin(d1);
+        store.pin(d1);
+        store.unpin(&d1);
+        assert_eq!(store.evict_persisted(), 0);
+        store.unpin(&d1);
+        assert_eq!(store.evict_persisted(), 1);
+        assert!(store.get(&d1).is_none());
     }
 
     #[test]

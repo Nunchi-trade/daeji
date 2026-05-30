@@ -35,10 +35,15 @@ use tracing::{debug, error, info, trace, warn};
 /// once the snapshot is inserted, with this timeout as the upper bound.
 ///
 /// Under CPU contention (e.g. 23 threads on 0.75 cores), the finalization
-/// reporter may need more time to produce the parent snapshot.  100 ms
-/// provides ample budget; in the common case the Notify fires within the
-/// first few milliseconds.
-const SNAPSHOT_WAIT_TIMEOUT: Duration = Duration::from_millis(100);
+/// reporter may need more time to produce the parent snapshot.  500 ms is
+/// well within the `leader_timeout` (1s) and `certification_timeout` (2s)
+/// budgets, so it does not risk stalling consensus.  The event-driven
+/// `Notify` mechanism means the actual wait is typically much shorter than
+/// this upper bound -- in the common case the Notify fires within the
+/// first few milliseconds.  The previous 100 ms value caused avoidable
+/// nullifications under CPU contention when block execution exceeded
+/// 100 ms (see issue #029).
+const SNAPSHOT_WAIT_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Maximum number of seconds a block timestamp may be ahead of the
 /// validator's wall-clock time.  Blocks with timestamps further in the

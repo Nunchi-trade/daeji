@@ -499,6 +499,9 @@ where
         }
         let parent_digest = block.parent();
 
+        // Pin the parent snapshot to prevent eviction (issue #011).
+        state.pin_snapshot(parent_digest).await;
+
         // Retry parent snapshot lookup with exponential backoff. A concurrent
         // persist_snapshot() call may be evicting or replacing snapshots; a
         // brief retry window avoids spurious "missing parent" failures that
@@ -527,17 +530,34 @@ where
 
         if let Some(parent_snapshot) = parent_snapshot {
             let block_context = provider.context(block);
-            let execution =
-                BlockExecution::execute(&parent_snapshot, executor, &block_context, &block.txs)
-                    .await
-                    .map_err(|err| FinalizationError::ExecutionFailed(Box::new(err)))?;
+            let execution = match BlockExecution::execute(
+                &parent_snapshot,
+                executor,
+                &block_context,
+                &block.txs,
+            )
+            .await
+            {
+                Ok(exec) => exec,
+                Err(err) => {
+                    state.unpin_snapshot(&parent_digest).await;
+                    return Err(FinalizationError::ExecutionFailed(Box::new(err)));
+                }
+            };
 
-            let state_root = state
+            let state_root = match state
                 .compute_root_from_store(parent_digest, &execution.outcome.changes)
                 .await
-                .map_err(FinalizationError::RootComputationFailed)?;
+            {
+                Ok(root) => root,
+                Err(err) => {
+                    state.unpin_snapshot(&parent_digest).await;
+                    return Err(FinalizationError::RootComputationFailed(err));
+                }
+            };
 
             if state_root != block.state_root {
+                state.unpin_snapshot(&parent_digest).await;
                 return Err(FinalizationError::StateRootMismatch {
                     expected: block.state_root,
                     computed: state_root,
@@ -597,6 +617,13 @@ where
     } else {
         trace!(?digest, "using cached snapshot for finalized block");
     }
+
+    // Unpin the parent snapshot now that finalization is done reading it.
+    if !snapshot_exists || block_index.is_some() {
+        let parent_digest = block.parent();
+        state.unpin_snapshot(&parent_digest).await;
+    }
+
     if persist_checkpoint {
         let persist_state = state.clone();
         let persist_handle = context
