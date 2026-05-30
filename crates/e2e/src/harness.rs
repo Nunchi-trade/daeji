@@ -245,7 +245,9 @@ struct TestContextProvider {
 
 impl BlockContextProvider for TestContextProvider {
     fn context(&self, block: &Block) -> BlockContext {
+        let parent_hash = block.parent.0;
         let header = Header {
+            parent_hash,
             number: block.height,
             timestamp: block.timestamp,
             gas_limit: self.gas_limit,
@@ -253,7 +255,7 @@ impl BlockContextProvider for TestContextProvider {
             base_fee_per_gas: Some(INITIAL_BASE_FEE),
             ..Default::default()
         };
-        BlockContext::new(header, B256::ZERO, block.prevrandao)
+        BlockContext::new(header, parent_hash, block.prevrandao)
     }
 }
 
@@ -717,8 +719,15 @@ impl<S> TestApplication<S> {
         }
     }
 
-    fn block_context(&self, height: u64, timestamp: u64, prevrandao: B256) -> BlockContext {
+    fn block_context(
+        &self,
+        height: u64,
+        timestamp: u64,
+        prevrandao: B256,
+        parent_hash: B256,
+    ) -> BlockContext {
         let header = Header {
+            parent_hash,
             number: height,
             timestamp,
             gas_limit: self.gas_limit,
@@ -726,7 +735,7 @@ impl<S> TestApplication<S> {
             base_fee_per_gas: Some(INITIAL_BASE_FEE),
             ..Default::default()
         };
-        BlockContext::new(header, B256::ZERO, prevrandao)
+        BlockContext::new(header, parent_hash, prevrandao)
     }
 
     async fn get_prevrandao(&self, parent_digest: ConsensusDigest) -> B256 {
@@ -743,7 +752,8 @@ impl<S> TestApplication<S> {
 
         let prevrandao = self.get_prevrandao(parent_digest).await;
         let height = parent.height + 1;
-        let context = self.block_context(height, timestamp, prevrandao);
+        let parent_hash = parent.id().0;
+        let context = self.block_context(height, timestamp, prevrandao, parent_hash);
         let txs_bytes: Vec<Bytes> = txs.iter().map(|tx| tx.bytes.clone()).collect();
 
         let outcome = self.executor.execute(&parent_snapshot.state, &context, &txs_bytes).ok()?;
@@ -783,7 +793,9 @@ impl<S> TestApplication<S> {
             return false;
         };
 
-        let context = self.block_context(block.height, block.timestamp, block.prevrandao);
+        let parent_hash = block.parent.0;
+        let context =
+            self.block_context(block.height, block.timestamp, block.prevrandao, parent_hash);
         let execution =
             match BlockExecution::execute(&parent_snapshot, &self.executor, &context, &block.txs)
                 .await

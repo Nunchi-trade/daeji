@@ -650,7 +650,9 @@ impl BlockContextProvider for RevmContextProvider {
                 .unwrap_or(kora_config::INITIAL_BASE_FEE)
         };
 
+        let parent_hash = block.parent.0;
         let header = Header {
+            parent_hash,
             number: block.height,
             timestamp: block.timestamp,
             gas_limit: self.gas_limit,
@@ -659,7 +661,7 @@ impl BlockContextProvider for RevmContextProvider {
             ..Default::default()
         };
         let recent_hashes = self.recent_block_hashes(block.height);
-        BlockContext::new(header, B256::ZERO, block.prevrandao)
+        BlockContext::new(header, parent_hash, block.prevrandao)
             .with_recent_block_hashes(recent_hashes)
     }
 }

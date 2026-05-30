@@ -237,9 +237,11 @@ where
         timestamp: u64,
         prevrandao: B256,
         parent_digest: ConsensusDigest,
+        parent_hash: B256,
     ) -> BlockContext {
         let base_fee = self.compute_base_fee(parent_digest);
         let header = Header {
+            parent_hash,
             number: height,
             timestamp,
             gas_limit: self.gas_limit,
@@ -247,7 +249,7 @@ where
             base_fee_per_gas: Some(base_fee),
             ..Default::default()
         };
-        BlockContext::new(header, B256::ZERO, prevrandao)
+        BlockContext::new(header, parent_hash, prevrandao)
     }
 
     async fn get_prevrandao(&self, parent_digest: ConsensusDigest) -> B256 {
@@ -341,7 +343,8 @@ where
 
         let prevrandao = self.get_prevrandao(parent_digest).await;
         let height = parent.height + 1;
-        let context = self.block_context(height, timestamp, prevrandao, parent_digest);
+        let parent_hash = parent.id().0;
+        let context = self.block_context(height, timestamp, prevrandao, parent_digest, parent_hash);
         let base_fee = context.header.base_fee_per_gas.unwrap_or(kora_config::INITIAL_BASE_FEE);
         let txs_bytes: Vec<Bytes> = txs.iter().map(|tx| tx.bytes.clone()).collect();
 
@@ -586,8 +589,14 @@ where
         };
         let snapshot_elapsed = start.elapsed();
 
-        let context =
-            self.block_context(block.height, block.timestamp, block.prevrandao, parent_digest);
+        let parent_hash = block.parent.0;
+        let context = self.block_context(
+            block.height,
+            block.timestamp,
+            block.prevrandao,
+            parent_digest,
+            parent_hash,
+        );
         let base_fee = context.header.base_fee_per_gas.unwrap_or(kora_config::INITIAL_BASE_FEE);
         let exec_start = Instant::now();
         let execution =

@@ -407,7 +407,7 @@ impl<S: StateDb> BlockExecutor<S> for RevmExecutor {
             let mut evm = ctx.build_mainnet();
             let mut cumulative_gas = 0u64;
 
-            for tx_bytes in txs {
+            for (tx_idx, tx_bytes) in txs.iter().enumerate() {
                 let tx_hash = keccak256(tx_bytes);
 
                 let tx_env = match decode_tx_env(tx_bytes, self.config.chain_id) {
@@ -419,12 +419,23 @@ impl<S: StateDb> BlockExecutor<S> for RevmExecutor {
                     }
                 };
 
-                // Enforce block gas limit: we `break` (not `continue`) because Ethereum
-                // semantics stop inclusion at the gas limit — remaining txs are simply not
-                // included. Unlike decode failures above, gas-limited txs get no placeholder
-                // receipts, so `receipts.len()` may be less than `txs.len()`.
+                // Enforce block gas limit: stop inclusion when the next
+                // transaction would exceed the block gas limit.  Emit
+                // placeholder receipts for this and all remaining transactions
+                // to preserve the 1:1 receipt-to-transaction alignment
+                // invariant that downstream code (block indexer, RPC handlers)
+                // depends on.
                 let tx_gas_limit = tx_env.gas_limit;
                 if cumulative_gas.saturating_add(tx_gas_limit) > context.header.gas_limit {
+                    // Placeholder for the current transaction
+                    outcome.receipts.push(build_skipped_receipt(tx_hash, cumulative_gas));
+                    // Placeholders for all remaining transactions
+                    for remaining in &txs[tx_idx + 1..] {
+                        let remaining_hash = keccak256(remaining);
+                        outcome
+                            .receipts
+                            .push(build_skipped_receipt(remaining_hash, cumulative_gas));
+                    }
                     break;
                 }
                 evm.set_tx(tx_env);
@@ -1192,5 +1203,75 @@ mod tests {
         let outcome = executor.execute(&state, &context, &[]).expect("empty block should succeed");
         assert!(outcome.receipts.is_empty());
         assert_eq!(outcome.gas_used, 0);
+    }
+
+    #[test]
+    fn execute_gas_limit_break_preserves_receipt_alignment() {
+        // When the block gas limit is exceeded, placeholder receipts must be
+        // emitted for the remaining transactions so that
+        // `receipts.len() == txs.len()`.
+        let executor = RevmExecutor::new(1);
+        let state = MockStateDb;
+
+        // Use a very low block gas limit (lower than a single tx gas_limit of
+        // 21_000) so the first transaction triggers the gas-limit break.
+        let header = Header {
+            number: 1,
+            timestamp: 1000,
+            gas_limit: 10_000, // below the 21_000 gas_limit of the test tx
+            ..Header::default()
+        };
+        let context = BlockContext::new(header, B256::ZERO, B256::ZERO);
+
+        let tx1 = build_valid_tx(1, 0);
+        let tx2 = build_valid_tx(1, 1);
+        let tx3 = build_valid_tx(1, 2);
+        let txs = vec![tx1, tx2, tx3];
+
+        let outcome = executor.execute(&state, &context, &txs).expect("block should not fail");
+
+        // All three transactions must have a receipt (placeholder) even though
+        // none were executed due to the gas limit.
+        assert_eq!(
+            outcome.receipts.len(),
+            txs.len(),
+            "receipt count must match tx count even when gas limit breaks early"
+        );
+        for receipt in &outcome.receipts {
+            assert!(!receipt.success(), "gas-limited tx receipt must be failed");
+            assert_eq!(receipt.gas_used, 0, "gas-limited tx should use no gas");
+        }
+        assert_eq!(outcome.gas_used, 0, "no gas should be consumed");
+    }
+
+    #[test]
+    fn execute_gas_limit_break_after_valid_tx() {
+        // When one transaction succeeds but the next would exceed the gas
+        // limit, the successful tx gets a real receipt and remaining txs get
+        // placeholder receipts, preserving alignment.
+        let executor = RevmExecutor::new(1);
+        let state = MockStateDb;
+
+        // Gas limit of 25_000: enough for one 21_000-gas tx but not two.
+        let header = Header { number: 1, timestamp: 1000, gas_limit: 25_000, ..Header::default() };
+        let context = BlockContext::new(header, B256::ZERO, B256::ZERO);
+
+        let tx1 = build_valid_tx(1, 0);
+        let tx2 = build_valid_tx(1, 1);
+        let txs = vec![tx1, tx2];
+
+        let outcome = executor.execute(&state, &context, &txs).expect("block should not fail");
+
+        assert_eq!(
+            outcome.receipts.len(),
+            txs.len(),
+            "receipt count must match tx count with partial gas limit break"
+        );
+        // First tx should succeed
+        assert!(outcome.receipts[0].success(), "first tx receipt must be successful");
+        assert!(outcome.receipts[0].gas_used > 0, "first tx should use gas");
+        // Second tx should be a placeholder
+        assert!(!outcome.receipts[1].success(), "gas-limited tx receipt must be failed");
+        assert_eq!(outcome.receipts[1].gas_used, 0, "gas-limited tx should use no gas");
     }
 }
