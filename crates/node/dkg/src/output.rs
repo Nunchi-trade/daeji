@@ -2,10 +2,14 @@ use std::{io::Write as _, path::Path};
 
 use commonware_utils::{Faults, N3f1};
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 use crate::DkgError;
 
 /// Output of a successful DKG ceremony containing the group key, shares, and participant info.
+///
+/// The `share_secret` field is automatically zeroized when the struct is dropped
+/// to prevent secret key material from lingering in process memory.
 #[derive(Debug, Clone)]
 pub struct DkgOutput {
     /// The aggregated group public key derived from all participants' contributions.
@@ -26,6 +30,12 @@ pub struct DkgOutput {
     pub share_secret: Vec<u8>,
     /// Public keys of all participants in the DKG ceremony.
     pub participant_keys: Vec<Vec<u8>>,
+}
+
+impl Drop for DkgOutput {
+    fn drop(&mut self) {
+        self.share_secret.zeroize();
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -58,7 +68,10 @@ impl DkgOutput {
         };
 
         let output_path = data_dir.join("output.json");
-        std::fs::write(&output_path, serde_json::to_string_pretty(&output_json)?)?;
+        write_restricted_file(
+            &output_path,
+            serde_json::to_string_pretty(&output_json)?.as_bytes(),
+        )?;
 
         let share_json =
             ShareJson { index: self.share_index, secret: hex::encode(&self.share_secret) };
@@ -122,6 +135,19 @@ fn write_secret_file(path: &Path, data: &[u8]) -> Result<(), DkgError> {
         .create(true)
         .truncate(true)
         .mode(0o600)
+        .open(path)?;
+    f.write_all(data)?;
+    Ok(())
+}
+
+/// Write `data` to `path` with mode `0640` for defense-in-depth on DKG output files.
+fn write_restricted_file(path: &Path, data: &[u8]) -> Result<(), DkgError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o640)
         .open(path)?;
     f.write_all(data)?;
     Ok(())

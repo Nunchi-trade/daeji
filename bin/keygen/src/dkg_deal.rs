@@ -125,7 +125,10 @@ pub(crate) fn run(args: DkgDealArgs) -> Result<()> {
             participant_keys: participant_keys.clone(),
         };
         let output_path = node_dir.join("output.json");
-        fs::write(&output_path, serde_json::to_string_pretty(&output_json)?)?;
+        write_restricted_file(
+            &output_path,
+            serde_json::to_string_pretty(&output_json)?.as_bytes(),
+        )?;
 
         let share_json = ShareJson { index: share.index.get(), secret: hex::encode(&share_bytes) };
         let share_path = node_dir.join("share.key");
@@ -139,6 +142,20 @@ pub(crate) fn run(args: DkgDealArgs) -> Result<()> {
     tracing::info!("  Quorum (N3f1): {}", quorum);
 
     Ok(())
+}
+
+/// Write `data` to `path` with mode `0640` for defense-in-depth on DKG output files.
+fn write_restricted_file(path: &std::path::Path, data: &[u8]) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o640)
+        .open(path)
+        .wrap_err_with(|| format!("Failed to create restricted file {}", path.display()))?;
+    f.write_all(data)
+        .wrap_err_with(|| format!("Failed to write restricted file {}", path.display()))
 }
 
 /// Write `data` to `path` with mode `0600` so key material is never world-readable.
