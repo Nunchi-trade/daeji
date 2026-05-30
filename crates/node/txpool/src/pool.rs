@@ -618,10 +618,8 @@ impl TransactionPool {
         // Emit eviction events outside the lock (#201)
         if let Some(events) = &self.events {
             for hash in &removed_hashes {
-                let _ = events.send(MempoolEvent::TxEvicted {
-                    hash: *hash,
-                    reason: "expired".to_string(),
-                });
+                let _ = events
+                    .send(MempoolEvent::TxEvicted { hash: *hash, reason: "expired".to_string() });
             }
         }
 
@@ -1484,5 +1482,4 @@ mod tests {
             assert!(inner.queued_prices.is_empty());
         }
     }
-
 }
