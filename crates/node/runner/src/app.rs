@@ -501,18 +501,18 @@ where
         // executing transactions.  During catch-up the blocks are already
         // backed by a finality certificate so we skip the checks.
         if !self.is_catching_up(block.height) {
-            // Monotonicity: block timestamp must be strictly greater than
-            // the parent timestamp (matches the contract enforced by
-            // `Block::next_timestamp` on the proposer side).
+            // Monotonicity: block timestamp must not move backwards.
+            // `block.timestamp` is second-granularity wall-clock time, so
+            // fast blocks can legitimately share the same timestamp.
             if let Some(parent_ts) = parent_timestamp
-                && block.timestamp <= parent_ts
+                && block.timestamp < parent_ts
             {
                 warn!(
                     ?digest,
                     height = block.height,
                     block_timestamp = block.timestamp,
                     parent_timestamp = parent_ts,
-                    "verify_block: timestamp not increasing"
+                    "verify_block: timestamp moved backwards"
                 );
                 return false;
             }
