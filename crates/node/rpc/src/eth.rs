@@ -434,6 +434,9 @@ impl<S: StateProvider + 'static> EthApiImpl<S> {
         }
 
         let estimate = estimate_recent_fees(&*provider, head, self.gas_oracle_config).await;
+        // Release state_provider before acquiring gas_oracle_cache write lock
+        // to eliminate nested lock ordering and reduce lock hold duration.
+        drop(provider);
         *self.gas_oracle_cache.write().await = Some(CachedGasOracleEstimate { head, estimate });
         Ok(estimate)
     }
@@ -600,7 +603,10 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
         let provider = self.state_provider.read().await;
         let indexed = provider.transaction_by_hash(hash).await?;
         if indexed.is_some() {
-            self.pending_txs.write().await.remove(&hash);
+            // Only acquire a write lock when the hash is actually in the pending pool.
+            if self.pending_txs.read().await.contains_key(&hash) {
+                self.pending_txs.write().await.remove(&hash);
+            }
             return Ok(indexed);
         }
         Ok(self.pending_txs.read().await.get(&hash).cloned())
@@ -633,11 +639,15 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
             validate_reward_percentiles(percentiles)?;
         }
 
-        let provider = self.state_provider.read().await;
-        let head = provider
-            .block_number()
-            .await
-            .unwrap_or_else(|_| self.block_height.load(std::sync::atomic::Ordering::Relaxed));
+        // Resolve the head block number, then release the state_provider lock
+        // so that writers are not starved during the per-block loop below.
+        let head = {
+            let provider = self.state_provider.read().await;
+            provider
+                .block_number()
+                .await
+                .unwrap_or_else(|_| self.block_height.load(std::sync::atomic::Ordering::Relaxed))
+        };
         let newest = resolve_fee_history_newest(newest_block, head);
         let requested = block_count.to::<u64>().min(1024);
         let count = requested.min(newest.saturating_add(1)) as usize;
@@ -651,6 +661,9 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
         let mut last_gas_limit = 0;
 
         for block_number in oldest..oldest + count as u64 {
+            // Acquire and release the read lock per block so that writers
+            // (e.g. state provider swaps) can proceed between iterations.
+            let provider = self.state_provider.read().await;
             let block = block_by_number_or_none(&*provider, block_number, reward.is_some()).await;
             let base_fee = block
                 .as_ref()
@@ -678,6 +691,7 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
                     rows.push(vec![U256::ZERO; percentiles.len()]);
                 }
             }
+            drop(provider);
         }
 
         let next_base_fee = last_base_fee
@@ -1150,7 +1164,7 @@ fn block_gas_used_ratio(gas_used: u64, gas_limit: u64) -> f64 {
 fn validate_reward_percentiles(percentiles: &[f64]) -> RpcResult<()> {
     for p in percentiles {
         if !p.is_finite() || *p < 0.0 || *p > 100.0 {
-            return Err(RpcError::InvalidTransaction(
+            return Err(RpcError::InvalidParams(
                 "reward percentiles must be in [0, 100]".to_string(),
             )
             .into());
@@ -1158,7 +1172,7 @@ fn validate_reward_percentiles(percentiles: &[f64]) -> RpcResult<()> {
     }
     for w in percentiles.windows(2) {
         if w[0] > w[1] {
-            return Err(RpcError::InvalidTransaction(
+            return Err(RpcError::InvalidParams(
                 "reward percentiles must be monotonically non-decreasing".to_string(),
             )
             .into());
