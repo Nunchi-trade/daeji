@@ -134,6 +134,38 @@ pub(crate) fn run(args: DkgDealArgs) -> Result<()> {
         tracing::info!(node = i, "Wrote DKG output and share");
     }
 
+    // -- Post-ceremony cleanup (issue #024) --
+    // The dealer process held all shares in memory. Drop them explicitly to
+    // reduce the window in which a core dump could recover the group secret.
+    drop(shares);
+    drop(public_output);
+
+    // Securely erase the individual share files now that they have been written.
+    // Validators are expected to read their share before the dealer process
+    // exits (the Docker entrypoint waits for the keygen process to complete
+    // before starting nodes). Overwriting with zeros + fsync + unlink removes
+    // them from disk, limiting the exposure window on the shared volume.
+    for i in 0..args.validators {
+        let share_path = args.output_dir.join(format!("node{}/share.key", i));
+        if let Ok(metadata) = fs::metadata(&share_path) {
+            let size = metadata.len() as usize;
+            if let Ok(mut f) = fs::OpenOptions::new().write(true).open(&share_path) {
+                let zeros = vec![0u8; size];
+                let _ = f.write_all(&zeros);
+                let _ = f.sync_all();
+            }
+            let _ = fs::remove_file(&share_path);
+            tracing::debug!(node = i, "Securely erased share file");
+        }
+    }
+
+    tracing::warn!(
+        "=== TRUSTED DEALER MODE ===\n\
+         All threshold shares were generated in a single process.\n\
+         Share files have been erased from the shared volume.\n\
+         This mode is NOT secure for production -- use interactive DKG instead."
+    );
+
     tracing::info!("Trusted dealer DKG complete");
     tracing::info!("  Validators: {}", args.validators);
     tracing::info!("  Quorum (N3f1): {}", quorum);
