@@ -111,7 +111,7 @@ impl LegacyNodeService {
         let mut transport = self
             .config
             .network
-            .build_local_transport(validator_key, context)
+            .build_transport(validator_key, context)
             .map_err(|e| eyre::eyre!("failed to build transport: {}", e))?;
         tracing::info!("network transport started");
 

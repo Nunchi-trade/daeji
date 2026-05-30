@@ -15,6 +15,13 @@ use crate::ConfigError;
 /// Default validator threshold.
 pub const DEFAULT_THRESHOLD: u32 = 2;
 
+/// Default epoch length in views.
+///
+/// Controls how many views make up a single epoch for validator set tracking.
+/// The validator set is re-registered with the P2P oracle at each epoch boundary.
+/// Defaults to `u64::MAX` (single infinite epoch) for backward compatibility.
+pub const DEFAULT_EPOCH_LENGTH: u64 = i64::MAX as u64;
+
 /// Default maximum transactions decoded per block.
 pub const DEFAULT_BLOCK_CODEC_MAX_TXS: usize = 10_000;
 
@@ -164,6 +171,17 @@ pub struct ConsensusConfig {
     /// Simplex consensus tuning parameters.
     #[serde(default)]
     pub simplex: ConsensusSimplexConfig,
+
+    /// Epoch length in views.
+    ///
+    /// Controls how many consensus views make up a single epoch.
+    /// The validator set is re-registered with the P2P oracle at each epoch
+    /// boundary. A shorter epoch length enables future support for dynamic
+    /// validator set changes.
+    ///
+    /// Defaults to `u64::MAX` (effectively a single infinite epoch).
+    #[serde(default = "default_epoch_length")]
+    pub epoch_length: NonZeroU64,
 }
 
 impl Default for ConsensusConfig {
@@ -174,6 +192,7 @@ impl Default for ConsensusConfig {
             participants: Vec::new(),
             block_codec: ConsensusBlockCodecConfig::default(),
             simplex: ConsensusSimplexConfig::default(),
+            epoch_length: default_epoch_length(),
         }
     }
 }
@@ -195,6 +214,10 @@ impl ConsensusConfig {
             })
             .collect()
     }
+}
+
+const fn default_epoch_length() -> NonZeroU64 {
+    NonZeroU64::new(DEFAULT_EPOCH_LENGTH).expect("default epoch length is non-zero")
 }
 
 const fn default_threshold() -> u32 {
@@ -320,6 +343,7 @@ mod tests {
         );
         assert_eq!(config.simplex.skip_timeout_views.get(), DEFAULT_SIMPLEX_SKIP_TIMEOUT_VIEWS);
         assert_eq!(config.simplex.fetch_concurrent.get(), DEFAULT_SIMPLEX_FETCH_CONCURRENT);
+        assert_eq!(config.epoch_length.get(), DEFAULT_EPOCH_LENGTH);
     }
 
     #[test]
