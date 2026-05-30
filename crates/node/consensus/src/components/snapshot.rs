@@ -18,9 +18,10 @@ use crate::{
 /// Default maximum number of persisted snapshots to retain in memory.
 ///
 /// Once more than this many snapshots have been persisted, the oldest are
-/// evicted from the in-memory store. The `persisted` marker is kept so that
-/// ancestor chain-walking terminates correctly, but the heavy snapshot data
-/// (state overlay, change set, tx IDs) is freed.
+/// evicted from the in-memory store.  Both the snapshot data AND the
+/// persisted marker are removed for evicted entries.  The chain-walking
+/// algorithms treat missing snapshots (neither in the snapshot map nor in
+/// the persisted set) as already-persisted-and-evicted boundaries.
 const DEFAULT_MAX_PERSISTED_RETAINED: usize = 256;
 
 /// In-memory snapshot store with bounded retention of persisted snapshots.
@@ -129,10 +130,11 @@ impl<S> InMemorySnapshotStore<S> {
     /// to free memory held by snapshots whose state has already been committed
     /// to the persistent store (QMDB).
     ///
-    /// The `persisted` marker is intentionally **kept** for evicted digests so
-    /// that ancestor chain-walking (`merged_changes`, `changes_for_persist`,
-    /// `collect_pending_tx_ids`) still terminates correctly at persisted
-    /// boundaries.
+    /// Both the snapshot data AND the `persisted` marker are removed for evicted
+    /// entries.  The chain-walking algorithms (`merged_changes`,
+    /// `changes_for_persist`) treat a digest that is absent from both the
+    /// snapshot map and the persisted set as an already-persisted-and-evicted
+    /// boundary, which is functionally equivalent to a persisted marker.
     ///
     /// Returns the number of snapshots evicted.
     pub fn evict_persisted(&self) -> usize {
@@ -143,7 +145,7 @@ impl<S> InMemorySnapshotStore<S> {
         }
 
         let mut snapshots = self.snapshots.write();
-        let persisted = self.persisted.read();
+        let mut persisted = self.persisted.write();
         let mut order = self.persisted_order.write();
 
         let mut evicted = 0usize;
@@ -153,12 +155,18 @@ impl<S> InMemorySnapshotStore<S> {
             };
             // Only remove snapshot data if it is actually persisted.
             // (Guards against stale entries in the order queue.)
-            if persisted.contains(&oldest) && snapshots.remove(&oldest).is_some() {
+            if persisted.contains(&oldest) {
+                snapshots.remove(&oldest);
+                persisted.remove(&oldest);
                 evicted += 1;
             }
         }
 
         if evicted > 0 {
+            // Reclaim excess VecDeque capacity after bulk eviction to prevent
+            // the allocation from ratcheting up indefinitely (issue #207).
+            order.shrink_to_fit();
+
             debug!(
                 evicted,
                 retained = snapshots.len(),
@@ -213,12 +221,20 @@ impl<S: StateDb> SnapshotStore<S> for InMemorySnapshotStore<S> {
         let mut current = Some(parent);
 
         while let Some(digest) = current {
+            // A digest in the persisted set is a live persisted boundary.
             if persisted.contains(&digest) {
                 break;
             }
 
-            let snapshot =
-                snapshots.get(&digest).ok_or(ConsensusError::SnapshotNotFound(digest))?;
+            let snapshot = match snapshots.get(&digest) {
+                Some(s) => s,
+                None => {
+                    // The snapshot is not in the map and not in the persisted
+                    // set.  This means it was persisted and subsequently
+                    // evicted -- treat it as a persisted boundary.
+                    break;
+                }
+            };
 
             chain.push(snapshot.changes.clone());
             current = snapshot.parent;
@@ -246,11 +262,18 @@ impl<S: StateDb> SnapshotStore<S> for InMemorySnapshotStore<S> {
         let mut current = Some(digest);
 
         while let Some(d) = current {
+            // A digest in the persisted set is a live persisted boundary.
             if persisted.contains(&d) {
                 break;
             }
 
-            let snapshot = snapshots.get(&d).ok_or(ConsensusError::SnapshotNotFound(d))?;
+            let snapshot = match snapshots.get(&d) {
+                Some(s) => s,
+                None => {
+                    // Persisted-and-evicted boundary (see merged_changes).
+                    break;
+                }
+            };
 
             chain.push(d);
             changes_chain.push(snapshot.changes.clone());
@@ -428,8 +451,8 @@ mod tests {
         assert!(store.get(&d3).is_some(), "d3 should still be retained");
         assert!(store.get(&d4).is_some(), "d4 is not persisted, should be retained");
 
-        // The persisted marker for d1 should still be present (for chain-walking).
-        assert!(store.is_persisted(&d1));
+        // The persisted marker for d1 should now also be removed.
+        assert!(!store.is_persisted(&d1), "d1 persisted marker should be removed after eviction");
     }
 
     #[test]
@@ -472,9 +495,9 @@ mod tests {
         assert_eq!(evicted, 2);
         assert!(store.get(&d1).is_none());
         assert!(store.get(&d2).is_none());
-        // Persisted markers are kept.
-        assert!(store.is_persisted(&d1));
-        assert!(store.is_persisted(&d2));
+        // Persisted markers are now also removed.
+        assert!(!store.is_persisted(&d1));
+        assert!(!store.is_persisted(&d2));
     }
 
     #[test]
@@ -500,8 +523,8 @@ mod tests {
         store.evict_persisted();
         // d1 evicted from snapshots, d2 retained.
         assert_eq!(store.len(), 1);
-        // Both remain in persisted set.
-        assert_eq!(store.persisted_count(), 2);
+        // d1's persisted marker is also removed; only d2 remains.
+        assert_eq!(store.persisted_count(), 1);
     }
 
     #[test]
@@ -574,5 +597,36 @@ mod tests {
         // Persist all -- zero unpersisted.
         store.mark_persisted(&[d2, d3]);
         assert_eq!(store.unpersisted_count(), 0);
+    }
+
+    #[test]
+    fn chain_walk_terminates_at_evicted_persisted_boundary() {
+        // Verify that merged_changes terminates correctly when it encounters
+        // a digest that was persisted and then evicted (no snapshot, no
+        // persisted marker).
+        let store = InMemorySnapshotStore::<MockStateDb>::with_max_persisted_retained(1);
+
+        let d1 = make_digest(0x01);
+        let d2 = make_digest(0x02);
+        let d3 = make_digest(0x03);
+
+        store.insert(d1, make_snapshot(None));
+        store.insert(d2, make_snapshot(Some(d1)));
+        store.insert(d3, make_snapshot(Some(d2)));
+
+        // Persist d1 and d2, then evict.  d1 will lose both snapshot and
+        // persisted marker.
+        store.mark_persisted(&[d1, d2]);
+        assert_eq!(store.evict_persisted(), 1); // d1 evicted
+
+        // d1 has no persisted marker and no snapshot -- it is an evicted
+        // boundary.  merged_changes from d2 should terminate at d2 (still
+        // persisted) without error.
+        let result = store.merged_changes(d2, ChangeSet::new());
+        assert!(result.is_ok(), "merged_changes should succeed with evicted boundary");
+
+        // Also test changes_for_persist from d3.
+        let result = store.changes_for_persist(d3);
+        assert!(result.is_ok(), "changes_for_persist should succeed with evicted boundary");
     }
 }

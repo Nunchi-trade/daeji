@@ -1,7 +1,7 @@
 //! REVM-based consensus application implementation.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -62,6 +62,13 @@ const MAX_FUTURE_TIMESTAMP_DRIFT: u64 = 15;
 /// blocks.
 const MAX_PROPOSAL_LAG: u64 = 64;
 
+/// Maximum number of entries retained in the `block_fees` cache.
+///
+/// Only the parent block's fee data is needed for base fee computation, so
+/// entries older than `MAX_PROPOSAL_LAG * 2` are never queried.  Capping the
+/// cache prevents unbounded memory growth (~132 MB/day at 33 blocks/s).
+const MAX_BLOCK_FEES_CACHED: usize = 128;
+
 fn unix_timestamp_secs<Env: Clock>(env: &Env) -> u64 {
     env.current().duration_since(UNIX_EPOCH).map(|duration| duration.as_secs()).unwrap_or(0)
 }
@@ -98,25 +105,15 @@ pub struct RevmApplication<S, E> {
     /// Height of the HEAD block that was restored from the archive during
     /// startup recovery.  This value is set once at startup and never
     /// changes; it anchors the catch-up window.
-    ///
-    /// Catch-up mode is active as long as `recovered_height > 0` and the
-    /// node has not yet verified enough blocks past the recovery point.
-    /// Blocks whose parent snapshot is missing are trusted based on their
-    /// finality certificate (which the resolver already verified).  Once
-    /// the node successfully verifies a block via full execution at height
-    /// >= `recovered_height + CATCH_UP_THRESHOLD`, catch-up mode ends.
     recovered_height: Arc<AtomicU64>,
     /// The highest block height that has been processed by `verify_block`.
-    /// Advanced by full-execution verification and by re-encountering
-    /// previously processed blocks (including certificate-trusted ones).
-    /// Used to determine when the catch-up window should close.
     last_verified_height: Arc<AtomicU64>,
     /// Per-block `(gas_used, base_fee_per_gas)` cache, keyed by consensus
-    /// digest.  Populated when a block is built or verified so that the
-    /// *next* block can compute its EIP-1559 base fee from the parent's
-    /// gas usage.  Entries are small (32 + 16 bytes) and the map is bounded
-    /// by the number of unfinalized blocks.
+    /// digest.  Bounded to [`MAX_BLOCK_FEES_CACHED`] entries; oldest
+    /// entries are evicted on insertion to prevent unbounded memory growth.
     block_fees: Arc<RwLock<HashMap<ConsensusDigest, (u64, u64)>>>,
+    /// Insertion-ordered queue of block fee cache keys for oldest-first eviction.
+    block_fees_order: Arc<RwLock<VecDeque<ConsensusDigest>>>,
     _scheme: std::marker::PhantomData<S>,
 }
 
@@ -130,6 +127,7 @@ impl<S, E> std::fmt::Debug for RevmApplication<S, E> {
             .field("recovered_height", &self.recovered_height.load(Ordering::Relaxed))
             .field("last_verified_height", &self.last_verified_height.load(Ordering::Relaxed))
             .field("block_fees_cached", &self.block_fees.read().len())
+            .field("block_fees_capacity", &MAX_BLOCK_FEES_CACHED)
             .finish_non_exhaustive()
     }
 }
@@ -146,8 +144,11 @@ where
         gas_limit: u64,
         fee_recipient: Address,
     ) -> Self {
+        let genesis_digest = ledger.genesis_block().commitment();
         let mut block_fees = HashMap::new();
-        block_fees.insert(ledger.genesis_block().commitment(), (0, kora_config::INITIAL_BASE_FEE));
+        block_fees.insert(genesis_digest, (0, kora_config::INITIAL_BASE_FEE));
+        let mut block_fees_order = VecDeque::new();
+        block_fees_order.push_back(genesis_digest);
 
         Self {
             ledger,
@@ -160,6 +161,7 @@ where
             recovered_height: Arc::new(AtomicU64::new(0)),
             last_verified_height: Arc::new(AtomicU64::new(0)),
             block_fees: Arc::new(RwLock::new(block_fees)),
+            block_fees_order: Arc::new(RwLock::new(block_fees_order)),
             _scheme: std::marker::PhantomData,
         }
     }
@@ -179,39 +181,28 @@ where
     }
 
     /// Set the height of the HEAD block that was recovered from the archive.
-    ///
-    /// This activates catch-up mode: when parent snapshots are unavailable,
-    /// blocks are trusted based on their finality certificate.  Catch-up
-    /// mode remains active until the node has verified blocks far enough
-    /// past the recovered height (controlled by [`CATCH_UP_THRESHOLD`]).
     #[must_use]
     pub fn with_recovered_height(self, height: u64) -> Self {
         self.recovered_height.store(height, Ordering::Relaxed);
-        // The recovered height is also the highest successfully verified
-        // height at startup -- prepopulated snapshots cover everything up
-        // to this point.
         self.last_verified_height.store(height, Ordering::Relaxed);
         self
     }
 
     /// Seed the block-fee cache with entries from the block index so that
     /// the first blocks after a restart can derive a correct EIP-1559 base
-    /// fee.  Without this, `compute_base_fee` would fall back to
-    /// `INITIAL_BASE_FEE` for any parent whose fee data was not in the
-    /// in-memory cache.
-    ///
-    /// `entries` should contain `(digest, gas_used, base_fee_per_gas)` for
-    /// recent blocks (at minimum the HEAD block).
+    /// fee.
     pub fn seed_block_fees(&self, entries: &[(ConsensusDigest, u64, u64)]) {
         let mut fees = self.block_fees.write();
+        let mut order = self.block_fees_order.write();
         for &(digest, gas_used, base_fee) in entries {
-            fees.insert(digest, (gas_used, base_fee));
+            if fees.insert(digest, (gas_used, base_fee)).is_none() {
+                order.push_back(digest);
+            }
         }
     }
 
     /// Compute the base fee for a new block from the parent's gas usage
-    /// (EIP-1559).  Falls back to [`kora_config::INITIAL_BASE_FEE`] when the
-    /// parent's fee data is not cached (genesis or catch-up).
+    /// (EIP-1559).
     fn compute_base_fee(&self, parent_digest: ConsensusDigest) -> u64 {
         let fees = self.block_fees.read();
         match fees.get(&parent_digest) {
@@ -227,8 +218,23 @@ where
 
     /// Record a block's gas usage and base fee so that the next block can
     /// derive its own base fee via [`Self::compute_base_fee`].
+    ///
+    /// Evicts the oldest entries when the cache exceeds
+    /// [`MAX_BLOCK_FEES_CACHED`] to prevent unbounded memory growth.
     fn record_block_fees(&self, digest: ConsensusDigest, gas_used: u64, base_fee: u64) {
-        self.block_fees.write().insert(digest, (gas_used, base_fee));
+        let mut fees = self.block_fees.write();
+        let mut order = self.block_fees_order.write();
+
+        if fees.insert(digest, (gas_used, base_fee)).is_none() {
+            order.push_back(digest);
+        }
+
+        // Evict oldest entries beyond the capacity limit.
+        while order.len() > MAX_BLOCK_FEES_CACHED {
+            if let Some(oldest) = order.pop_front() {
+                fees.remove(&oldest);
+            }
+        }
     }
 
     fn block_context(
@@ -260,14 +266,6 @@ where
         let start = Instant::now();
         let parent_digest = parent.commitment();
 
-        // Wait briefly for the parent snapshot to become available.
-        //
-        // Consensus can advance views faster than the execution layer
-        // produces snapshots.  Rather than polling with sleep(), we use
-        // an event-driven wait: `wait_for_snapshot` blocks on a Notify
-        // that fires whenever any snapshot is inserted, so we wake up
-        // immediately when the snapshot arrives instead of sleeping
-        // through a fixed interval.
         let parent_snapshot = {
             let wait_start = Instant::now();
             match self.ledger.wait_for_snapshot(parent_digest, SNAPSHOT_WAIT_TIMEOUT).await {
@@ -307,10 +305,6 @@ where
         let excluded = match self.collect_pending_tx_ids(&snapshots, parent_digest) {
             Some(ids) => ids,
             None => {
-                // The snapshot chain has a gap -- we cannot determine which
-                // transactions were already included in recent blocks.
-                // Building with an incomplete excluded set risks duplicate
-                // transactions, so we nullify this round instead.
                 return None;
             }
         };
@@ -318,10 +312,6 @@ where
         let excluded_len = excluded.len();
         let txs = mempool.build(self.max_txs, &excluded);
 
-        // Diagnostic: when the producer builds an empty block while there are
-        // unincluded txs in the mempool, something is wrong (e.g. RPC tx_submit
-        // not wired, the excluded set over-collecting, or max_txs misconfigured).
-        // Log enough state to tell which.
         if txs.is_empty() && mempool_len > excluded_len {
             warn!(
                 mempool_len,
@@ -346,9 +336,6 @@ where
         let txs_bytes: Vec<Bytes> = txs.iter().map(|tx| tx.bytes.clone()).collect();
 
         let exec_start = Instant::now();
-        // Run EVM execution on a dedicated blocking thread so that the
-        // synchronous REVM loop does not occupy an async worker thread.
-        // All clones are cheap (Arc bumps or small Copy types).
         let outcome = {
             let executor = self.executor.clone();
             let state = parent_snapshot.state.clone();
@@ -403,10 +390,8 @@ where
         let root_elapsed = root_start.elapsed();
 
         let block = Block::new(parent.id(), height, timestamp, prevrandao, state_root, txs);
-
         let block_digest = block.commitment();
 
-        // Cache gas usage so that the next block can derive its base fee.
         self.record_block_fees(block_digest, outcome.gas_used, base_fee);
 
         let total_elapsed = start.elapsed();
@@ -432,36 +417,14 @@ where
     }
 
     /// Check whether the node is in catch-up mode.
-    ///
-    /// Returns `true` when:
-    /// 1. The node recovered from an archive at startup (`recovered_height > 0`), AND
-    /// 2. The highest block verified via full execution has not yet reached
-    ///    far enough past the recovery point.
-    ///
-    /// The `block_height` parameter is the height of the block being verified.
-    /// It must be greater than the recovered height (otherwise it is a block
-    /// we already have and does not need catch-up trust).
-    ///
-    /// Unlike the previous implementation, the catch-up window is anchored to
-    /// the *original* `recovered_height` and only closes when
-    /// `last_verified_height` advances past
-    /// `recovered_height + CATCH_UP_THRESHOLD`.  `last_verified_height` is
-    /// advanced both by full-execution verification and by re-encountering
-    /// previously processed blocks (including certificate-trusted ones) in
-    /// the "already verified" early-return path of `verify_block`.
     fn is_catching_up(&self, block_height: u64) -> bool {
         let recovered = self.recovered_height.load(Ordering::Relaxed);
-        // Fresh node: never recovered, not catching up.
         if recovered == 0 {
             return false;
         }
-        // Block is at or below the recovered height -- we already have
-        // state for it (prepopulated cache covers it), no catch-up needed.
         if block_height <= recovered {
             return false;
         }
-        // Check whether full-execution verification has advanced far enough
-        // past the recovery point.  If it has, catch-up is over.
         let verified = self.last_verified_height.load(Ordering::Relaxed);
         verified < recovered.saturating_add(CATCH_UP_THRESHOLD)
     }
@@ -477,16 +440,6 @@ where
         let parent_digest = block.parent();
 
         if self.ledger.query_state_root(digest).await.is_some() {
-            // Block is already in the snapshot store.  This can happen either
-            // because it was fully verified earlier, or because it was
-            // certificate-trusted during catch-up.  In both cases, advance
-            // `last_verified_height` so the catch-up window eventually closes.
-            //
-            // Without this, certificate-trusted blocks create "holes" in the
-            // verified chain: subsequent `verify` calls stop the ancestry walk
-            // at the certificate-trusted block (its state_root is in the
-            // store), so the full-execution path is never reached for that
-            // height, and `last_verified_height` never advances past it.
             self.last_verified_height.fetch_max(block.height, Ordering::Relaxed);
             if let Some(ref state) = self.node_state {
                 state.set_last_verified_height(block.height);
@@ -495,15 +448,7 @@ where
             return true;
         }
 
-        // ── Timestamp validation ──────────────────────────────────────
-        // These checks are cheap (no I/O) and catch obviously invalid
-        // blocks early, before we spend time fetching snapshots and
-        // executing transactions.  During catch-up the blocks are already
-        // backed by a finality certificate so we skip the checks.
         if !self.is_catching_up(block.height) {
-            // Monotonicity: block timestamp must not move backwards.
-            // `block.timestamp` is second-granularity wall-clock time, so
-            // fast blocks can legitimately share the same timestamp.
             if let Some(parent_ts) = parent_timestamp
                 && block.timestamp < parent_ts
             {
@@ -517,8 +462,6 @@ where
                 return false;
             }
 
-            // Future-drift: reject blocks whose timestamp is too far
-            // ahead of the validator's wall-clock.
             let max_allowed = now_secs.saturating_add(MAX_FUTURE_TIMESTAMP_DRIFT);
             if block.timestamp > max_allowed {
                 warn!(
@@ -536,19 +479,6 @@ where
         let parent_snapshot = match self.ledger.parent_snapshot(parent_digest).await {
             Some(snap) => snap,
             None => {
-                // Parent snapshot is missing. During normal operation this
-                // means we received a genuinely invalid or out-of-order
-                // block. But after a restart the snapshot cache only
-                // contains the HEAD (plus prepopulated recent blocks), so
-                // blocks whose parent we haven't processed yet will fail
-                // here.
-                //
-                // If we are still catching up, trust the finality certificate
-                // and restore the block as a persisted snapshot so that
-                // subsequent blocks can find their parent.  This is safe
-                // because the resolver already verified the finality
-                // certificate (2/3+ threshold signature) before delivering
-                // the block to the application layer.
                 if self.is_catching_up(block.height) {
                     debug!(
                         ?digest,
@@ -559,17 +489,7 @@ where
                         "verify_block: parent snapshot missing during catch-up; \
                          trusting finality certificate"
                     );
-                    // Create a persisted snapshot for this block using the
-                    // current QMDB state.  The FinalizedReporter will
-                    // re-execute and properly persist the block when it
-                    // arrives through the finalization pipeline.
                     self.ledger.restore_persisted_snapshot(block).await;
-                    // We do NOT update last_verified_height here because
-                    // certificate-trust is not full verification.  However,
-                    // the "already verified" early-return path at the top of
-                    // verify_block WILL advance last_verified_height when
-                    // this block is encountered again in a future ancestry
-                    // walk, ensuring the catch-up window eventually closes.
                     return true;
                 }
 
@@ -596,10 +516,6 @@ where
             {
                 Ok(result) => result,
                 Err(err) => {
-                    // During catch-up, the parent snapshot may have been
-                    // restored with empty changes (certificate-trusted), so
-                    // execution against it can legitimately fail.  Fall back
-                    // to certificate-trust rather than rejecting the block.
                     if self.is_catching_up(block.height) {
                         warn!(
                             ?digest,
@@ -643,13 +559,6 @@ where
         let root_elapsed = root_start.elapsed();
 
         if state_root != block.state_root {
-            // During catch-up, the parent snapshot may have been restored
-            // with an empty changeset via `restore_persisted_snapshot`
-            // (certificate-trusted).  The empty changeset means the parent
-            // state does not include intermediate block changes, causing the
-            // computed root to diverge from the expected root.  Rather than
-            // rejecting the block (which would permanently stall catch-up),
-            // fall back to certificate-trust.
             if self.is_catching_up(block.height) {
                 warn!(
                     ?digest,
@@ -672,7 +581,6 @@ where
             return false;
         }
 
-        // Cache gas usage so the next block can derive its base fee.
         self.record_block_fees(digest, execution.outcome.gas_used, base_fee);
 
         let merged_changes = parent_snapshot.state.merge_changes(execution.outcome.changes.clone());
@@ -689,9 +597,6 @@ where
             )
             .await;
 
-        // Full execution verification succeeded.  Advance the verified
-        // height so that the catch-up window eventually closes once we
-        // have verified blocks past the recovery point.
         let prev_verified = self.last_verified_height.fetch_max(block.height, Ordering::Relaxed);
         if let Some(ref state) = self.node_state {
             state.set_last_verified_height(block.height);
@@ -725,11 +630,6 @@ where
     }
 
     /// Collect transaction IDs from unpersisted ancestor snapshots.
-    ///
-    /// Returns `None` if the snapshot chain has a gap (a snapshot was evicted
-    /// before we could read it). In that case the caller **must not** build a
-    /// block, because we cannot guarantee the excluded set is complete and
-    /// would risk including duplicate transactions.
     fn collect_pending_tx_ids(
         &self,
         snapshots: &InMemorySnapshotStore<OverlayState<QmdbState>>,
@@ -782,11 +682,6 @@ where
             let parent = ancestry.next().await?;
             let ancestry_elapsed = start.elapsed();
 
-            // Proposal lag guard: if the tip is too far ahead of the last
-            // finalized height, skip this proposal to let finalization catch
-            // up.  This prevents a fast leader from building an unbounded
-            // chain of unfinalized snapshots that other validators cannot
-            // verify in time.
             if let Some(ref state) = node_state {
                 let finalized = state.finalized_height();
                 if parent.height > finalized + MAX_PROPOSAL_LAG {
@@ -858,17 +753,10 @@ where
             let start = Instant::now();
             let now_secs = unix_timestamp_secs(&env);
 
-            // The ancestry stream yields tip-first (newest -> oldest).
-            // We only need to verify blocks that we haven't seen yet.
-            // Collect blocks until we hit one we've already verified.
-            // When we find the already-verified parent, capture its
-            // timestamp so we can validate timestamp monotonicity for
-            // the oldest unverified block.
             let mut blocks_to_verify = Vec::new();
             let mut verified_parent_timestamp: Option<u64> = None;
             while let Some(block) = ancestry.next().await {
                 let digest = block.commitment();
-                // Stop if we've already verified this block
                 if self.ledger.query_state_root(digest).await.is_some() {
                     verified_parent_timestamp = Some(block.timestamp);
                     break;
@@ -878,7 +766,6 @@ where
             let ancestry_elapsed = start.elapsed();
 
             if blocks_to_verify.is_empty() {
-                // All blocks already verified
                 trace!(ancestry_ms = ancestry_elapsed.as_millis(), "all blocks already verified");
                 return true;
             }
@@ -886,9 +773,6 @@ where
             let block_count = blocks_to_verify.len();
             let tip_height = blocks_to_verify.first().map(|b| b.height).unwrap_or(0);
 
-            // Verify from oldest (parent) to newest (tip).
-            // Track the parent timestamp across the chain so each block's
-            // timestamp monotonicity can be validated.
             let verify_start = Instant::now();
             let mut parent_ts = verified_parent_timestamp;
             for block in blocks_to_verify.into_iter().rev() {
