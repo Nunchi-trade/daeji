@@ -18,6 +18,8 @@ const TX_DATA_NON_ZERO_GAS: u64 = 16;
 const TX_CREATE_GAS: u64 = 32000;
 const TX_ACCESS_LIST_ADDRESS_GAS: u64 = 2400;
 const TX_ACCESS_LIST_STORAGE_KEY_GAS: u64 = 1900;
+/// EIP-7702: per-authorization gas cost (PER_EMPTY_ACCOUNT_COST).
+const TX_EIP7702_AUTH_LIST_ENTRY_GAS: u64 = 25000;
 
 /// A validated transaction ready for pool insertion.
 #[derive(Debug, Clone)]
@@ -222,7 +224,11 @@ fn intrinsic_gas(envelope: &TxEnvelope) -> u64 {
         TxEnvelope::Eip2930(tx) => access_list_gas_cost(&tx.tx().access_list),
         TxEnvelope::Eip1559(tx) => access_list_gas_cost(&tx.tx().access_list),
         TxEnvelope::Eip4844(tx) => access_list_gas_cost(&tx.tx().tx().access_list),
-        TxEnvelope::Eip7702(tx) => access_list_gas_cost(&tx.tx().access_list),
+        TxEnvelope::Eip7702(tx) => {
+            let al_gas = access_list_gas_cost(&tx.tx().access_list);
+            let auth_gas = tx.tx().authorization_list.len() as u64 * TX_EIP7702_AUTH_LIST_ENTRY_GAS;
+            al_gas + auth_gas
+        }
     };
     gas += access_list_gas;
 
@@ -250,10 +256,11 @@ fn max_tx_cost(envelope: &TxEnvelope) -> U256 {
 mod tests {
     use std::{collections::HashMap, sync::Arc};
 
-    use alloy_consensus::{SignableTransaction as _, TxEip1559, TxLegacy};
+    use alloy_consensus::{SignableTransaction as _, TxEip1559, TxEip7702, TxLegacy};
     use alloy_eips::{
         eip2718::Encodable2718,
         eip2930::{AccessList, AccessListItem},
+        eip7702::Authorization,
     };
     use alloy_primitives::{Bytes, Signature, TxKind};
     use k256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
@@ -1035,5 +1042,95 @@ mod tests {
 
         assert!(validator.validate(raw_tx1).await.is_ok());
         assert!(validator.validate(raw_tx2).await.is_ok());
+    }
+
+    /// Helper: build a dummy `SignedAuthorization` (signature values don't
+    /// matter for gas-accounting tests -- only the list length counts).
+    fn dummy_signed_authorization() -> alloy_eips::eip7702::SignedAuthorization {
+        Authorization { chain_id: U256::from(1), address: Address::ZERO, nonce: 0 }
+            .into_signed(Signature::new(U256::ZERO, U256::ZERO, false))
+    }
+
+    #[test]
+    fn intrinsic_gas_eip7702_with_authorization_list() {
+        // 3 authorization entries => 3 * 25_000 = 75_000 additional gas
+        let auth_list = (0..3).map(|_| dummy_signed_authorization()).collect::<Vec<_>>();
+
+        let tx = TxEip7702 {
+            chain_id: 1,
+            nonce: 0,
+            gas_limit: 200_000,
+            max_fee_per_gas: 1_000_000_000,
+            max_priority_fee_per_gas: 1_000_000_000,
+            to: Address::ZERO,
+            value: U256::ZERO,
+            access_list: Default::default(),
+            authorization_list: auth_list,
+            input: Bytes::new(),
+        };
+        let sig = Signature::from_scalars_and_parity(B256::ZERO, B256::ZERO, false);
+        let signed = tx.into_signed(sig);
+        let envelope = TxEnvelope::from(signed);
+
+        // base (21_000) + 3 * PER_EMPTY_ACCOUNT_COST (25_000) = 96_000
+        assert_eq!(intrinsic_gas(&envelope), TX_BASE_GAS + 3 * TX_EIP7702_AUTH_LIST_ENTRY_GAS);
+    }
+
+    #[test]
+    fn intrinsic_gas_eip7702_with_access_and_authorization_lists() {
+        // 2 authorization entries + 1 access-list address with 1 storage key
+        let auth_list = (0..2).map(|_| dummy_signed_authorization()).collect::<Vec<_>>();
+
+        let access_list = AccessList::from(vec![AccessListItem {
+            address: Address::ZERO,
+            storage_keys: vec![B256::ZERO],
+        }]);
+
+        let tx = TxEip7702 {
+            chain_id: 1,
+            nonce: 0,
+            gas_limit: 200_000,
+            max_fee_per_gas: 1_000_000_000,
+            max_priority_fee_per_gas: 1_000_000_000,
+            to: Address::ZERO,
+            value: U256::ZERO,
+            access_list,
+            authorization_list: auth_list,
+            input: Bytes::new(),
+        };
+        let sig = Signature::from_scalars_and_parity(B256::ZERO, B256::ZERO, false);
+        let signed = tx.into_signed(sig);
+        let envelope = TxEnvelope::from(signed);
+
+        // base (21_000) + access_list (2_400 + 1_900) + auth (2 * 25_000) = 75_300
+        assert_eq!(
+            intrinsic_gas(&envelope),
+            TX_BASE_GAS
+                + TX_ACCESS_LIST_ADDRESS_GAS
+                + TX_ACCESS_LIST_STORAGE_KEY_GAS
+                + 2 * TX_EIP7702_AUTH_LIST_ENTRY_GAS
+        );
+    }
+
+    #[test]
+    fn intrinsic_gas_eip7702_empty_authorization_list() {
+        // EIP-7702 tx with zero auth entries should just be base gas
+        let tx = TxEip7702 {
+            chain_id: 1,
+            nonce: 0,
+            gas_limit: 200_000,
+            max_fee_per_gas: 1_000_000_000,
+            max_priority_fee_per_gas: 1_000_000_000,
+            to: Address::ZERO,
+            value: U256::ZERO,
+            access_list: Default::default(),
+            authorization_list: vec![],
+            input: Bytes::new(),
+        };
+        let sig = Signature::from_scalars_and_parity(B256::ZERO, B256::ZERO, false);
+        let signed = tx.into_signed(sig);
+        let envelope = TxEnvelope::from(signed);
+
+        assert_eq!(intrinsic_gas(&envelope), TX_BASE_GAS);
     }
 }
