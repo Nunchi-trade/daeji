@@ -669,7 +669,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
                 || EthApiImpl::new(chain_id, state_provider.clone()),
                 |submit| EthApiImpl::with_tx_submit(chain_id, state_provider.clone(), submit),
             );
-            eth_api = eth_api.with_node_state(eth_node_state);
+            eth_api = eth_api.with_node_state(eth_node_state.clone());
             if let Some(sender) = pending_tx_broadcast.clone() {
                 eth_api = eth_api.with_pending_tx_broadcast(sender);
             }
@@ -679,7 +679,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             if let Some(ref pool) = txpool {
                 eth_api = eth_api.with_txpool(pool.clone());
             }
-            let net_api = NetApiImpl::new(chain_id);
+            let net_api = NetApiImpl::new(chain_id).with_node_state(eth_node_state);
             net_api.set_peer_count(peer_count);
             let web3_api = Web3ApiImpl::new();
             let kora_api = KoraApiImpl::new(node_state_for_jsonrpc);
@@ -763,7 +763,14 @@ async fn status_handler(State(state): State<Arc<NodeState>>) -> impl IntoRespons
     (StatusCode::OK, axum::Json(status))
 }
 
-async fn health_handler() -> impl IntoResponse {
+async fn health_handler(State(state): State<Arc<NodeState>>) -> impl IntoResponse {
+    let status = state.status();
+    if status.partition_status == crate::state::PartitionStatus::Partitioned {
+        return (StatusCode::SERVICE_UNAVAILABLE, "partitioned");
+    }
+    if state.is_catching_up() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "syncing");
+    }
     (StatusCode::OK, "ok")
 }
 
@@ -1292,8 +1299,10 @@ mod tests {
     async fn http_status_rate_limiter_returns_too_many_requests() {
         let rate_limiter =
             SharedRateLimiter::new(RateLimitConfig { requests_per_second: 1, burst_size: 1 });
+        let state = NodeState::new(1, 0);
+        state.set_peer_count(3); // healthy state so /health returns 200
         let app = build_http_router(
-            Arc::new(NodeState::new(1, 0)),
+            Arc::new(state),
             build_cors_layer(&CorsConfig::none()),
             10,
             rate_limiter,
@@ -1311,5 +1320,60 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn health_handler_returns_ok_for_healthy_node() {
+        let state = NodeState::new(1, 0);
+        state.set_peer_count(3); // all peers connected for 4-validator set
+        let app = build_http_router(
+            Arc::new(state),
+            build_cors_layer(&CorsConfig::none()),
+            10,
+            SharedRateLimiter::new(RateLimitConfig::default()),
+        );
+
+        let resp = app
+            .oneshot(HttpRequest::builder().uri("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn health_handler_returns_503_when_partitioned() {
+        let state = NodeState::new(1, 0);
+        // peer_count defaults to 0 -> partitioned for 4-validator set
+        let app = build_http_router(
+            Arc::new(state),
+            build_cors_layer(&CorsConfig::none()),
+            10,
+            SharedRateLimiter::new(RateLimitConfig::default()),
+        );
+
+        let resp = app
+            .oneshot(HttpRequest::builder().uri("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn health_handler_returns_503_when_syncing() {
+        let state = NodeState::new(1, 0);
+        state.set_peer_count(3); // healthy peer count
+        state.set_recovered_height(1000); // triggers catch-up mode
+        let app = build_http_router(
+            Arc::new(state),
+            build_cors_layer(&CorsConfig::none()),
+            10,
+            SharedRateLimiter::new(RateLimitConfig::default()),
+        );
+
+        let resp = app
+            .oneshot(HttpRequest::builder().uri("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

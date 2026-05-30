@@ -13,7 +13,7 @@ use alloy_consensus::{
 };
 use alloy_eips::eip2718::Decodable2718 as _;
 use alloy_primitives::{Address, B256, Bytes, U64, U256};
-use jsonrpsee::{core::RpcResult, proc_macros::rpc};
+use jsonrpsee::{core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
 use kora_domain::MempoolEvent;
 use kora_txpool::TransactionPool;
 use tokio::sync::RwLock;
@@ -502,15 +502,18 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
     }
 
     async fn send_raw_transaction(&self, data: Bytes) -> RpcResult<B256> {
+        let submit = self.tx_submit.as_ref().ok_or_else(|| {
+            ErrorObjectOwned::owned(
+                crate::error_codes::SERVER_ERROR,
+                "transaction submission not available on this node",
+                None::<()>,
+            )
+        })?;
+
         let tx_hash = alloy_primitives::keccak256(&data);
         let pending_tx = raw_tx_to_pending_rpc(&data)?;
 
-        let accepted = if let Some(ref submit) = self.tx_submit {
-            submit(data).await?;
-            true
-        } else {
-            false
-        };
+        submit(data).await?;
 
         {
             let mut txs = self.pending_txs.write().await;
@@ -553,9 +556,7 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
             }
         }
 
-        if accepted {
-            self.broadcast_pending_tx(tx_hash, pending_tx);
-        }
+        self.broadcast_pending_tx(tx_hash, pending_tx);
         Ok(tx_hash)
     }
 
@@ -704,7 +705,7 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
             Ok(SyncStatus::Syncing(SyncInfo {
                 starting_block: U64::from(state.recovered_height()),
                 current_block: U64::from(current_block),
-                highest_block: U64::from(current_block),
+                highest_block: U64::from(state.current_view()),
             }))
         } else {
             Ok(SyncStatus::NotSyncing(false))
@@ -973,6 +974,10 @@ impl<S: StateProvider> EthApiImpl<S> {
 pub struct NetApiImpl {
     chain_id: u64,
     peer_count: Arc<std::sync::atomic::AtomicU64>,
+    /// When set, peer count is read from the live `NodeState` instead of
+    /// the static atomic.  This is the preferred path when the RPC server
+    /// has access to the consensus-managed node state.
+    node_state: Option<NodeState>,
 }
 
 impl std::fmt::Debug for NetApiImpl {
@@ -980,6 +985,7 @@ impl std::fmt::Debug for NetApiImpl {
         f.debug_struct("NetApiImpl")
             .field("chain_id", &self.chain_id)
             .field("peer_count", &self.peer_count.load(std::sync::atomic::Ordering::Relaxed))
+            .field("node_state", &self.node_state.is_some())
             .finish()
     }
 }
@@ -987,7 +993,19 @@ impl std::fmt::Debug for NetApiImpl {
 impl NetApiImpl {
     /// Create a new Net API implementation.
     pub fn new(chain_id: u64) -> Self {
-        Self { chain_id, peer_count: Arc::new(std::sync::atomic::AtomicU64::new(0)) }
+        Self {
+            chain_id,
+            peer_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            node_state: None,
+        }
+    }
+
+    /// Attach a `NodeState` so that `net_peerCount` reads the live
+    /// peer count maintained by the consensus engine.
+    #[must_use]
+    pub fn with_node_state(mut self, state: NodeState) -> Self {
+        self.node_state = Some(state);
+        self
     }
 
     /// Get a handle to update the peer count.
@@ -1011,7 +1029,10 @@ impl NetApiServer for NetApiImpl {
     }
 
     fn peer_count(&self) -> RpcResult<U64> {
-        let count = self.peer_count.load(std::sync::atomic::Ordering::Relaxed);
+        let count = self.node_state.as_ref().map_or_else(
+            || self.peer_count.load(std::sync::atomic::Ordering::Relaxed),
+            |state| state.peer_count(),
+        );
         Ok(U64::from(count))
     }
 }
@@ -2412,34 +2433,28 @@ mod tests {
         assert!(tx.block_hash.is_none());
     }
 
-    /// Regression: when no `tx_submit` callback is wired, `send_raw_transaction`
-    /// silently accepts the tx and returns the hash, but the tx goes nowhere —
-    /// no mempool, no producer, no block. This is exactly the failure mode
-    /// observed on devnet 1337 (`http://65.109.61.210:8545`) where the deployed
-    /// kora binary predates the runner's `with_tx_submit(...)` wiring (commit
-    /// `beb637a`): every tx submitted via JSON-RPC was accepted, hash returned,
-    /// but never included in any block.
-    ///
-    /// The fix lives in the runner: always wire `tx_submit` to a real mempool.
-    /// The downstream observability fix (warn-log when build_block produces an
-    /// empty block while the mempool is non-empty) lives in `app.rs`.
+    /// When no `tx_submit` callback is wired, `send_raw_transaction` must
+    /// return an error instead of silently accepting and dropping the
+    /// transaction.
     #[tokio::test]
-    async fn send_raw_transaction_with_no_callback_silently_accepts_but_drops() {
+    async fn send_raw_transaction_rejects_when_no_callback() {
         let api = EthApiImpl::new(1, NoopStateProvider); // no tx_submit
         let tx_data = signed_test_tx(1, 0);
         let result = EthApiServer::send_raw_transaction(&api, tx_data.clone()).await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), alloy_primitives::keccak256(&tx_data));
-        // The tx is in pending_txs (so getTransactionByHash returns something) —
-        // that's exactly what makes the bug invisible to operators.
+        assert!(result.is_err(), "should reject when tx_submit is None");
+        let err = result.unwrap_err();
+        assert_eq!(err.code(), crate::error_codes::SERVER_ERROR);
+        assert!(
+            err.message().contains("transaction submission not available"),
+            "error message should explain the rejection: {}",
+            err.message()
+        );
+        // The tx must NOT be in pending_txs since it was rejected.
         let cached =
             EthApiServer::get_transaction_by_hash(&api, alloy_primitives::keccak256(&tx_data))
                 .await
                 .unwrap();
-        assert!(
-            cached.is_some(),
-            "RPC caches the tx for visibility even though it has nowhere to send it"
-        );
+        assert!(cached.is_none(), "rejected tx must not appear in pending cache");
     }
 
     /// Regression: the existing `eth_send_raw_transaction` test only verifies
@@ -2775,5 +2790,66 @@ mod tests {
         };
         assert!(hashes.contains(&h3), "new tx after filter creation should appear");
         assert!(hashes.contains(&h4), "new tx after filter creation should appear");
+    }
+
+    #[tokio::test]
+    async fn syncing_returns_current_view_as_highest_block() {
+        let provider = NoopStateProvider;
+        let api = EthApiImpl::new(1, provider);
+        let state = NodeState::new(1, 0);
+        state.set_recovered_height(100);
+        // current_view simulates the consensus tip seen from peers
+        state.set_view(200);
+        let api = api.with_node_state(state);
+        // Set block_height (current_block) to something less than view
+        api.block_height.store(150, std::sync::atomic::Ordering::Relaxed);
+
+        let result = EthApiServer::syncing(&api).await.unwrap();
+        match result {
+            SyncStatus::Syncing(info) => {
+                assert_eq!(info.starting_block, U64::from(100));
+                assert_eq!(info.current_block, U64::from(150));
+                assert_eq!(
+                    info.highest_block,
+                    U64::from(200),
+                    "highest_block should be current_view, not current_block"
+                );
+            }
+            SyncStatus::NotSyncing(_) => panic!("should be syncing"),
+        }
+    }
+
+    #[tokio::test]
+    async fn syncing_returns_false_when_not_catching_up() {
+        let provider = NoopStateProvider;
+        let api = EthApiImpl::new(1, provider);
+        let state = NodeState::new(1, 0);
+        // No recovered_height means not catching up
+        let api = api.with_node_state(state);
+
+        let result = EthApiServer::syncing(&api).await.unwrap();
+        assert!(matches!(result, SyncStatus::NotSyncing(false)));
+    }
+
+    #[tokio::test]
+    async fn net_peer_count_reads_from_node_state() {
+        let state = NodeState::new(1, 0);
+        state.set_peer_count(5);
+        let net_api = NetApiImpl::new(1).with_node_state(state.clone());
+        let count = NetApiServer::peer_count(&net_api).unwrap();
+        assert_eq!(count, U64::from(5));
+
+        // Update peer count dynamically
+        state.set_peer_count(10);
+        let count = NetApiServer::peer_count(&net_api).unwrap();
+        assert_eq!(count, U64::from(10));
+    }
+
+    #[tokio::test]
+    async fn net_peer_count_falls_back_to_static_without_node_state() {
+        let net_api = NetApiImpl::new(1);
+        net_api.set_peer_count(42);
+        let count = NetApiServer::peer_count(&net_api).unwrap();
+        assert_eq!(count, U64::from(42));
     }
 }
